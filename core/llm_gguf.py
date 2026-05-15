@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import Optional
 
 from .config import LLM_CONCURRENCY
 
@@ -36,7 +37,7 @@ _DEFAULT_FILE = "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
 class LlamaCppLLM:
     """llama-cpp-python wrapper matching the RealLLM async interface."""
 
-    def __init__(self):
+    def __init__(self, model_path: Optional[str] = None, **kwargs):
         # Bypass xet BEFORE huggingface_hub is imported — it reads env at import.
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
@@ -45,7 +46,9 @@ class LlamaCppLLM:
 
         repo = os.environ.get("SWARM_GGUF_REPO") or _DEFAULT_REPO
         filename = os.environ.get("SWARM_GGUF_FILE") or _DEFAULT_FILE
-        local_path = os.environ.get("SWARM_GGUF_PATH")
+        # Explicit model_path argument wins over env-based resolution.
+        # The heterogeneous router passes a fully-resolved path here per role.
+        local_path = model_path or os.environ.get("SWARM_GGUF_PATH")
         n_gpu_layers = int(os.environ.get("SWARM_GPU_LAYERS", "-1"))
         # n_ctx must cover the LARGEST prompt the pipeline ever sends + its
         # generation budget. The synthesizer is the long-prompt outlier

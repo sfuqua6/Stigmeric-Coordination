@@ -48,6 +48,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from core import config
 from core.config import (
     NUM_SCOUTS, NUM_FORAGERS, NUM_CRITICS, NUM_HATERS, NUM_VALIDATORS,
     NUM_ROUNDS, ITERATIONS_PER_ROUND, USE_MOCK_LLM,
@@ -66,6 +67,7 @@ from core.diversity import (
 )
 from core.output_diversity import format_output_diversity_report
 from core.llm import make_llm
+from core.llm_router import HeterogeneousRouter
 from core.knowledge_base import KnowledgeBase
 
 from agents.scout import Scout, ScoutConfig
@@ -146,7 +148,14 @@ def _make_progress(total: int, desc: str):
 
 
 def _wrap_llm_with_progress(llm, progress):
-    """Wrap llm.generate so each call ticks the progress bar."""
+    """Wrap llm.generate so each call ticks the progress bar.
+
+    Idempotent: re-wrapping the same llm (e.g. when the router reuses a
+    cached model across phases) returns it untouched so the progress bar
+    doesn't double-count.
+    """
+    if getattr(llm, "_progress_wrapped", False):
+        return llm
     original = llm.generate
 
     async def generate(prompt, role="agent", max_tokens=120, temperature=0.7):
@@ -158,6 +167,7 @@ def _wrap_llm_with_progress(llm, progress):
         return result
 
     llm.generate = generate
+    llm._progress_wrapped = True
     return llm
 
 
@@ -192,7 +202,14 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                        corpus_mode: str = "real",
                        show_partition_overlap: bool = False) -> dict:
     task_prompt = build_task_prompt(task_type, user_prompt)
-    llm = make_llm()
+    if config.USE_HETEROGENEOUS:
+        router = HeterogeneousRouter()
+        print(f"[pipeline] heterogeneous routing enabled.")
+        print(f"[pipeline] router manifest: {json.dumps(router.manifest(), indent=2)}")
+        llm = None  # phase loops will acquire per-model below
+    else:
+        router = None
+        llm = make_llm()
     store = SignalStore()
 
     active_roles = ROLES_FOR_TASK.get(task_type, {"critic", "hater", "validator"})
@@ -262,10 +279,41 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
     print(f"[pipeline] rounds={NUM_ROUNDS} iter/round={ITERATIONS_PER_ROUND}")
     print(f"[pipeline] expected LLM calls: {total_calls}")
     print(f"[pipeline] corpus chunks: {len(chunks)} | partitions: {[len(p.chunks) for p in partitions]}")
-    print(f"[pipeline] llm backend: {llm.name}\n")
+    if router is not None:
+        print(f"[pipeline] llm backend: heterogeneous (per-role routing)\n")
+    else:
+        print(f"[pipeline] llm backend: {llm.name}\n")
 
     progress = _make_progress(total_calls, desc="swarm")
-    llm = _wrap_llm_with_progress(llm, progress)
+    if llm is not None:
+        llm = _wrap_llm_with_progress(llm, progress)
+
+    async def _run_phase(agents):
+        """Run a phase's agents concurrently, optionally grouped by model.
+
+        Homogeneous (router is None): straight asyncio.gather over the shared
+        llm. Heterogeneous (router not None): group by assigned model, load
+        each unique model once, run the subset, then move on. Stats are
+        reordered to match the input agent order so downstream zip() with
+        all_agents stays correct.
+        """
+        if router is None:
+            return await asyncio.gather(
+                *(a.run(store, ITERATIONS_PER_ROUND) for a in agents)
+            )
+        groups = router.group_agents(agents)
+        stats_by_id: dict = {}
+        for model_path, agent_subset in groups.items():
+            async with router.acquire(model_path) as model_llm:
+                wrapped = _wrap_llm_with_progress(model_llm, progress)
+                for a in agent_subset:
+                    a.llm = wrapped
+                stats_subset = await asyncio.gather(
+                    *(a.run(store, ITERATIONS_PER_ROUND) for a in agent_subset)
+                )
+                for a, s in zip(agent_subset, stats_subset):
+                    stats_by_id[a.agent_id] = s
+        return [stats_by_id[a.agent_id] for a in agents]
 
     round_logs = []
     for round_num in range(1, NUM_ROUNDS + 1):
@@ -331,16 +379,18 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         # Phase A: scouts + validators. Scouts deposit INITIAL signals;
         # validators (running on the previous round's INITIALs, if any)
         # deposit VERIFICATIONs that will inform Phase B's provenance boost.
-        phase_a_stats = await asyncio.gather(
-            *(a.run(store, ITERATIONS_PER_ROUND) for a in (*scouts, *validators))
-        )
+        phase_a_agents = [*scouts, *validators]
+        phase_a_stats = await _run_phase(phase_a_agents)
+        assert len(phase_a_stats) == len(phase_a_agents), \
+            f"phase A stats count {len(phase_a_stats)} != agents {len(phase_a_agents)}"
 
         # Phase B: foragers, critics, haters. By now Phase A's VERIFICATIONs
         # exist in the store, so any deposits here under verified lineage
         # pick up the provenance boost.
-        phase_b_stats = await asyncio.gather(
-            *(a.run(store, ITERATIONS_PER_ROUND) for a in (*foragers, *critics, *haters))
-        )
+        phase_b_agents = [*foragers, *critics, *haters]
+        phase_b_stats = await _run_phase(phase_b_agents)
+        assert len(phase_b_stats) == len(phase_b_agents), \
+            f"phase B stats count {len(phase_b_stats)} != agents {len(phase_b_agents)}"
 
         all_stats = list(phase_a_stats) + list(phase_b_stats)
         records = [s.context_record for s in all_stats]
@@ -421,10 +471,12 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
     (output_dir / "round_log.json").write_text(
         json.dumps(round_logs, indent=2), encoding="utf-8"
     )
+    backend_label = "heterogeneous" if router is not None else llm.name
+    model_assignment = router.manifest() if router is not None else {"all": llm.name}
     (output_dir / "run_meta.json").write_text(json.dumps({
         "task_type": task_type,
         "user_prompt": user_prompt,
-        "llm_backend": llm.name,
+        "llm_backend": backend_label,
         "is_mock": USE_MOCK_LLM,
         "timestamp": datetime.now().isoformat(),
         "active_roles": sorted(active_roles),
@@ -432,6 +484,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
             "scouts": NUM_SCOUTS, "foragers": NUM_FORAGERS,
             "critics": n_critics, "haters": n_haters, "validators": n_validators,
         },
+        "model_assignment": model_assignment,
     }, indent=2), encoding="utf-8")
     print(f"\n[pipeline] signals + round log saved before synthesis: {output_dir}")
 
@@ -443,21 +496,37 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         "timestamp": datetime.now().isoformat(),
     }
     SynthesizerClass = get_role_classes(task_type).get("synthesizer", Synthesizer)
-    synth = SynthesizerClass(llm, task_prompt)
     try:
-        final_answer, citations, lineage_dot = await synth.synthesize(
-            store,
-            has_validators=(n_validators > 0),
-            prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
-            prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
-            output_dir=output_dir,
-        )
+        if router is not None:
+            async with router.acquire(router.model_for_role("synthesizer")) as synth_llm:
+                synth = SynthesizerClass(
+                    _wrap_llm_with_progress(synth_llm, progress), task_prompt
+                )
+                final_answer, citations, lineage_dot = await synth.synthesize(
+                    store,
+                    has_validators=(n_validators > 0),
+                    prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
+                    prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
+                    output_dir=output_dir,
+                )
+        else:
+            synth = SynthesizerClass(llm, task_prompt)
+            final_answer, citations, lineage_dot = await synth.synthesize(
+                store,
+                has_validators=(n_validators > 0),
+                prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
+                prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
+                output_dir=output_dir,
+            )
     except Exception as exc:
         print(f"[pipeline] synthesis failed ({type(exc).__name__}: {exc})")
         print(f"[pipeline] signals.json is still on disk — run synthesize.py against it.")
         final_answer = f"(synthesis failed: {type(exc).__name__}: {exc})"
         citations = {}
         lineage_dot = ""
+
+    if router is not None:
+        await router.teardown()
 
     (output_dir / "answer.txt").write_text(final_answer, encoding="utf-8")
     if citations:
@@ -525,7 +594,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         summary = {
             "task_type": task_type,
             "user_prompt": user_prompt,
-            "llm_backend": llm.name,
+            "llm_backend": backend_label,
             "total_llm_calls": total_llm_calls,
             "total_elapsed_s": round(total_elapsed, 1),
             "scout_reject_rate": round(scout_rejected / max(1, scout_iters), 4),
@@ -572,7 +641,14 @@ def main():
     ignore_kb = "--ignore-kb" in args
     reset_kb  = "--reset-kb"  in args
     show_partition_overlap = "--show-partition-overlap" in args
-    args = [a for a in args if a not in ("--ignore-kb", "--reset-kb", "--show-partition-overlap")]
+    heterogeneous = "--heterogeneous" in args
+    args = [a for a in args if a not in (
+        "--ignore-kb", "--reset-kb", "--show-partition-overlap", "--heterogeneous",
+    )]
+    if heterogeneous:
+        # Mutate module attribute so run_pipeline's `config.USE_HETEROGENEOUS`
+        # read picks up the flag.
+        config.USE_HETEROGENEOUS = True
 
     # --corpus={real,placeholder}
     corpus_mode = "real"

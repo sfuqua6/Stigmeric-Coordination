@@ -1,12 +1,12 @@
-> **Status note (P0.3).** This implementation is a working apparatus for
-> an experiment that has not yet been performed. All artifacts in
-> `outputs_mock/` are from MockLLM and prove only plumbing, not behavior.
-> Real retrieval (Wikipedia → Web → placeholder fallback) is now wired in
-> via `core/retrieval.py`; use `--corpus=placeholder` to revert to the
-> engineered corpus, though diversity numbers from it are not evidence.
-> A non-stigmergic baseline mode is available via `--mode=baseline`;
-> run both modes and compare with `python tools/compare_runs.py`.
-> See `DEFERRED.md` for the full list of non-integrated items.
+> **Status note.** This implementation is the apparatus for an experimental
+> comparison across four levers (partition, model, strategy, trace-hiding).
+> The experiment is partially run: see `outputs/` for stigmergic runs and
+> `outputs/baseline_*` for non-stigmergic comparison runs. The headline
+> diversity metric is output-side centroid cosine distance + Self-BLEU,
+> NOT input-side Jaccard. The Jaccard numbers remain in the code under
+> their honest name (`_partition_overlap_jaccard`) but are not reported as
+> diversity. See `DEFERRED.md` for known limits and Section "Why we
+> deprecated the Jaccard diversity number" in this README.
 
 ---
 

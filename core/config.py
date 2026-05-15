@@ -28,7 +28,10 @@ MAX_TOKENS_VALIDATOR = 80
 # Per-cluster call budget for the synthesizer. Each surviving/contested cluster
 # gets its own LLM call capped at this value; total output scales with cluster
 # count (target 1200-1500 tokens across 2-4 clusters).
-MAX_TOKENS_SYNTHESIZER = 400
+# §6d: Raised from 400 to 600. Truncations in the faithfulness audit were caused
+# by the 400-token cap cutting paragraphs mid-sentence. Legacy value preserved.
+MAX_TOKENS_SYNTHESIZER_LEGACY = 400
+MAX_TOKENS_SYNTHESIZER = 600
 
 # ---------------------------------------------------------------------------
 # Population
@@ -81,6 +84,10 @@ DELTA_DECAY_CONTRARIAN = -0.04   # contrarians decay slower but DO decay
 DELTA_AMPLIFY = 0.30             # per-corroboration logit increment
 DELTA_DEDUP_AMPLIFY = 0.10       # per-dedup-hit logit increment
 DELTA_BOOST_BETA = 0.60          # provenance boost: delta = BOOST_BETA * avg_ver_strength
+
+# Maximum number of surviving clusters the synthesizer renders in full (§6a).
+# Tail clusters beyond this limit appear in Section 3 (filtered) only.
+MAX_RENDERED_CLUSTERS = 4
 
 assert isinstance(USE_LOGIT_DYNAMICS, bool)
 assert DELTA_DECAY < 0 and DELTA_DECAY_CONTRARIAN < 0

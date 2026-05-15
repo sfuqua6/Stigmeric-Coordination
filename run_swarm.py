@@ -178,7 +178,8 @@ def _reset_kb(kb_dir: Path) -> None:
 
 async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                        ignore_kb: bool = False,
-                       reset_kb: bool = False) -> dict:
+                       reset_kb: bool = False,
+                       corpus_mode: str = "real") -> dict:
     task_prompt = build_task_prompt(task_type, user_prompt)
     llm = make_llm()
     store = SignalStore()
@@ -201,9 +202,41 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                   f"{len(kb.prior_consensus(current_topic_hash))} prior survivors (topic-filtered), "
                   f"{len(kb.prior_rejections(current_topic_hash))} prior rejections (topic-filtered)")
 
-    corpus_text = trivial_corpus_from_thesis(user_prompt)
-    chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
-    partitions = partition_for_scouts(chunks, NUM_SCOUTS)
+    # Corpus retrieval (§1): real retriever by default, placeholder opt-in via --corpus=placeholder
+    if task_type == "coding":
+        # Coding scouts read from the task prompt directly; no corpus needed.
+        chunks = []
+        partitions = partition_for_scouts(chunks, NUM_SCOUTS)
+    elif corpus_mode == "placeholder":
+        print(
+            "[retrieval] WARNING: falling back to engineered placeholder corpus "
+            "— partition diversity numbers from this run are not evidence"
+        )
+        corpus_text = trivial_corpus_from_thesis(user_prompt)
+        chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
+        partitions = partition_for_scouts(chunks, NUM_SCOUTS)
+    else:
+        # Real retrieval: Wikipedia → Web → placeholder fallback
+        from core.retrieval import CachedRetriever, CompositeRetriever
+        retriever = CachedRetriever(CompositeRetriever())
+        retrieved_chunks = retriever.retrieve(user_prompt)
+        if retrieved_chunks:
+            # Reconstruct full text and re-chunk with standard CHUNK_WORDS
+            combined_text = "\n\n".join(c.text for c in retrieved_chunks)
+            # Preserve source tags by re-tagging chunks from the first source
+            chunks = chunk_corpus(combined_text, source_tag="retrieved_corpus")
+            # Overlay source tags from the original retrieval chunks
+            for i, orig in enumerate(retrieved_chunks):
+                # Replace source_tag on chunks that came from this retrieved piece
+                for ch in chunks:
+                    if ch.source_tag == "retrieved_corpus":
+                        ch.source_tag = orig.source_tag
+                        break
+        else:
+            # CompositeRetriever already printed the warning
+            corpus_text = trivial_corpus_from_thesis(user_prompt)
+            chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
+        partitions = partition_for_scouts(chunks, NUM_SCOUTS)
 
     # Estimate total LLM calls for the progress bar.
     # Per round: scouts + validators (phase A) + foragers + critics + haters (phase B).
@@ -517,6 +550,17 @@ def main():
     reset_kb  = "--reset-kb"  in args
     args = [a for a in args if a not in ("--ignore-kb", "--reset-kb")]
 
+    # --corpus={real,placeholder}
+    corpus_mode = "real"
+    corpus_flags = [a for a in args if a.startswith("--corpus=")]
+    if corpus_flags:
+        val = corpus_flags[-1].split("=", 1)[1]
+        if val not in ("real", "placeholder"):
+            print(f"[pipeline] unknown --corpus value {val!r}; use 'real' or 'placeholder'")
+            sys.exit(1)
+        corpus_mode = val
+    args = [a for a in args if not a.startswith("--corpus=")]
+
     if len(args) < 2:
         print(__doc__)
         sys.exit(1)
@@ -533,11 +577,14 @@ def main():
         print("[pipeline] --ignore-kb: knowledge base disabled for this run")
     if reset_kb:
         print("[pipeline] --reset-kb: quarantining existing knowledge base before run")
+    if corpus_mode == "placeholder":
+        print("[pipeline] --corpus=placeholder: using engineered corpus (diversity numbers invalid)")
 
     asyncio.run(run_pipeline(
         task_type, user_prompt, output_dir,
         ignore_kb=ignore_kb,
         reset_kb=reset_kb,
+        corpus_mode=corpus_mode,
     ))
 
 

@@ -121,3 +121,29 @@ assert CHUNK_WORDS > 0 and CHUNK_OVERLAP >= 0 and CHUNK_OVERLAP < CHUNK_WORDS
 assert LLM_CONCURRENCY >= 1
 assert SCOUT_MAX_DEPOSITS_PER_ROUND >= 1
 assert SCOUT_RESEED_CHARS >= 0
+
+# ---------------------------------------------------------------------------
+# Heterogeneous model routing (Pattern 1: sequential per-phase loading)
+# ---------------------------------------------------------------------------
+
+import json as _json  # local alias to avoid clobbering other json imports
+from pathlib import Path as _Path
+
+# Default: homogeneous — every role uses SWARM_MODEL.
+USE_HETEROGENEOUS = False
+
+# Models directory. Override with SWARM_MODELS_DIR env var.
+MODELS_DIR = _Path(os.environ.get("SWARM_MODELS_DIR", "models")).resolve()
+
+# Default heterogeneous assignment. Loaded from configs/heterogeneous.json
+# at startup when --heterogeneous is passed. Keep these path fragments —
+# the loader joins them with MODELS_DIR.
+DEFAULT_HETEROGENEOUS_ASSIGNMENT = {
+    "scout":        "Qwen2.5-7B-Instruct-Q5_K_M.gguf",
+    "forager":      "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+    "developer":    "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",   # alias if §5 rename landed
+    "critic":       "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "hater":        "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+    "validator":    "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+    "synthesizer":  "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+}

@@ -200,7 +200,8 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                        ignore_kb: bool = False,
                        reset_kb: bool = False,
                        corpus_mode: str = "real",
-                       show_partition_overlap: bool = False) -> dict:
+                       show_partition_overlap: bool = False,
+                       cloud_provider: str = "none") -> dict:
     task_prompt = build_task_prompt(task_type, user_prompt)
     if config.USE_HETEROGENEOUS:
         router = HeterogeneousRouter()
@@ -354,6 +355,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 agent_id=f"validator_R{round_num}_{i}_{name}",
                 llm=llm, strategy=strat, strategy_name=name,
                 task_prompt=task_prompt,
+                cloud_provider=cloud_provider,
             ))
         foragers = []
         for i in range(NUM_FORAGERS):
@@ -687,6 +689,17 @@ def main():
         run_mode = val
     args = [a for a in args if not a.startswith("--mode=")]
 
+    # --cloud-validator={none,anthropic,gemini}
+    cloud_provider = "none"
+    cv_flags = [a for a in args if a.startswith("--cloud-validator=")]
+    if cv_flags:
+        val = cv_flags[-1].split("=", 1)[1]
+        if val not in ("none", "anthropic", "gemini"):
+            print(f"[pipeline] unknown --cloud-validator value {val!r}; use 'none', 'anthropic', or 'gemini'")
+            sys.exit(1)
+        cloud_provider = val
+    args = [a for a in args if not a.startswith("--cloud-validator=")]
+
     if len(args) < 2:
         print(__doc__)
         sys.exit(1)
@@ -718,6 +731,7 @@ def main():
             reset_kb=reset_kb,
             corpus_mode=corpus_mode,
             show_partition_overlap=show_partition_overlap,
+            cloud_provider=cloud_provider,
         ))
 
 

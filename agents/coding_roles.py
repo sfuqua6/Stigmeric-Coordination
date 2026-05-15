@@ -420,7 +420,7 @@ class TestValidator(BaseAgent):
     DEFAULT_DEPOSIT_STRENGTH = 0.5
 
     def __init__(self, agent_id: str, llm, strategy: SamplingStrategy,
-                 strategy_name: str, task_prompt: str):
+                 strategy_name: str, task_prompt: str, **_):
         super().__init__(agent_id, llm)
         self.strategy = strategy
         self.strategy_name = strategy_name

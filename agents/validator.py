@@ -26,6 +26,7 @@ validator falls back to its assigned sampling strategy.
 from __future__ import annotations
 
 import random
+from typing import Optional
 
 from agents.base import BaseAgent
 from core.signal_store import SignalStore, Signal
@@ -46,11 +47,27 @@ class Validator(BaseAgent):
     DEFAULT_DEPOSIT_STRENGTH = 0.5
 
     def __init__(self, agent_id: str, llm, strategy: SamplingStrategy,
-                 strategy_name: str, task_prompt: str):
+                 strategy_name: str, task_prompt: str,
+                 cloud_provider: str = "none"):
         super().__init__(agent_id, llm)
         self.strategy = strategy
         self.strategy_name = strategy_name
         self.task_prompt = task_prompt
+        self._cloud_provider = cloud_provider
+
+    def _maybe_cloud_call(self, claim_content: str) -> Optional[str]:
+        if self._cloud_provider == 'anthropic':
+            # FUTURE-CLAUDE NOTE: To enable, set ANTHROPIC_API_KEY in env and
+            # `pip install anthropic`. Costs ~$0.005 per run at Haiku 4.5
+            # pricing. Disabled by default to preserve the fully-local
+            # property of the project. Complete the implementation here.
+            raise NotImplementedError('cloud validator wired but not enabled; see comment')
+        if self._cloud_provider == 'gemini':
+            # FUTURE-CLAUDE NOTE: Free tier at aistudio.google.com — 15 req/min,
+            # 1500/day. Set GOOGLE_API_KEY in env and pip install
+            # google-generativeai. Complete the implementation here.
+            raise NotImplementedError('cloud validator wired but not enabled; see comment')
+        return None
 
     def sample(self, store: SignalStore) -> list[Signal]:
         # Prefer high-stakes targets: INITIALs that already have ≥ 2 SUPPORT children.

@@ -58,6 +58,18 @@ To develop without a GPU, set `MOCK_LLM=1`:
 MOCK_LLM=1 python run_swarm.py debate "Test thesis"
 ```
 
+## Experimental design
+
+The four levers are independently controlled via CLI flags:
+
+  --mode={stigmergic, baseline}        trace-hiding on/off
+  --corpus={real, placeholder}         real retriever vs. engineered corpus
+  --heterogeneous                      enable role→model routing per `configs/heterogeneous.json`
+  --strategy-variant={diverse,single}  strategy library: full vs. single-strategy
+
+A factorial sweep across these gives the ablation table the dissertation needs.
+The driver for the sweep is `tools/sweep.py` (see §6 below).
+
 ## What was kept from the parent project
 
 - Strength dynamics (decay / amplify / prune) on the signal store.

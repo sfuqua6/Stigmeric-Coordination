@@ -101,6 +101,17 @@ The driver for the sweep is `tools/sweep.py` (see §6 below).
 - **Cloud-validator stub.** `--cloud-validator={anthropic,gemini}`
   flag wired through but not implemented. To enable, see comments
   in `agents/validator.py`.
+- **Phase-isolated execution (`--isolated`).** Splits the pipeline
+  away from in-process parallelism: each phase of each round runs
+  in its own subprocess, persists the `SignalStore` to
+  `store_state.json`, and exits. The next subprocess loads that
+  checkpoint and runs the next phase. Exactly one model is resident
+  in memory at any time — the canonical workaround for
+  llama-cpp-python's incomplete model unload on Windows / 16 GB-RAM
+  hardware. Orchestrator: `python tools/run_isolated.py debate
+  "..." [--heterogeneous]`. `run_meta.json` records
+  `execution_mode: "phase_isolated"` so isolated and in-process
+  runs are distinguishable in cross-run analysis.
 
 ## Folder layout
 

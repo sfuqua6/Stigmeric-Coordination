@@ -45,6 +45,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -102,6 +103,56 @@ ROLES_FOR_TASK = {
     "problem_solving": {"critic", "hater"},              # no validator
     "coding":          {"critic", "hater", "validator"}, # all roles, domain-specific classes
 }
+
+
+# ---------------------------------------------------------------------------
+# Phase-isolated execution (split-away-from-parallelism mode)
+# ---------------------------------------------------------------------------
+# In phase-isolated mode, ONE subprocess invocation runs ONE role's agents
+# for ONE round (or runs decay, or synth), persists the SignalStore to disk,
+# and exits. The next subprocess loads that checkpoint and runs the next
+# phase. This keeps exactly one model resident in memory at any time —
+# the canonical workaround for llama-cpp-python's incomplete model unload
+# on Windows / 16 GB-RAM hardware.
+#
+# Subprocess sequence for task=debate (all 5 roles active):
+#   R1: scouts -> validators -> foragers -> critics -> haters -> decay
+#   R2: same
+#   R3: same
+#   synth
+#
+# The orchestrator that emits these subprocess calls is tools/run_isolated.py.
+
+VALID_PHASES = (
+    "scouts", "validators", "foragers", "critics", "haters", "decay", "synth",
+)
+
+# Per-task ordered list of phases that should run each round.
+# 'decay' always closes a round; 'synth' is the final non-round phase.
+def _round_phases_for_task(task_type: str) -> list[str]:
+    active = ROLES_FOR_TASK.get(task_type, {"critic", "hater", "validator"})
+    seq: list[str] = ["scouts"]
+    if "validator" in active:
+        seq.append("validators")
+    seq.append("foragers")
+    if "critic" in active:
+        seq.append("critics")
+    if "hater" in active:
+        seq.append("haters")
+    seq.append("decay")
+    return seq
+
+
+def _phase_role(phase: str) -> str:
+    """Map a phase name to the role name used by the heterogeneous router."""
+    return {
+        "scouts": "scout",
+        "validators": "validator",
+        "foragers": "forager",
+        "critics": "critic",
+        "haters": "hater",
+        "synth": "synthesizer",
+    }.get(phase, phase)
 
 
 def build_task_prompt(task_type: str, user_prompt: str) -> str:
@@ -650,6 +701,381 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
 
 
 # ---------------------------------------------------------------------------
+# Phase-isolated entry point
+# ---------------------------------------------------------------------------
+
+def _partitions_to_jsonable(partitions) -> list[dict]:
+    out = []
+    for p in partitions:
+        out.append({
+            "scout_index": p.scout_index,
+            "chunks": [
+                {"chunk_id": c.chunk_id, "text": c.text, "source_tag": c.source_tag}
+                for c in p.chunks
+            ],
+        })
+    return out
+
+
+def _partitions_from_jsonable(data: list[dict]):
+    from core.intake import CorpusChunk, ScoutPartition
+    result = []
+    for pd in data:
+        chunks = [
+            CorpusChunk(chunk_id=cd["chunk_id"], text=cd["text"],
+                        source_tag=cd["source_tag"])
+            for cd in pd["chunks"]
+        ]
+        result.append(ScoutPartition(scout_index=pd["scout_index"], chunks=chunks))
+    return result
+
+
+def _build_corpus_partitions(task_type: str, user_prompt: str, corpus_mode: str):
+    """Same retrieval/partition logic as run_pipeline(), factored out."""
+    if task_type == "coding":
+        return [], partition_for_scouts([], NUM_SCOUTS)
+    if corpus_mode == "placeholder":
+        print(
+            "[retrieval] WARNING: falling back to engineered placeholder corpus "
+            "— partition diversity numbers from this run are not evidence"
+        )
+        corpus_text = trivial_corpus_from_thesis(user_prompt)
+        chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
+        return chunks, partition_for_scouts(chunks, NUM_SCOUTS)
+    # real retrieval
+    from core.retrieval import CachedRetriever, CompositeRetriever
+    retrieved_chunks = CachedRetriever(CompositeRetriever()).retrieve(user_prompt)
+    if retrieved_chunks:
+        combined_text = "\n\n".join(c.text for c in retrieved_chunks)
+        chunks = chunk_corpus(combined_text, source_tag="retrieved_corpus")
+        for i, orig in enumerate(retrieved_chunks):
+            for ch in chunks:
+                if ch.source_tag == "retrieved_corpus":
+                    ch.source_tag = orig.source_tag
+                    break
+    else:
+        corpus_text = trivial_corpus_from_thesis(user_prompt)
+        chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
+    return chunks, partition_for_scouts(chunks, NUM_SCOUTS)
+
+
+async def run_phase_isolated(
+    task_type: str, user_prompt: str, run_dir: Path, phase: str, round_num: int,
+    resume_dir: Optional[Path] = None,
+    corpus_mode: str = "real",
+    ignore_kb: bool = False,
+    cloud_provider: str = "none",
+) -> None:
+    """Execute ONE phase of ONE round and persist a checkpoint to run_dir.
+
+    The store_state.json + round_logs_partial.json + partitions.json files
+    in run_dir together carry all state between subprocess invocations.
+    """
+    if phase not in VALID_PHASES:
+        raise SystemExit(f"unknown phase {phase!r}; valid: {VALID_PHASES}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    task_prompt = build_task_prompt(task_type, user_prompt)
+
+    active_roles = ROLES_FOR_TASK.get(task_type, {"critic", "hater", "validator"})
+    n_critics = NUM_CRITICS if "critic" in active_roles else 0
+    n_haters = NUM_HATERS if "hater" in active_roles else 0
+    n_validators = NUM_VALIDATORS if "validator" in active_roles else 0
+
+    # ------ load prior checkpoint state (signals, partitions, round_logs) -----
+    store = SignalStore()
+    state_path = (resume_dir or run_dir) / "store_state.json"
+    if state_path.exists():
+        store.load_state(state_path)
+        print(f"[phase] resumed store from {state_path}: {store.stats()}")
+    elif phase != "scouts" or round_num > 1:
+        print(f"[phase] WARNING: no store_state.json at {state_path} but "
+              f"phase={phase} round={round_num} expects prior state")
+
+    partitions_path = (resume_dir or run_dir) / "partitions.json"
+    chunks: list = []
+    partitions: list = []
+    if partitions_path.exists():
+        pdata = json.loads(partitions_path.read_text(encoding="utf-8"))
+        partitions = _partitions_from_jsonable(pdata.get("partitions", []))
+        chunks = [c for p in partitions for c in p.chunks]
+        print(f"[phase] loaded partitions: {[len(p.chunks) for p in partitions]}")
+    else:
+        chunks, partitions = _build_corpus_partitions(task_type, user_prompt, corpus_mode)
+        (run_dir / "partitions.json").write_text(
+            json.dumps({"partitions": _partitions_to_jsonable(partitions)}, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[phase] built and saved partitions: {[len(p.chunks) for p in partitions]}")
+
+    round_logs_path = (resume_dir or run_dir) / "round_logs_partial.json"
+    if round_logs_path.exists():
+        round_logs = json.loads(round_logs_path.read_text(encoding="utf-8"))
+    else:
+        round_logs = []
+
+    manifest_path = (resume_dir or run_dir) / "phase_manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    else:
+        manifest = {"task_type": task_type, "user_prompt": user_prompt,
+                    "completed": []}
+
+    # ------ knowledge base ----------------------------------------------------
+    from core.knowledge_base import _topic_hash as _kb_topic_hash
+    current_topic_hash = _kb_topic_hash(user_prompt)
+    kb = KnowledgeBase()
+    if not ignore_kb:
+        kb.load()
+
+    # ------ LLM (router for heterogeneous; single model otherwise) -----------
+    if config.USE_HETEROGENEOUS:
+        router = HeterogeneousRouter()
+        print(f"[phase] heterogeneous routing enabled (one model will be loaded)")
+        llm = None
+    else:
+        router = None
+        llm = make_llm()
+        print(f"[phase] llm backend: {llm.name}")
+
+    role_cls = get_role_classes(task_type)
+    ScoutClass = role_cls["scout"]
+    DeveloperClass = role_cls["developer"]
+    CriticClass = role_cls["critic"]
+    HaterClass = role_cls["hater"]
+    ValidatorClass = role_cls["validator"]
+
+    # Ensure the partial round_logs entry for this round exists.
+    def _round_entry(rn: int) -> dict:
+        while len(round_logs) < rn:
+            round_logs.append({
+                "round": len(round_logs) + 1, "agents": [],
+                "partition_deposits_this_round": {},
+            })
+        return round_logs[rn - 1]
+
+    phase_start = time.time()
+
+    # ------ dispatch ----------------------------------------------------------
+
+    async def _run_agents(agents):
+        """Run agents (router-grouped if heterogeneous, else direct gather)."""
+        if router is None:
+            return await asyncio.gather(
+                *(a.run(store, ITERATIONS_PER_ROUND) for a in agents)
+            )
+        groups = router.group_agents(agents)
+        stats_by_id: dict = {}
+        for model_path, agent_subset in groups.items():
+            async with router.acquire(model_path) as model_llm:
+                for a in agent_subset:
+                    a.llm = model_llm
+                stats_subset = await asyncio.gather(
+                    *(a.run(store, ITERATIONS_PER_ROUND) for a in agent_subset)
+                )
+                for a, s in zip(agent_subset, stats_subset):
+                    stats_by_id[a.agent_id] = s
+        return [stats_by_id[a.agent_id] for a in agents]
+
+    if phase == "scouts":
+        if task_type == "coding":
+            scouts = [ScoutClass(agent_id=f"scout_R{round_num}_{i}", llm=llm,
+                                 task_prompt=task_prompt)
+                      for i in range(NUM_SCOUTS)]
+        else:
+            scouts = [ScoutClass(
+                        agent_id=f"scout_R{round_num}_{i}", llm=llm,
+                        config=ScoutConfig(task_prompt=task_prompt, partition=partitions[i]),
+                      ) for i in range(NUM_SCOUTS)]
+        stats = await _run_agents(scouts)
+        entry = _round_entry(round_num)
+        for a, s in zip(scouts, stats):
+            entry["agents"].append({
+                "agent_id": a.agent_id, "role": a.ROLE,
+                "deposits": s.deposits, "rejected_dup": s.rejected_dup,
+                "iterations": s.iterations, "novelty_per_iter": s.novelty_per_iter,
+            })
+            if s.deposits > 0:
+                parts = a.agent_id.split("_")
+                tag = f"partition_{parts[2]}" if len(parts) >= 3 else "partition_unknown"
+                pd = entry.setdefault("partition_deposits_this_round", {})
+                pd[tag] = pd.get(tag, 0) + s.deposits
+
+    elif phase == "validators":
+        validators = []
+        for i in range(n_validators):
+            name, strat = strategy_for_validator(i)
+            validators.append(ValidatorClass(
+                agent_id=f"validator_R{round_num}_{i}_{name}",
+                llm=llm, strategy=strat, strategy_name=name,
+                task_prompt=task_prompt, cloud_provider=cloud_provider,
+            ))
+        stats = await _run_agents(validators)
+        entry = _round_entry(round_num)
+        for a, s in zip(validators, stats):
+            entry["agents"].append({
+                "agent_id": a.agent_id, "role": a.ROLE,
+                "deposits": s.deposits, "rejected_dup": s.rejected_dup,
+                "iterations": s.iterations, "novelty_per_iter": s.novelty_per_iter,
+            })
+
+    elif phase == "foragers":
+        foragers = []
+        for i in range(NUM_FORAGERS):
+            name, strat = strategy_for_forager(i)
+            foragers.append(DeveloperClass(
+                agent_id=f"forager_R{round_num}_{i}_{name}",
+                llm=llm, strategy=strat, strategy_name=name, task_prompt=task_prompt,
+            ))
+        stats = await _run_agents(foragers)
+        entry = _round_entry(round_num)
+        for a, s in zip(foragers, stats):
+            entry["agents"].append({
+                "agent_id": a.agent_id, "role": a.ROLE,
+                "deposits": s.deposits, "rejected_dup": s.rejected_dup,
+                "iterations": s.iterations, "novelty_per_iter": s.novelty_per_iter,
+            })
+
+    elif phase == "critics":
+        critics = []
+        for i in range(n_critics):
+            name, strat = strategy_for_critic(i)
+            critics.append(CriticClass(
+                agent_id=f"critic_R{round_num}_{i}_{name}",
+                llm=llm, strategy=strat, strategy_name=name, task_prompt=task_prompt,
+            ))
+        stats = await _run_agents(critics)
+        entry = _round_entry(round_num)
+        for a, s in zip(critics, stats):
+            entry["agents"].append({
+                "agent_id": a.agent_id, "role": a.ROLE,
+                "deposits": s.deposits, "rejected_dup": s.rejected_dup,
+                "iterations": s.iterations, "novelty_per_iter": s.novelty_per_iter,
+            })
+
+    elif phase == "haters":
+        haters = [HaterClass(agent_id=f"hater_R{round_num}_{i}", llm=llm,
+                             task_prompt=task_prompt)
+                  for i in range(n_haters)]
+        stats = await _run_agents(haters)
+        entry = _round_entry(round_num)
+        for a, s in zip(haters, stats):
+            entry["agents"].append({
+                "agent_id": a.agent_id, "role": a.ROLE,
+                "deposits": s.deposits, "rejected_dup": s.rejected_dup,
+                "iterations": s.iterations, "novelty_per_iter": s.novelty_per_iter,
+            })
+
+    elif phase == "decay":
+        store.decay_all()
+        pruned = store.prune_weak()
+        entry = _round_entry(round_num)
+        entry["pruned"] = pruned
+        # Finalize this round's diversity metrics from the deposits we tracked.
+        # In phase-isolated mode we don't have AgentContextRecord objects here;
+        # use the deposits as approximated by the per-agent stats logged above.
+        # For richer metrics, the synth phase recomputes from signals.json.
+        entry["stats"] = store.stats()
+        entry["elapsed_s_round"] = round(time.time() - phase_start, 2)
+
+    elif phase == "synth":
+        SynthesizerClass = get_role_classes(task_type).get("synthesizer", Synthesizer)
+        # Persist signals.json first so a synth crash doesn't lose state.
+        signal_dump = [
+            {"id": s.id, "type": s.type, "strength": round(s.strength, 4),
+             "depositor": s.depositor, "parent_id": s.parent_id,
+             "visits": s.visits, "metadata": s.metadata, "content": s.content}
+            for s in store.all()
+        ]
+        (run_dir / "signals.json").write_text(
+            json.dumps(signal_dump, indent=2), encoding="utf-8"
+        )
+        (run_dir / "round_log.json").write_text(
+            json.dumps(round_logs, indent=2), encoding="utf-8"
+        )
+        try:
+            if router is not None:
+                async with router.acquire(router.model_for_role("synthesizer")) as synth_llm:
+                    synth = SynthesizerClass(synth_llm, task_prompt)
+                    final_answer, citations, lineage_dot = await synth.synthesize(
+                        store, has_validators=(n_validators > 0),
+                        prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
+                        prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
+                        output_dir=run_dir,
+                    )
+            else:
+                synth = SynthesizerClass(llm, task_prompt)
+                final_answer, citations, lineage_dot = await synth.synthesize(
+                    store, has_validators=(n_validators > 0),
+                    prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
+                    prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
+                    output_dir=run_dir,
+                )
+        except Exception as exc:
+            print(f"[phase] synthesis failed ({type(exc).__name__}: {exc})")
+            final_answer = f"(synthesis failed: {type(exc).__name__}: {exc})"
+            citations = {}
+            lineage_dot = ""
+        if router is not None:
+            await router.teardown()
+
+        (run_dir / "answer.txt").write_text(final_answer, encoding="utf-8")
+        if citations:
+            (run_dir / "citations.json").write_text(
+                json.dumps(citations, indent=2), encoding="utf-8"
+            )
+        if lineage_dot:
+            (run_dir / "lineage.dot").write_text(lineage_dot, encoding="utf-8")
+        backend_label = "heterogeneous" if router is not None else (llm.name if llm else "unknown")
+        model_assignment = router.manifest() if router is not None else {"all": llm.name if llm else "unknown"}
+        (run_dir / "run_meta.json").write_text(json.dumps({
+            "task_type": task_type, "user_prompt": user_prompt,
+            "llm_backend": backend_label,
+            "is_mock": USE_MOCK_LLM,
+            "timestamp": datetime.now().isoformat(),
+            "active_roles": sorted(active_roles),
+            "population": {"scouts": NUM_SCOUTS, "foragers": NUM_FORAGERS,
+                            "critics": n_critics, "haters": n_haters,
+                            "validators": n_validators},
+            "model_assignment": model_assignment,
+            "execution_mode": "phase_isolated",
+        }, indent=2), encoding="utf-8")
+        # Best-effort KB save
+        if not ignore_kb:
+            try:
+                from core.projection import build_projection
+                final_projection = build_projection(store, has_validators=(n_validators > 0))
+                kb.save(final_projection, store, {
+                    "task_type": task_type, "user_prompt": user_prompt,
+                    "timestamp": datetime.now().isoformat(),
+                }, output_dir=run_dir)
+            except Exception as exc:
+                print(f"[phase] kb save failed ({type(exc).__name__}: {exc})")
+        print("=" * 60)
+        print("FINAL ANSWER")
+        print("=" * 60)
+        print(final_answer)
+        print("=" * 60)
+
+    # ------ persist checkpoint ----------------------------------------------
+    store.save_state(run_dir / "store_state.json")
+    (run_dir / "round_logs_partial.json").write_text(
+        json.dumps(round_logs, indent=2), encoding="utf-8"
+    )
+    manifest.setdefault("completed", []).append({
+        "phase": phase, "round": (round_num if phase != "synth" else None),
+        "completed_at": datetime.now().isoformat(),
+        "elapsed_s": round(time.time() - phase_start, 2),
+        "store_size_after": len(store.all()),
+    })
+    (run_dir / "phase_manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+    print(f"[phase] {phase} R{round_num if phase != 'synth' else '-'} "
+          f"completed in {time.time() - phase_start:.1f}s; "
+          f"store={len(store.all())} signals")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -700,6 +1126,54 @@ def main():
         cloud_provider = val
     args = [a for a in args if not a.startswith("--cloud-validator=")]
 
+    # --isolated: marker flag declaring this invocation is part of a
+    # phase-isolated execution sequence (split away from in-process
+    # parallelism). When set alongside --phase, the pipeline runs ONE
+    # phase and exits; the orchestrator (tools/run_isolated.py) chains
+    # invocations. When set without --phase, behaves like --phase=all
+    # but records execution_mode=phase_isolated in run_meta.json.
+    isolated = "--isolated" in args
+    args = [a for a in args if a != "--isolated"]
+
+    # --phase={scouts,validators,foragers,critics,haters,decay,synth,all}
+    phase = "all"
+    phase_flags = [a for a in args if a.startswith("--phase=")]
+    if phase_flags:
+        val = phase_flags[-1].split("=", 1)[1]
+        if val not in (*VALID_PHASES, "all"):
+            print(f"[pipeline] unknown --phase value {val!r}; use one of "
+                  f"{(*VALID_PHASES, 'all')}")
+            sys.exit(1)
+        phase = val
+        isolated = True  # any explicit --phase implies isolation
+    args = [a for a in args if not a.startswith("--phase=")]
+
+    # --round=N
+    round_num = 1
+    round_flags = [a for a in args if a.startswith("--round=")]
+    if round_flags:
+        try:
+            round_num = int(round_flags[-1].split("=", 1)[1])
+        except ValueError:
+            print(f"[pipeline] --round expects an integer; got {round_flags[-1]!r}")
+            sys.exit(1)
+    args = [a for a in args if not a.startswith("--round=")]
+
+    # --run-id=NAME: override default output dir name (used by orchestrator).
+    run_id: Optional[str] = None
+    run_id_flags = [a for a in args if a.startswith("--run-id=")]
+    if run_id_flags:
+        run_id = run_id_flags[-1].split("=", 1)[1]
+    args = [a for a in args if not a.startswith("--run-id=")]
+
+    # --resume=PATH: load store_state.json + partitions.json from this dir
+    # before running the requested phase.
+    resume_path: Optional[Path] = None
+    resume_flags = [a for a in args if a.startswith("--resume=")]
+    if resume_flags:
+        resume_path = Path(resume_flags[-1].split("=", 1)[1])
+    args = [a for a in args if not a.startswith("--resume=")]
+
     if len(args) < 2:
         print(__doc__)
         sys.exit(1)
@@ -711,7 +1185,10 @@ def main():
     # for empirical artifacts.
     outputs_root = "outputs_mock" if USE_MOCK_LLM else "outputs"
     mode_suffix = "_baseline" if run_mode == "baseline" else ""
-    output_dir = Path(__file__).parent / outputs_root / f"{task_type}_{timestamp}{mode_suffix}"
+    if run_id is not None:
+        output_dir = Path(__file__).parent / outputs_root / run_id
+    else:
+        output_dir = Path(__file__).parent / outputs_root / f"{task_type}_{timestamp}{mode_suffix}"
 
     if ignore_kb:
         print("[pipeline] --ignore-kb: knowledge base disabled for this run")
@@ -721,6 +1198,23 @@ def main():
         print("[pipeline] --corpus=placeholder: using engineered corpus (diversity numbers invalid)")
     if run_mode == "baseline":
         print("[pipeline] --mode=baseline: running non-stigmergic independent-agent baseline")
+    if isolated:
+        print(f"[pipeline] --isolated: phase-isolated execution mode "
+              f"(phase={phase}, round={round_num}, run_dir={output_dir.name})")
+
+    # Phase-isolated execution: one phase, then exit.
+    if isolated and phase != "all":
+        if run_mode == "baseline":
+            print("[pipeline] --isolated + --phase is incompatible with --mode=baseline")
+            sys.exit(1)
+        asyncio.run(run_phase_isolated(
+            task_type, user_prompt, output_dir, phase, round_num,
+            resume_dir=resume_path,
+            corpus_mode=corpus_mode,
+            ignore_kb=ignore_kb,
+            cloud_provider=cloud_provider,
+        ))
+        return
 
     if run_mode == "baseline":
         _run_baseline(task_type, user_prompt, output_dir, corpus_mode=corpus_mode)

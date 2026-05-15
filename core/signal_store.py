@@ -312,6 +312,66 @@ class SignalStore:
                 "max_strength": max(strengths) if strengths else 0.0,
             }
 
+    # ---- checkpoint serialization (phase-isolated execution) -------------
+    # Round-trips the store to/from a JSON file so subprocess-per-phase runs
+    # can hand off state. Embeddings are NOT persisted; they are rebuilt
+    # lazily on next deposit/similarity check.
+
+    def save_state(self, path) -> None:
+        import json
+        from pathlib import Path
+        with self._lock:
+            payload = {
+                "_next_id": self._next_id,
+                "signals": [
+                    {
+                        "id": s.id,
+                        "type": s.type,
+                        "content": s.content,
+                        "strength": s.strength,
+                        "_logit": s._logit,
+                        "timestamp": s.timestamp,
+                        "depositor": s.depositor,
+                        "parent_id": s.parent_id,
+                        "visits": s.visits,
+                        "metadata": s.metadata,
+                    }
+                    for s in self._signals.values()
+                ],
+            }
+        Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def load_state(self, path) -> None:
+        """Replace this store's contents with the state at `path`. In-place."""
+        import json
+        from pathlib import Path
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        with self._lock:
+            self._signals.clear()
+            self._by_type.clear()
+            self._by_parent.clear()
+            self._embeddings.clear()
+            self._next_id = int(data.get("_next_id", 0))
+            for sd in data.get("signals", []):
+                sig = Signal(
+                    id=sd["id"],
+                    type=sd["type"],
+                    content=sd["content"],
+                    strength=float(sd["strength"]),
+                    timestamp=float(sd.get("timestamp", time.time())),
+                    depositor=sd.get("depositor", "unknown"),
+                    parent_id=sd.get("parent_id"),
+                    visits=int(sd.get("visits", 0)),
+                    metadata=dict(sd.get("metadata", {})),
+                )
+                # Restore canonical _logit if present (preserves USE_LOGIT_DYNAMICS state).
+                if "_logit" in sd:
+                    sig._logit = float(sd["_logit"])
+                self._signals[sig.id] = sig
+                self._by_type.setdefault(sig.type, set()).add(sig.id)
+                if sig.parent_id:
+                    self._by_parent.setdefault(sig.parent_id, set()).add(sig.id)
+
     # ---- sampling --------------------------------------------------------
 
     def sample_weighted(self, signal_type: str, n: int = 1) -> list[Signal]:

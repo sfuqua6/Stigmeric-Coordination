@@ -5,16 +5,20 @@ That would be too local — and it would let the hater anchor on whatever
 single signal it happened to draw, which is a stigmergic violation
 disguised as adversarial pressure.
 
-Instead, the hater receives a *consensus summary* from the signal store:
-how many INITIAL signals exist, what their average strength is, and a
-small set of representatives. This is a distributional view of the
-pheromone field — the gradient, not the individual deposits' minds.
-The hater is then asked to find a structural weakness that applies to
-the cluster as a whole.
+Real clustering (§5 directive)
+--------------------------------
+The old consensus_summary(k=3) returned the top-K signals by strength, not a
+genuine semantic cluster. This meant the hater challenged whichever three
+signals happened to be strongest, which was not necessarily a coherent cluster.
 
-This is the cleanest expression of stigmergic-but-adversarial pressure:
-the hater conditions on what the colony has been doing in aggregate,
-not on what any one ant was thinking.
+The hater now uses SignalStore.cluster_signals_dbscan() to find the largest
+genuine cluster in embedding space (cosine-DBSCAN with eps=0.35). It receives
+representatives of this cluster as its context. The prompt explicitly tells
+the model that this is a real cluster in embedding space, not just the top-K
+by strength.
+
+If no embeddings are available (embedder disabled), falls back to the old
+top-K behaviour with a warning.
 """
 
 from __future__ import annotations
@@ -40,18 +44,28 @@ class Hater(BaseAgent):
         super().__init__(agent_id, llm)
         self.task_prompt = task_prompt
         self.target_type = target_type
-        self._last_summary_ids: list[str] = []
+        self._last_rep_ids: list[str] = []
+        self._used_dbscan = False
 
     def sample(self, store: SignalStore) -> list[Signal]:
-        # consume a consensus snapshot, not individual sampled signals
-        summary = store.consensus_summary(self.target_type, k=3)
-        rep_signals = [store.get(r["id"]) for r in summary["representatives"]]
-        rep_signals = [s for s in rep_signals if s is not None]
-        self._last_summary_ids = [s.id for s in rep_signals]
-        # surface the representatives so they're recorded as consumed,
-        # but don't render them as parent context — the prompt uses the
-        # summary, not the individual signals' depositor metadata
-        return rep_signals
+        # Try real DBSCAN clustering first
+        clusters = store.cluster_signals_dbscan(self.target_type, eps=0.35)
+
+        if clusters and len(clusters[0]) > 0:
+            self._used_dbscan = True
+            # Take the largest cluster; pick up to 3 representatives by strength
+            largest = clusters[0]
+            largest_sorted = sorted(largest, key=lambda s: s.strength, reverse=True)
+            reps = largest_sorted[:3]
+        else:
+            # Fallback: no embeddings available → top-K by strength
+            self._used_dbscan = False
+            summary = store.consensus_summary(self.target_type, k=3)
+            rep_signals = [store.get(r["id"]) for r in summary["representatives"]]
+            reps = [s for s in rep_signals if s is not None]
+
+        self._last_rep_ids = [s.id for s in reps]
+        return reps
 
     def build_prompt(self, samples: list[Signal], *,
                      store_count: int = 0, own_ids: tuple = ()) -> str:
@@ -65,6 +79,13 @@ class Hater(BaseAgent):
             f"There are currently {store_count} objections in the store. "
             f"Produce a structurally distinct adversarial challenge.\n"
         )
+        if self._used_dbscan:
+            cluster_desc = (
+                f"a real semantic cluster in embedding space (not just top-K by strength)"
+            )
+        else:
+            cluster_desc = "a strength-ranked sample (no embeddings available)"
+
         rep_lines = "\n".join(
             f"  - [{s.id}] strength={s.strength:.2f}: {s.content}"
             for s in samples
@@ -73,8 +94,8 @@ class Hater(BaseAgent):
             f"TASK: {self.task_prompt}\n\n"
             f"{count_hint}"
             f"You see a consensus cluster forming in the shared signal "
-            f"store. The cluster is summarized by {len(samples)} "
-            f"representative signals:\n\n"
+            f"store. The cluster is {cluster_desc}, represented by "
+            f"{len(samples)} signal(s):\n\n"
             f"{rep_lines}\n\n"
             f"Find a structural weakness that applies to the CLUSTER AS "
             f"A WHOLE — not to any individual signal. What shared "

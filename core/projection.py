@@ -30,7 +30,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .signal_store import SignalStore
-from .signal_types import INITIAL, SUPPORT, CRITIQUE, OBJECTION, VERIFICATION
+from .signal_types import (
+    INITIAL, SUPPORT, CRITIQUE, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE,
+    OBJECTION, VERIFICATION,
+)
 from .config import BOOST_THRESHOLD
 
 _CLUSTER_SIM_THRESHOLD = 0.55   # looser than dedup (0.85) — "same claim, different words"
@@ -157,9 +160,12 @@ def _compute_initial_metrics(sig, store: SignalStore) -> dict:
         child = store.get(child_id)
         if child is None:
             continue
-        if child.type == SUPPORT:
+        if child.type == SUPPORT or child.type == CRITIQUE_POSITIVE:
+            # CRITIQUE_POSITIVE goes to support_set: a positive evaluation
+            # adds corroborative weight, not adversarial pressure.
             support_ids.append(child_id)
-        elif child.type in (CRITIQUE, OBJECTION):
+        elif child.type in (CRITIQUE_NEGATIVE, CRITIQUE, OBJECTION):
+            # CRITIQUE is the legacy alias for CRITIQUE_NEGATIVE.
             dissent_ids.append(child_id)
         elif child.type == VERIFICATION:
             ver_ids.append(child_id)

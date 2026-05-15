@@ -59,7 +59,8 @@ from core.llm import make_llm
 from core.knowledge_base import KnowledgeBase
 
 from agents.scout import Scout, ScoutConfig
-from agents.forager import Forager
+from agents.developer import Developer
+from agents.forager import Forager  # backward-compat alias for Developer
 from agents.critic import Critic
 from agents.hater import Hater
 from agents.validator import Validator
@@ -243,7 +244,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         foragers = []
         for i in range(NUM_FORAGERS):
             name, strat = strategy_for_forager(i)
-            foragers.append(Forager(
+            foragers.append(Developer(
                 agent_id=f"forager_R{round_num}_{i}_{name}",
                 llm=llm, strategy=strat, strategy_name=name,
                 task_prompt=task_prompt,

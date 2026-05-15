@@ -448,6 +448,86 @@ class SignalStore:
                 ],
             }
 
+    # ---- DBSCAN clustering (for haters) ------------------------------------
+
+    def cluster_signals_dbscan(
+        self, signal_type: str, eps: float = 0.35
+    ) -> list[list["Signal"]]:
+        """Cosine-DBSCAN clustering over cached embeddings for one signal type.
+
+        Uses a simplified DBSCAN: two signals are neighbours if their cosine
+        similarity >= (1 - eps). Core-points are signals with >= 1 neighbour
+        (minPts=2 including self). Noise points form singleton clusters.
+
+        Returns a list of clusters (each a list of Signal objects), sorted
+        by cluster size descending. Used by Hater to identify the dominant
+        consensus cluster to challenge.
+
+        If no embeddings are available, falls back to one cluster per signal
+        (degenerate case; hater then sees each signal as its own cluster).
+        """
+        with self._lock:
+            sigs = self.by_type(signal_type)
+            if not sigs:
+                return []
+
+            # Gather embeddings
+            embs = [(s, self._embeddings.get(s.id)) for s in sigs]
+            has_embs = any(e is not None for _, e in embs)
+
+            if not has_embs:
+                return [[s] for s in sigs]
+
+            n = len(sigs)
+            visited = [False] * n
+            cluster_ids = [-1] * n
+
+            def neighbours(i: int) -> list[int]:
+                ei = embs[i][1]
+                if ei is None:
+                    return []
+                result = []
+                for j, (_, ej) in enumerate(embs):
+                    if i == j or ej is None:
+                        continue
+                    sim = float(sum(a * b for a, b in zip(ei, ej)))
+                    if sim >= (1.0 - eps):
+                        result.append(j)
+                return result
+
+            cid = 0
+            for i in range(n):
+                if visited[i]:
+                    continue
+                visited[i] = True
+                nbrs = neighbours(i)
+                if not nbrs:
+                    cluster_ids[i] = -1  # noise
+                else:
+                    cluster_ids[i] = cid
+                    queue = list(nbrs)
+                    while queue:
+                        j = queue.pop()
+                        if not visited[j]:
+                            visited[j] = True
+                            j_nbrs = neighbours(j)
+                            if j_nbrs:
+                                queue.extend(j_nbrs)
+                        if cluster_ids[j] == -1:
+                            cluster_ids[j] = cid
+                    cid += 1
+
+            # Group by cluster
+            clusters: dict[int, list] = {}
+            for i, (s, _) in enumerate(embs):
+                ckey = cluster_ids[i]
+                if ckey == -1:
+                    ckey = cid  # each noise point is its own cluster
+                    cid += 1
+                clusters.setdefault(ckey, []).append(s)
+
+            return sorted(clusters.values(), key=len, reverse=True)
+
     # ---- amplify / decay / prune ----------------------------------------
 
     def amplify(self, signal_id: str, factor: float = AMPLIFY_FACTOR) -> bool:
@@ -581,27 +661,37 @@ class SignalStore:
     # ---- internals -------------------------------------------------------
 
     def _avg_verification_strength(self, signal_id: str) -> float:
-        """Average strength of VERIFICATION signals on the lineage of `signal_id`.
+        """Signed-average strength of VERIFICATION signals on the lineage.
 
         Walks both the signal itself AND every ancestor, collecting any
         VERIFICATION signal that is (a) the node itself, or (b) a direct
         child of the node. Deduplicates by ID.
+
+        §5 validator fix: strength below 0.3 counts as anti-evidence.
+        The signed contribution is (strength - 0.3) for each signal,
+        normalised by count. This means a VERIFICATION at strength 0.0
+        contributes -0.3 per signal (strong contradiction), while one at
+        strength 1.0 contributes +0.7 (strong support).
+
+        Return is in (-0.3, 0.7]. Callers (provenance boost in deposit())
+        use this value directly; BOOST_THRESHOLD (0.7) is calibrated
+        against this range so only genuine positive verifications trigger.
         """
         seen_ver: dict[str, "Signal"] = {}
-        # check the signal and all its ancestors
         chain = [signal_id] + self.ancestor_ids(signal_id)
         for sid in chain:
             node = self._signals.get(sid)
             if node and node.type == VERIFICATION and node.id not in seen_ver:
                 seen_ver[node.id] = node
-            # also check direct children for VERIFICATIONs deposited against this node
             for child_id in self._by_parent.get(sid, ()):
                 child = self._signals.get(child_id)
                 if child and child.type == VERIFICATION and child.id not in seen_ver:
                     seen_ver[child.id] = child
         if not seen_ver:
             return 0.0
-        return sum(v.strength for v in seen_ver.values()) / len(seen_ver)
+        # Signed average: strength < 0.3 is anti-evidence
+        signed_sum = sum((v.strength - 0.3) for v in seen_ver.values())
+        return signed_sum / len(seen_ver)
 
     def _delete_locked(self, signal_id: str) -> None:
         s = self._signals.pop(signal_id, None)

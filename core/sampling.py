@@ -105,13 +105,27 @@ def needs_verification(store: SignalStore, signal_type: str, n: int) -> list[Sig
 # different orderings so that, even where they share strategies, they don't
 # overlap on the same k.
 
+# §5 directive: strategy library shrinks to 3 for Developer role.
+# recent_dissent_targeted is imported lazily to avoid circular import
+# (agents.developer → core.sampling would be circular).
+def _recent_dissent_targeted_proxy(
+    store: "SignalStore", signal_type: str, n: int
+) -> "list[Signal]":
+    from agents.developer import recent_dissent_targeted
+    return recent_dissent_targeted(store, signal_type, n)
+
+
 FORAGER_STRATEGIES: list[tuple[str, SamplingStrategy]] = [
-    ("stratified_extremes",     stratified_extremes),
-    ("medium_only",             medium_only),
-    ("recent_only",             recent_only),
-    ("under_supported_clusters", under_supported_clusters),  # B3: replaced under_visited_only
-    ("weighted_default",         weighted_default),           # if NUM_FORAGERS=5+
+    ("under_supported_clusters",  under_supported_clusters),
+    ("stratified_extremes",       stratified_extremes),
+    ("recent_dissent_targeted",   _recent_dissent_targeted_proxy),
+    # Legacy extras — still available if NUM_FORAGERS > 3
+    ("medium_only",               medium_only),
+    ("weighted_default",          weighted_default),
 ]
+
+# Alias: DEVELOPER_STRATEGIES is the canonical name for this role's list.
+DEVELOPER_STRATEGIES = FORAGER_STRATEGIES
 
 CRITIC_STRATEGIES: list[tuple[str, SamplingStrategy]] = [
     ("weighted_default",    weighted_default),     # critic 0: strong+exploration
@@ -127,6 +141,9 @@ VALIDATOR_STRATEGIES: list[tuple[str, SamplingStrategy]] = [
 
 def strategy_for_forager(agent_index: int) -> tuple[str, SamplingStrategy]:
     return FORAGER_STRATEGIES[agent_index % len(FORAGER_STRATEGIES)]
+
+# Canonical name for the renamed role (§5 directive).
+strategy_for_developer = strategy_for_forager
 
 
 def strategy_for_critic(agent_index: int) -> tuple[str, SamplingStrategy]:

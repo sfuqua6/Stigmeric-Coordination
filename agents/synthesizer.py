@@ -53,7 +53,10 @@ from pathlib import Path
 from typing import Optional
 
 from core.signal_store import SignalStore
-from core.signal_types import INITIAL, SUPPORT, CRITIQUE, OBJECTION, VERIFICATION
+from core.signal_types import (
+    INITIAL, SUPPORT, CRITIQUE, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE,
+    OBJECTION, VERIFICATION,
+)
 from core.config import MAX_TOKENS_SYNTHESIZER
 from core.projection import (
     SynthesisProjection,
@@ -625,11 +628,13 @@ def _build_lineage_dot(
     active_clusters = projection.surviving + projection.contested
 
     node_attrs = {
-        INITIAL:      'shape=box style=filled fillcolor="#d0e8ff"',
-        SUPPORT:      'shape=ellipse style=filled fillcolor="#d0f0d0"',
-        CRITIQUE:     'shape=diamond style=filled fillcolor="#ffd0d0"',
-        OBJECTION:    'shape=diamond style=filled fillcolor="#ffb0b0"',
-        VERIFICATION: 'shape=hexagon style=filled fillcolor="#ffffd0"',
+        INITIAL:           'shape=box style=filled fillcolor="#d0e8ff"',
+        SUPPORT:           'shape=ellipse style=filled fillcolor="#d0f0d0"',
+        CRITIQUE_POSITIVE: 'shape=diamond style=filled fillcolor="#d0ffd0"',
+        CRITIQUE_NEGATIVE: 'shape=diamond style=filled fillcolor="#ffd0d0"',
+        CRITIQUE:          'shape=diamond style=filled fillcolor="#ffd0d0"',  # legacy
+        OBJECTION:         'shape=diamond style=filled fillcolor="#ffb0b0"',
+        VERIFICATION:      'shape=hexagon style=filled fillcolor="#ffffd0"',
     }
 
     seen_nodes: set[str] = set()

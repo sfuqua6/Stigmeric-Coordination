@@ -434,7 +434,19 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 tag = f"partition_{parts[2]}" if len(parts) >= 3 else "partition_unknown"
                 partition_deposits[tag] = partition_deposits.get(tag, 0) + stats.deposits
 
-        from core.output_diversity import centroid_cosine_distance, self_bleu as _self_bleu
+        from core.output_diversity import (
+            centroid_cosine_distance, self_bleu as _self_bleu,
+            output_diversity_by_model,
+        )
+        # Cross-model decomposition: how much of the output spread is between
+        # models (heterogeneity) vs. within-model. None for homogeneous runs.
+        model_assignment_for_log = (
+            router.manifest() if router is not None
+            else {"all": (llm.name if llm is not None else "unknown")}
+        )
+        cross_model_delta = output_diversity_by_model(
+            records, getattr(store, "_embedder", None), model_assignment_for_log,
+        )
         round_logs.append({
             "round": round_num,
             "partition_overlap": {
@@ -445,6 +457,9 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 "centroid_cosine_dist": centroid_cosine_distance(all_deposit_texts),
                 "self_bleu": _self_bleu(all_deposit_texts),
                 "n_deposits": len(all_deposit_texts),
+            },
+            "diversity": {
+                "cross_model_delta": cross_model_delta,
             },
             "stats": store.stats(),
             "pruned": pruned,

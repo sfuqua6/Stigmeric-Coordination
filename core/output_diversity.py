@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from itertools import combinations
 from typing import Optional
 
 
@@ -168,6 +169,166 @@ def self_bleu(texts: list[str]) -> float:
 
 # ---------------------------------------------------------------------------
 # Combined report
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Cross-model decomposition (§2.5 — heterogeneous routing ablation)
+# ---------------------------------------------------------------------------
+
+def _normalize_vec(v):
+    """Return a unit-normalized list of floats; [] if v is empty/None."""
+    if not v:
+        return []
+    s = math.sqrt(sum(x * x for x in v))
+    if s < 1e-9:
+        return []
+    return [x / s for x in v]
+
+
+def _agent_centroid(texts: list[str], embedder) -> Optional[list[float]]:
+    """Average unit-normalized embeddings of texts into one centroid vector.
+
+    Returns None if no texts produced a usable embedding. Falls back to
+    BoW when the embedder is unavailable.
+    """
+    texts = [t for t in (t.strip() for t in texts) if t]
+    if not texts:
+        return None
+
+    if embedder is not None:
+        vecs = []
+        for t in texts:
+            try:
+                raw = embedder.encode(t)
+            except Exception:
+                continue
+            vec = list(raw) if not isinstance(raw, list) else raw
+            unit = _normalize_vec(vec)
+            if unit:
+                vecs.append(unit)
+        if vecs:
+            n = len(vecs[0])
+            centroid = [sum(v[i] for v in vecs) / len(vecs) for i in range(n)]
+            return _normalize_vec(centroid)
+
+    # BoW fallback (also used when embedder is None or every encode failed)
+    bows = [_bow_vector(t) for t in texts]
+    bows = [b for b in bows if b]
+    if not bows:
+        return None
+    keys = set()
+    for b in bows:
+        keys.update(b.keys())
+    keys = sorted(keys)
+    centroid = [sum(b.get(k, 0.0) for b in bows) / len(bows) for k in keys]
+    unit = _normalize_vec(centroid)
+    if not unit:
+        return None
+    # Encode keys in the vector itself so different agents' BoWs can be
+    # compared: prefix-tag each component with its key index by returning
+    # a (keys, vec) — but the cross-agent compare path needs the SAME basis.
+    # Simplest correct path: rebuild a shared key space when comparing.
+    # We return a list keyed by the position in `keys`, and the comparison
+    # helper recomputes a shared basis if needed. To keep things simple,
+    # carry the key vocabulary as part of the centroid by tagging.
+    return {"__bow__": dict(zip(keys, unit))}  # type: ignore[return-value]
+
+
+def _cosine_centroids(a, b) -> Optional[float]:
+    """Cosine similarity between two centroids returned by _agent_centroid.
+
+    Handles both list-of-float (embedder) and BoW-dict (fallback) forms.
+    Returns None on incompatible shapes.
+    """
+    if a is None or b is None:
+        return None
+    a_is_bow = isinstance(a, dict) and "__bow__" in a
+    b_is_bow = isinstance(b, dict) and "__bow__" in b
+    if a_is_bow != b_is_bow:
+        return None
+    if a_is_bow:
+        return _cosine(a["__bow__"], b["__bow__"])
+    if len(a) != len(b):
+        return None
+    return max(-1.0, min(1.0, sum(x * y for x, y in zip(a, b))))
+
+
+def output_diversity_by_model(records, embedder, model_assignment: dict) -> dict:
+    """Decompose output diversity into within-model and between-model components.
+
+    records: list[AgentContextRecord] — each record's .deposit_contents holds
+             the actual text the agent deposited during this round.
+    embedder: SignalStore._embedder or compatible (.encode(text) -> list[float]).
+    model_assignment: {role: model_name} from the router's manifest, or
+             {'all': model_name} for homogeneous runs.
+
+    Returns:
+      {
+        'within_model': {model_name: avg_pairwise_cosine_distance},
+        'between_model': avg_pairwise_cosine_distance_across_diff_model_agents,
+        'delta': between_model - mean(within_model values),
+      }
+
+    delta > 0 is direct evidence model heterogeneity decorrelates outputs.
+    delta <= 0 means heterogeneity isn't doing what we think.
+    """
+    # Per-agent (role, centroid), skipping any agent with no usable deposits
+    homogeneous_mark = (len(model_assignment) == 1 and "all" in model_assignment)
+    only_model = next(iter(model_assignment.values())) if homogeneous_mark else None
+
+    def model_of(role: str) -> str:
+        if homogeneous_mark:
+            return only_model  # type: ignore[return-value]
+        return model_assignment.get(role, "_unassigned_")
+
+    agents = []
+    for rec in records:
+        texts = [t for t in (rec.deposit_contents or []) if t and t.strip()]
+        if not texts:
+            continue
+        c = _agent_centroid(texts, embedder)
+        if c is None:
+            continue
+        agents.append((model_of(rec.role), c))
+
+    if len(agents) < 2:
+        return {"within_model": {}, "between_model": None, "delta": None}
+
+    # Buckets of pairwise cosine distances
+    within_pairs: dict = {}
+    between_dists: list[float] = []
+    for (m_a, c_a), (m_b, c_b) in combinations(agents, 2):
+        sim = _cosine_centroids(c_a, c_b)
+        if sim is None:
+            continue
+        dist = 1.0 - sim
+        if m_a == m_b:
+            within_pairs.setdefault(m_a, []).append(dist)
+        else:
+            between_dists.append(dist)
+
+    within_model = {m: round(sum(ds) / len(ds), 4) for m, ds in within_pairs.items() if ds}
+
+    # If every agent shares one model, there is no between-model signal.
+    distinct_models = {m for m, _ in agents}
+    if len(distinct_models) < 2:
+        return {"within_model": within_model, "between_model": None, "delta": None}
+
+    if not between_dists:
+        return {"within_model": within_model, "between_model": None, "delta": None}
+
+    between = sum(between_dists) / len(between_dists)
+    mean_within = (
+        sum(within_model.values()) / len(within_model)
+        if within_model else 0.0
+    )
+    return {
+        "within_model": within_model,
+        "between_model": round(between, 4),
+        "delta": round(between - mean_within, 4),
+    }
+
+
 # ---------------------------------------------------------------------------
 
 def format_output_diversity_report(texts: list[str], round_num: int) -> str:

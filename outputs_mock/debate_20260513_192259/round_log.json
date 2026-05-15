@@ -1,0 +1,509 @@
+[
+  {
+    "round": 1,
+    "diversity": {
+      "by_role": {
+        "scout": 0.8333333333333334,
+        "validator": 0.0,
+        "forager": 0.22222222222222224,
+        "critic": 1.0,
+        "hater": 0.0
+      },
+      "overall": 0.6538461538461542
+    },
+    "stats": {
+      "total": 36,
+      "by_type": {
+        "INITIAL": 3,
+        "VERIFICATION": 1,
+        "SUPPORT": 19,
+        "CRITIQUE": 11,
+        "OBJECTION": 2
+      },
+      "avg_strength": 0.5256984961112442,
+      "max_strength": 0.7719704693797854
+    },
+    "pruned": 5,
+    "elapsed_s": 5.0423970222473145,
+    "agents": [
+      {
+        "agent_id": "scout_R1_0",
+        "role": "scout",
+        "deposits": 2,
+        "rejected_dup": 4,
+        "iterations": 6,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R1_1",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R1_2",
+        "role": "scout",
+        "deposits": 1,
+        "rejected_dup": 3,
+        "iterations": 4,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R1_3",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "validator_R1_0_weighted_default",
+        "role": "validator",
+        "deposits": 1,
+        "rejected_dup": 3,
+        "iterations": 4,
+        "novelty_per_iter": [
+          1.0
+        ]
+      },
+      {
+        "agent_id": "forager_R1_0_stratified_extremes",
+        "role": "forager",
+        "deposits": 5,
+        "rejected_dup": 3,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.2485,
+          0.3169,
+          0.275,
+          0.2736
+        ]
+      },
+      {
+        "agent_id": "forager_R1_1_medium_only",
+        "role": "forager",
+        "deposits": 5,
+        "rejected_dup": 3,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.2107,
+          0.2566,
+          0.2426,
+          0.2265
+        ]
+      },
+      {
+        "agent_id": "forager_R1_2_recent_only",
+        "role": "forager",
+        "deposits": 5,
+        "rejected_dup": 3,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.1979,
+          0.2191,
+          0.2867,
+          0.3213
+        ]
+      },
+      {
+        "agent_id": "forager_R1_3_under_visited_only",
+        "role": "forager",
+        "deposits": 4,
+        "rejected_dup": 4,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.2552,
+          0.2254,
+          0.2321
+        ]
+      },
+      {
+        "agent_id": "critic_R1_0_weighted_default",
+        "role": "critic",
+        "deposits": 8,
+        "rejected_dup": 0,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.3903,
+          0.2787,
+          0.2724,
+          0.2861,
+          0.3156,
+          0.2943,
+          0.336
+        ]
+      },
+      {
+        "agent_id": "critic_R1_1_stratified_extremes",
+        "role": "critic",
+        "deposits": 8,
+        "rejected_dup": 0,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.4241,
+          0.3543,
+          0.3509,
+          0.2638,
+          0.269,
+          0.3611,
+          0.2754
+        ]
+      },
+      {
+        "agent_id": "hater_R1_0",
+        "role": "hater",
+        "deposits": 1,
+        "rejected_dup": 0,
+        "iterations": 1,
+        "novelty_per_iter": [
+          1.0
+        ]
+      },
+      {
+        "agent_id": "hater_R1_1",
+        "role": "hater",
+        "deposits": 1,
+        "rejected_dup": 1,
+        "iterations": 2,
+        "novelty_per_iter": [
+          1.0
+        ]
+      }
+    ]
+  },
+  {
+    "round": 2,
+    "diversity": {
+      "by_role": {
+        "scout": 0.8333333333333334,
+        "validator": 0.0,
+        "forager": 0.7222222222222223,
+        "critic": 1.0,
+        "hater": 0.0
+      },
+      "overall": 0.739316239316239
+    },
+    "stats": {
+      "total": 58,
+      "by_type": {
+        "INITIAL": 3,
+        "VERIFICATION": 6,
+        "SUPPORT": 29,
+        "CRITIQUE": 16,
+        "OBJECTION": 4
+      },
+      "avg_strength": 0.5278675826891066,
+      "max_strength": 0.9359890930206964
+    },
+    "pruned": 7,
+    "elapsed_s": 1.2866237163543701,
+    "agents": [
+      {
+        "agent_id": "scout_R2_0",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R2_1",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R2_2",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R2_3",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "validator_R2_0_weighted_default",
+        "role": "validator",
+        "deposits": 5,
+        "rejected_dup": 3,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.1564,
+          0.1827,
+          0.2059,
+          0.2988
+        ]
+      },
+      {
+        "agent_id": "forager_R2_0_stratified_extremes",
+        "role": "forager",
+        "deposits": 5,
+        "rejected_dup": 3,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.2548,
+          0.2473,
+          0.2727,
+          0.2247
+        ]
+      },
+      {
+        "agent_id": "forager_R2_1_medium_only",
+        "role": "forager",
+        "deposits": 1,
+        "rejected_dup": 4,
+        "iterations": 5,
+        "novelty_per_iter": [
+          1.0
+        ]
+      },
+      {
+        "agent_id": "forager_R2_2_recent_only",
+        "role": "forager",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "forager_R2_3_under_visited_only",
+        "role": "forager",
+        "deposits": 4,
+        "rejected_dup": 4,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.1751,
+          0.2674,
+          0.2511
+        ]
+      },
+      {
+        "agent_id": "critic_R2_0_weighted_default",
+        "role": "critic",
+        "deposits": 6,
+        "rejected_dup": 2,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.3677,
+          0.273,
+          0.2955,
+          0.2382,
+          0.2967
+        ]
+      },
+      {
+        "agent_id": "critic_R2_1_stratified_extremes",
+        "role": "critic",
+        "deposits": 6,
+        "rejected_dup": 2,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.2556,
+          0.329,
+          0.279,
+          0.2716,
+          0.3268
+        ]
+      },
+      {
+        "agent_id": "hater_R2_0",
+        "role": "hater",
+        "deposits": 1,
+        "rejected_dup": 0,
+        "iterations": 1,
+        "novelty_per_iter": [
+          1.0
+        ]
+      },
+      {
+        "agent_id": "hater_R2_1",
+        "role": "hater",
+        "deposits": 1,
+        "rejected_dup": 1,
+        "iterations": 2,
+        "novelty_per_iter": [
+          1.0
+        ]
+      }
+    ]
+  },
+  {
+    "round": 3,
+    "diversity": {
+      "by_role": {
+        "scout": 0.8333333333333334,
+        "validator": 0.0,
+        "forager": 0.7222222222222223,
+        "critic": 1.0,
+        "hater": 0.0
+      },
+      "overall": 0.752136752136752
+    },
+    "stats": {
+      "total": 73,
+      "by_type": {
+        "INITIAL": 3,
+        "VERIFICATION": 6,
+        "SUPPORT": 34,
+        "CRITIQUE": 24,
+        "OBJECTION": 6
+      },
+      "avg_strength": 0.5097930409552264,
+      "max_strength": 0.95
+    },
+    "pruned": 3,
+    "elapsed_s": 0.8064112663269043,
+    "agents": [
+      {
+        "agent_id": "scout_R3_0",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R3_1",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R3_2",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "scout_R3_3",
+        "role": "scout",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "validator_R3_0_weighted_default",
+        "role": "validator",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "forager_R3_0_stratified_extremes",
+        "role": "forager",
+        "deposits": 2,
+        "rejected_dup": 4,
+        "iterations": 6,
+        "novelty_per_iter": [
+          1.0,
+          0.2042
+        ]
+      },
+      {
+        "agent_id": "forager_R3_1_medium_only",
+        "role": "forager",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "forager_R3_2_recent_only",
+        "role": "forager",
+        "deposits": 0,
+        "rejected_dup": 3,
+        "iterations": 3,
+        "novelty_per_iter": []
+      },
+      {
+        "agent_id": "forager_R3_3_under_visited_only",
+        "role": "forager",
+        "deposits": 3,
+        "rejected_dup": 5,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.3231,
+          0.2737
+        ]
+      },
+      {
+        "agent_id": "critic_R3_0_weighted_default",
+        "role": "critic",
+        "deposits": 6,
+        "rejected_dup": 2,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.2354,
+          0.3681,
+          0.2729,
+          0.392,
+          0.3281
+        ]
+      },
+      {
+        "agent_id": "critic_R3_1_stratified_extremes",
+        "role": "critic",
+        "deposits": 5,
+        "rejected_dup": 3,
+        "iterations": 8,
+        "novelty_per_iter": [
+          1.0,
+          0.2909,
+          0.3447,
+          0.4023,
+          0.4195
+        ]
+      },
+      {
+        "agent_id": "hater_R3_0",
+        "role": "hater",
+        "deposits": 1,
+        "rejected_dup": 0,
+        "iterations": 1,
+        "novelty_per_iter": [
+          1.0
+        ]
+      },
+      {
+        "agent_id": "hater_R3_1",
+        "role": "hater",
+        "deposits": 1,
+        "rejected_dup": 1,
+        "iterations": 2,
+        "novelty_per_iter": [
+          1.0
+        ]
+      }
+    ]
+  }
+]

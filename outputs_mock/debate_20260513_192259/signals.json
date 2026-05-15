@@ -1,0 +1,888 @@
+[
+  {
+    "id": "INITIAL_00000",
+    "type": "INITIAL",
+    "strength": 0.95,
+    "depositor": "scout",
+    "parent_id": null,
+    "visits": 36,
+    "metadata": {
+      "scout_agent_id": "scout_R1_0",
+      "depositor_agent_id": "scout_R1_0",
+      "chunk_ids": [
+        "chunk_0000"
+      ]
+    },
+    "content": "Reading partition 61eeb8, one observation stands out as a candidate claim. The evidence in chunk 61eeb8 suggests an initial pattern worth tracking. From this slice (61eeb8), a tentative hypothesis emerges."
+  },
+  {
+    "id": "INITIAL_00001",
+    "type": "INITIAL",
+    "strength": 0.95,
+    "depositor": "scout",
+    "parent_id": null,
+    "visits": 37,
+    "metadata": {
+      "scout_agent_id": "scout_R1_2",
+      "depositor_agent_id": "scout_R1_2",
+      "chunk_ids": []
+    },
+    "content": "Reading partition 3a18db, one observation stands out as a candidate claim. The evidence in chunk 3a18db suggests an initial pattern worth tracking. From this slice (3a18db), a tentative hypothesis emerges."
+  },
+  {
+    "id": "VERIFICATION_00002",
+    "type": "VERIFICATION",
+    "strength": 0.6566,
+    "depositor": "validator",
+    "parent_id": null,
+    "visits": 5,
+    "metadata": {
+      "depositor_agent_id": "validator_R1_0_weighted_default"
+    },
+    "content": "External check bd9616: claim partially supported by snippet. SCORE: 0.6 Verification bd9616: source agrees on core fact, disputes peripheral detail. SCORE: 0.55"
+  },
+  {
+    "id": "INITIAL_00003",
+    "type": "INITIAL",
+    "strength": 0.4951,
+    "depositor": "scout",
+    "parent_id": null,
+    "visits": 37,
+    "metadata": {
+      "scout_agent_id": "scout_R1_0",
+      "depositor_agent_id": "scout_R1_0",
+      "chunk_ids": [
+        "chunk_0000"
+      ]
+    },
+    "content": "The evidence in chunk 1bd1d1 suggests an initial pattern worth tracking. Reading partition 1bd1d1, one observation stands out as a candidate claim. From this slice (1bd1d1), a tentative hypothesis emerges."
+  },
+  {
+    "id": "SUPPORT_00004",
+    "type": "SUPPORT",
+    "strength": 0.6894,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 6,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_0_stratified_extremes"
+    },
+    "content": "Building on the prior trace, signal 9d3c0a extends the claim with supporting detail. The development from artifact 9d3c0a introduces an additional angle. Following from the deposited signal, 9d3c0a adds context."
+  },
+  {
+    "id": "SUPPORT_00005",
+    "type": "SUPPORT",
+    "strength": 0.7238,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00000",
+    "visits": 7,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_1_medium_only"
+    },
+    "content": "Following from the deposited signal, b9b74c adds context. The development from artifact b9b74c introduces an additional angle. Building on the prior trace, signal b9b74c extends the claim with supporting detail."
+  },
+  {
+    "id": "SUPPORT_00006",
+    "type": "SUPPORT",
+    "strength": 0.5955,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00001",
+    "visits": 3,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_3_under_visited_only"
+    },
+    "content": "Following from the deposited signal, d5abd6 adds context. The development from artifact d5abd6 introduces an additional angle. Building on the prior trace, signal d5abd6 extends the claim with supporting detail."
+  },
+  {
+    "id": "CRITIQUE_00007",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_0_weighted_default"
+    },
+    "content": "Quality assessment of 4719d1: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact 4719d1: the claim has plausibility but limited corroboration. SCORE: 0.5 Critique of 4719d1: structurally coherent but unsupported. SCORE: 0.4"
+  },
+  {
+    "id": "CRITIQUE_00008",
+    "type": "CRITIQUE",
+    "strength": 0.399,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_1_stratified_extremes"
+    },
+    "content": "Critique of a5d68b: structurally coherent but unsupported. SCORE: 0.4 Quality assessment of a5d68b: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact a5d68b: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "OBJECTION_00009",
+    "type": "OBJECTION",
+    "strength": 0.63,
+    "depositor": "hater",
+    "parent_id": "INITIAL_00000",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "hater_R1_0"
+    },
+    "content": "The signal cluster anchored at ebbeed relies on shared but unexamined priors. Consensus cluster ebbeed appears to overgeneralize from a narrow base. Objection to the prevailing pattern around ebbeed: it ignores counter-cases."
+  },
+  {
+    "id": "SUPPORT_00010",
+    "type": "SUPPORT",
+    "strength": 0.7238,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00001",
+    "visits": 7,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_1_medium_only"
+    },
+    "content": "Building on the prior trace, signal ea412b extends the claim with supporting detail. Following from the deposited signal, ea412b adds context. The development from artifact ea412b introduces an additional angle."
+  },
+  {
+    "id": "SUPPORT_00011",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_2_recent_only"
+    },
+    "content": "The development from artifact 852fb3 introduces an additional angle. Building on the prior trace, signal 852fb3 extends the claim with supporting detail. Following from the deposited signal, 852fb3 adds context."
+  },
+  {
+    "id": "SUPPORT_00012",
+    "type": "SUPPORT",
+    "strength": 0.5401,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00000",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_3_under_visited_only"
+    },
+    "content": "Building on the prior trace, signal f013db extends the claim with supporting detail. Following from the deposited signal, f013db adds context. The development from artifact f013db introduces an additional angle."
+  },
+  {
+    "id": "CRITIQUE_00013",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_0_weighted_default"
+    },
+    "content": "Quality assessment of bf7c32: medium; revisit after further evidence. SCORE: 0.55 Critique of bf7c32: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact bf7c32: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "CRITIQUE_00014",
+    "type": "CRITIQUE",
+    "strength": 0.357,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_1_stratified_extremes"
+    },
+    "content": "Quality assessment of eff3f4: medium; revisit after further evidence. SCORE: 0.55 Critique of eff3f4: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact eff3f4: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "OBJECTION_00015",
+    "type": "OBJECTION",
+    "strength": 0.6,
+    "depositor": "hater",
+    "parent_id": "INITIAL_00000",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "hater_R1_1"
+    },
+    "content": "The signal cluster anchored at 182ebc relies on shared but unexamined priors. Objection to the prevailing pattern around 182ebc: it ignores counter-cases. Consensus cluster 182ebc appears to overgeneralize from a narrow base."
+  },
+  {
+    "id": "SUPPORT_00016",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00000",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_2_recent_only"
+    },
+    "content": "Following from the deposited signal, 3fd523 adds context. The development from artifact 3fd523 introduces an additional angle. Building on the prior trace, signal 3fd523 extends the claim with supporting detail."
+  },
+  {
+    "id": "CRITIQUE_00017",
+    "type": "CRITIQUE",
+    "strength": 0.357,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00001",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_0_weighted_default"
+    },
+    "content": "Quality assessment of 41698f: medium; revisit after further evidence. SCORE: 0.55 Critique of 41698f: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact 41698f: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "CRITIQUE_00018",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_1_stratified_extremes"
+    },
+    "content": "Quality assessment of be2857: medium; revisit after further evidence. SCORE: 0.55 Critique of be2857: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact be2857: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "SUPPORT_00019",
+    "type": "SUPPORT",
+    "strength": 0.5401,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_0_stratified_extremes"
+    },
+    "content": "Following from the deposited signal, 0dbd74 adds context. Building on the prior trace, signal 0dbd74 extends the claim with supporting detail. The development from artifact 0dbd74 introduces an additional angle."
+  },
+  {
+    "id": "SUPPORT_00020",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_2_recent_only"
+    },
+    "content": "The development from artifact 13f3dd introduces an additional angle. Building on the prior trace, signal 13f3dd extends the claim with supporting detail. Following from the deposited signal, 13f3dd adds context."
+  },
+  {
+    "id": "CRITIQUE_00021",
+    "type": "CRITIQUE",
+    "strength": 0.38,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00000",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_0_weighted_default"
+    },
+    "content": "Critique of 7cb190: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact 7cb190: the claim has plausibility but limited corroboration. SCORE: 0.5 Quality assessment of 7cb190: medium; revisit after further evidence. SCORE: 0.55"
+  },
+  {
+    "id": "CRITIQUE_00022",
+    "type": "CRITIQUE",
+    "strength": 0.4189,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 2,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_1_stratified_extremes"
+    },
+    "content": "Critique of 9ad071: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact 9ad071: the claim has plausibility but limited corroboration. SCORE: 0.5 Quality assessment of 9ad071: medium; revisit after further evidence. SCORE: 0.55"
+  },
+  {
+    "id": "SUPPORT_00023",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_0_stratified_extremes"
+    },
+    "content": "Following from the deposited signal, df2a8e adds context. Building on the prior trace, signal df2a8e extends the claim with supporting detail. The development from artifact df2a8e introduces an additional angle."
+  },
+  {
+    "id": "SUPPORT_00024",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_1_medium_only"
+    },
+    "content": "Following from the deposited signal, 98dbad adds context. The development from artifact 98dbad introduces an additional angle. Building on the prior trace, signal 98dbad extends the claim with supporting detail."
+  },
+  {
+    "id": "SUPPORT_00025",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_2_recent_only"
+    },
+    "content": "The development from artifact c35f2f introduces an additional angle. Following from the deposited signal, c35f2f adds context. Building on the prior trace, signal c35f2f extends the claim with supporting detail."
+  },
+  {
+    "id": "SUPPORT_00026",
+    "type": "SUPPORT",
+    "strength": 0.5401,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00001",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_3_under_visited_only"
+    },
+    "content": "Building on the prior trace, signal 65ec00 extends the claim with supporting detail. Following from the deposited signal, 65ec00 adds context. The development from artifact 65ec00 introduces an additional angle."
+  },
+  {
+    "id": "SUPPORT_00029",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_0_stratified_extremes"
+    },
+    "content": "Following from the deposited signal, bad02b adds context. The development from artifact bad02b introduces an additional angle. Building on the prior trace, signal bad02b extends the claim with supporting detail."
+  },
+  {
+    "id": "SUPPORT_00030",
+    "type": "SUPPORT",
+    "strength": 0.6566,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 5,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_1_medium_only"
+    },
+    "content": "The development from artifact 35471f introduces an additional angle. Building on the prior trace, signal 35471f extends the claim with supporting detail. Following from the deposited signal, 35471f adds context."
+  },
+  {
+    "id": "SUPPORT_00031",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_2_recent_only"
+    },
+    "content": "Building on the prior trace, signal cd18c0 extends the claim with supporting detail. Following from the deposited signal, cd18c0 adds context. The development from artifact cd18c0 introduces an additional angle."
+  },
+  {
+    "id": "SUPPORT_00032",
+    "type": "SUPPORT",
+    "strength": 0.5401,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00001",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_3_under_visited_only"
+    },
+    "content": "Following from the deposited signal, c2df51 adds context. The development from artifact c2df51 introduces an additional angle. Building on the prior trace, signal c2df51 extends the claim with supporting detail."
+  },
+  {
+    "id": "CRITIQUE_00034",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_1_stratified_extremes"
+    },
+    "content": "Quality assessment of 1f8a48: medium; revisit after further evidence. SCORE: 0.55 Critique of 1f8a48: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact 1f8a48: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "SUPPORT_00035",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_0_stratified_extremes"
+    },
+    "content": "The development from artifact 4f4f41 introduces an additional angle. Building on the prior trace, signal 4f4f41 extends the claim with supporting detail. Following from the deposited signal, 4f4f41 adds context."
+  },
+  {
+    "id": "SUPPORT_00036",
+    "type": "SUPPORT",
+    "strength": 0.5144,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R1_1_medium_only"
+    },
+    "content": "Building on the prior trace, signal 2125a3 extends the claim with supporting detail. Following from the deposited signal, 2125a3 adds context. The development from artifact 2125a3 introduces an additional angle."
+  },
+  {
+    "id": "CRITIQUE_00037",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_0_weighted_default"
+    },
+    "content": "Quality assessment of 6641c2: medium; revisit after further evidence. SCORE: 0.55 Critique of 6641c2: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact 6641c2: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "CRITIQUE_00039",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R1_0_weighted_default"
+    },
+    "content": "Quality assessment of fd583f: medium; revisit after further evidence. SCORE: 0.55 Critique of fd583f: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact fd583f: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "VERIFICATION_00041",
+    "type": "VERIFICATION",
+    "strength": 0.5746,
+    "depositor": "validator",
+    "parent_id": "INITIAL_00000",
+    "visits": 3,
+    "metadata": {
+      "depositor_agent_id": "validator_R2_0_weighted_default"
+    },
+    "content": "Verification 7dd671: source agrees on core fact, disputes peripheral detail. SCORE: 0.55 External check 7dd671: claim partially supported by snippet. SCORE: 0.6"
+  },
+  {
+    "id": "VERIFICATION_00042",
+    "type": "VERIFICATION",
+    "strength": 0.5212,
+    "depositor": "validator",
+    "parent_id": "INITIAL_00000",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "validator_R2_0_weighted_default"
+    },
+    "content": "Verification e6a0b2: source agrees on core fact, disputes peripheral detail. SCORE: 0.55 External check e6a0b2: claim partially supported by snippet. SCORE: 0.6"
+  },
+  {
+    "id": "VERIFICATION_00043",
+    "type": "VERIFICATION",
+    "strength": 0.4964,
+    "depositor": "validator",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "validator_R2_0_weighted_default"
+    },
+    "content": "Verification efd7e0: source agrees on core fact, disputes peripheral detail. SCORE: 0.55 External check efd7e0: claim partially supported by snippet. SCORE: 0.6"
+  },
+  {
+    "id": "VERIFICATION_00044",
+    "type": "VERIFICATION",
+    "strength": 0.4964,
+    "depositor": "validator",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "validator_R2_0_weighted_default"
+    },
+    "content": "Verification d92c8e: source agrees on core fact, disputes peripheral detail. SCORE: 0.55 External check d92c8e: claim partially supported by snippet. SCORE: 0.6"
+  },
+  {
+    "id": "VERIFICATION_00045",
+    "type": "VERIFICATION",
+    "strength": 0.5415,
+    "depositor": "validator",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "validator_R2_0_weighted_default"
+    },
+    "content": "External check fdacc0: claim partially supported by snippet. SCORE: 0.6 Verification fdacc0: source agrees on core fact, disputes peripheral detail. SCORE: 0.55"
+  },
+  {
+    "id": "SUPPORT_00046",
+    "type": "SUPPORT",
+    "strength": 0.6582,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 4,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_0_stratified_extremes"
+    },
+    "content": "Following from the deposited signal, 537061 adds context. Building on the prior trace, signal 537061 extends the claim with supporting detail. The development from artifact 537061 introduces an additional angle."
+  },
+  {
+    "id": "OBJECTION_00048",
+    "type": "OBJECTION",
+    "strength": 0.63,
+    "depositor": "hater",
+    "parent_id": "INITIAL_00000",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "hater_R2_0"
+    },
+    "content": "Objection to the prevailing pattern around 4bcc0b: it ignores counter-cases. The signal cluster anchored at 4bcc0b relies on shared but unexamined priors. Consensus cluster 4bcc0b appears to overgeneralize from a narrow base."
+  },
+  {
+    "id": "SUPPORT_00049",
+    "type": "SUPPORT",
+    "strength": 0.6269,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 3,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_0_stratified_extremes"
+    },
+    "content": "Building on the prior trace, signal 8bb3a8 extends the claim with supporting detail. The development from artifact 8bb3a8 introduces an additional angle. Following from the deposited signal, 8bb3a8 adds context."
+  },
+  {
+    "id": "SUPPORT_00050",
+    "type": "SUPPORT",
+    "strength": 0.5686,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_1_medium_only"
+    },
+    "content": "The development from artifact c46632 introduces an additional angle. Following from the deposited signal, c46632 adds context. Building on the prior trace, signal c46632 extends the claim with supporting detail."
+  },
+  {
+    "id": "CRITIQUE_00051",
+    "type": "CRITIQUE",
+    "strength": 0.38,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00000",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R2_0_weighted_default"
+    },
+    "content": "Critique of 0df3ce: structurally coherent but unsupported. SCORE: 0.4 Quality assessment of 0df3ce: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact 0df3ce: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "OBJECTION_00052",
+    "type": "OBJECTION",
+    "strength": 0.6,
+    "depositor": "hater",
+    "parent_id": "INITIAL_00000",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "hater_R2_1"
+    },
+    "content": "Consensus cluster c31358 appears to overgeneralize from a narrow base. The signal cluster anchored at c31358 relies on shared but unexamined priors. Objection to the prevailing pattern around c31358: it ignores counter-cases."
+  },
+  {
+    "id": "SUPPORT_00053",
+    "type": "SUPPORT",
+    "strength": 0.5415,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_0_stratified_extremes"
+    },
+    "content": "The development from artifact 612d4f introduces an additional angle. Following from the deposited signal, 612d4f adds context. Building on the prior trace, signal 612d4f extends the claim with supporting detail."
+  },
+  {
+    "id": "SUPPORT_00054",
+    "type": "SUPPORT",
+    "strength": 0.5686,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00000",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_3_under_visited_only"
+    },
+    "content": "Following from the deposited signal, e91cab adds context. The development from artifact e91cab introduces an additional angle. Building on the prior trace, signal e91cab extends the claim with supporting detail."
+  },
+  {
+    "id": "CRITIQUE_00056",
+    "type": "CRITIQUE",
+    "strength": 0.4189,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 2,
+    "metadata": {
+      "depositor_agent_id": "critic_R2_1_stratified_extremes"
+    },
+    "content": "Critique of a298d1: structurally coherent but unsupported. SCORE: 0.4 Quality assessment of a298d1: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact a298d1: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "SUPPORT_00057",
+    "type": "SUPPORT",
+    "strength": 0.5686,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_0_stratified_extremes"
+    },
+    "content": "The development from artifact be33a3 introduces an additional angle. Following from the deposited signal, be33a3 adds context. Building on the prior trace, signal be33a3 extends the claim with supporting detail."
+  },
+  {
+    "id": "SUPPORT_00058",
+    "type": "SUPPORT",
+    "strength": 0.5415,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_3_under_visited_only"
+    },
+    "content": "The development from artifact ebc2a2 introduces an additional angle. Building on the prior trace, signal ebc2a2 extends the claim with supporting detail. Following from the deposited signal, ebc2a2 adds context."
+  },
+  {
+    "id": "SUPPORT_00060",
+    "type": "SUPPORT",
+    "strength": 0.5415,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_3_under_visited_only"
+    },
+    "content": "Following from the deposited signal, 0458fc adds context. The development from artifact 0458fc introduces an additional angle. Building on the prior trace, signal 0458fc extends the claim with supporting detail."
+  },
+  {
+    "id": "SUPPORT_00063",
+    "type": "SUPPORT",
+    "strength": 0.5415,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_0_stratified_extremes"
+    },
+    "content": "The development from artifact 28b6ac introduces an additional angle. Building on the prior trace, signal 28b6ac extends the claim with supporting detail. Following from the deposited signal, 28b6ac adds context."
+  },
+  {
+    "id": "SUPPORT_00064",
+    "type": "SUPPORT",
+    "strength": 0.5415,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R2_3_under_visited_only"
+    },
+    "content": "Following from the deposited signal, 0d24c0 adds context. The development from artifact 0d24c0 introduces an additional angle. Building on the prior trace, signal 0d24c0 extends the claim with supporting detail."
+  },
+  {
+    "id": "CRITIQUE_00065",
+    "type": "CRITIQUE",
+    "strength": 0.315,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00001",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "critic_R2_0_weighted_default"
+    },
+    "content": "Evaluating artifact 33677e: the claim has plausibility but limited corroboration. SCORE: 0.5 Quality assessment of 33677e: medium; revisit after further evidence. SCORE: 0.55 Critique of 33677e: structurally coherent but unsupported. SCORE: 0.4"
+  },
+  {
+    "id": "CRITIQUE_00067",
+    "type": "CRITIQUE",
+    "strength": 0.38,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R2_0_weighted_default"
+    },
+    "content": "Critique of 627077: structurally coherent but unsupported. SCORE: 0.4 Quality assessment of 627077: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact 627077: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "CRITIQUE_00069",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R2_1_stratified_extremes"
+    },
+    "content": "Quality assessment of 87fc70: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact 87fc70: the claim has plausibility but limited corroboration. SCORE: 0.5 Critique of 87fc70: structurally coherent but unsupported. SCORE: 0.4"
+  },
+  {
+    "id": "OBJECTION_00071",
+    "type": "OBJECTION",
+    "strength": 0.63,
+    "depositor": "hater",
+    "parent_id": "INITIAL_00001",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "hater_R3_0"
+    },
+    "content": "Consensus cluster 28edb8 appears to overgeneralize from a narrow base. Objection to the prevailing pattern around 28edb8: it ignores counter-cases. The signal cluster anchored at 28edb8 relies on shared but unexamined priors."
+  },
+  {
+    "id": "SUPPORT_00072",
+    "type": "SUPPORT",
+    "strength": 0.57,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R3_0_stratified_extremes"
+    },
+    "content": "The development from artifact 93e05e introduces an additional angle. Following from the deposited signal, 93e05e adds context. Building on the prior trace, signal 93e05e extends the claim with supporting detail."
+  },
+  {
+    "id": "SUPPORT_00073",
+    "type": "SUPPORT",
+    "strength": 0.57,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00000",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R3_3_under_visited_only"
+    },
+    "content": "The development from artifact 3c532a introduces an additional angle. Following from the deposited signal, 3c532a adds context. Building on the prior trace, signal 3c532a extends the claim with supporting detail."
+  },
+  {
+    "id": "CRITIQUE_00075",
+    "type": "CRITIQUE",
+    "strength": 0.38,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R3_1_stratified_extremes"
+    },
+    "content": "Critique of 8c81d1: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact 8c81d1: the claim has plausibility but limited corroboration. SCORE: 0.5 Quality assessment of 8c81d1: medium; revisit after further evidence. SCORE: 0.55"
+  },
+  {
+    "id": "OBJECTION_00076",
+    "type": "OBJECTION",
+    "strength": 0.6,
+    "depositor": "hater",
+    "parent_id": "INITIAL_00001",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "hater_R3_1"
+    },
+    "content": "The signal cluster anchored at 7c9d8d relies on shared but unexamined priors. Objection to the prevailing pattern around 7c9d8d: it ignores counter-cases. Consensus cluster 7c9d8d appears to overgeneralize from a narrow base."
+  },
+  {
+    "id": "SUPPORT_00077",
+    "type": "SUPPORT",
+    "strength": 0.57,
+    "depositor": "forager",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R3_0_stratified_extremes"
+    },
+    "content": "Building on the prior trace, signal 3de70d extends the claim with supporting detail. The development from artifact 3de70d introduces an additional angle. Following from the deposited signal, 3de70d adds context."
+  },
+  {
+    "id": "CRITIQUE_00078",
+    "type": "CRITIQUE",
+    "strength": 0.38,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R3_1_stratified_extremes"
+    },
+    "content": "Critique of 221e59: structurally coherent but unsupported. SCORE: 0.4 Quality assessment of 221e59: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact 221e59: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "CRITIQUE_00079",
+    "type": "CRITIQUE",
+    "strength": 0.38,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R3_1_stratified_extremes"
+    },
+    "content": "Critique of 2fb77d: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact 2fb77d: the claim has plausibility but limited corroboration. SCORE: 0.5 Quality assessment of 2fb77d: medium; revisit after further evidence. SCORE: 0.55"
+  },
+  {
+    "id": "SUPPORT_00080",
+    "type": "SUPPORT",
+    "strength": 0.57,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R3_3_under_visited_only"
+    },
+    "content": "Building on the prior trace, signal 0ade43 extends the claim with supporting detail. Following from the deposited signal, 0ade43 adds context. The development from artifact 0ade43 introduces an additional angle."
+  },
+  {
+    "id": "CRITIQUE_00081",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00000",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R3_0_weighted_default"
+    },
+    "content": "Quality assessment of a665c3: medium; revisit after further evidence. SCORE: 0.55 Critique of a665c3: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact a665c3: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "CRITIQUE_00082",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R3_1_stratified_extremes"
+    },
+    "content": "Quality assessment of fbe665: medium; revisit after further evidence. SCORE: 0.55 Critique of fbe665: structurally coherent but unsupported. SCORE: 0.4 Evaluating artifact fbe665: the claim has plausibility but limited corroboration. SCORE: 0.5"
+  },
+  {
+    "id": "SUPPORT_00083",
+    "type": "SUPPORT",
+    "strength": 0.57,
+    "depositor": "forager",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "forager_R3_3_under_visited_only"
+    },
+    "content": "Following from the deposited signal, 1eadf7 adds context. The development from artifact 1eadf7 introduces an additional angle. Building on the prior trace, signal 1eadf7 extends the claim with supporting detail."
+  },
+  {
+    "id": "CRITIQUE_00084",
+    "type": "CRITIQUE",
+    "strength": 0.315,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00000",
+    "visits": 1,
+    "metadata": {
+      "depositor_agent_id": "critic_R3_0_weighted_default"
+    },
+    "content": "Evaluating artifact 31da5e: the claim has plausibility but limited corroboration. SCORE: 0.5 Quality assessment of 31da5e: medium; revisit after further evidence. SCORE: 0.55 Critique of 31da5e: structurally coherent but unsupported. SCORE: 0.4"
+  },
+  {
+    "id": "CRITIQUE_00085",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": null,
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R3_1_stratified_extremes"
+    },
+    "content": "Quality assessment of bca3a6: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact bca3a6: the claim has plausibility but limited corroboration. SCORE: 0.5 Critique of bca3a6: structurally coherent but unsupported. SCORE: 0.4"
+  },
+  {
+    "id": "CRITIQUE_00086",
+    "type": "CRITIQUE",
+    "strength": 0.34,
+    "depositor": "critic",
+    "parent_id": "INITIAL_00003",
+    "visits": 0,
+    "metadata": {
+      "depositor_agent_id": "critic_R3_0_weighted_default"
+    },
+    "content": "Quality assessment of ce39bb: medium; revisit after further evidence. SCORE: 0.55 Evaluating artifact ce39bb: the claim has plausibility but limited corroboration. SCORE: 0.5 Critique of ce39bb: structurally coherent but unsupported. SCORE: 0.4"
+  }
+]

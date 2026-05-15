@@ -1,0 +1,18 @@
+{
+  "generated_at": "2026-05-14T13:43:55",
+  "total_flags": 2,
+  "flags": [
+    {
+      "cited_id": "INITIAL_00105",
+      "paragraph_excerpt": "Evidence: According to [INITIAL_00105], societal support mechanisms like healthcare and social welfare provide costs, mitigating the economic impact of same-sex marriage legalization. This suggests that while legalizing same-sex marriage may have some benefits, its primary effects on economics might",
+      "cluster_content_excerpt": "should same-sex marriage be legal?\n\nyes, it should because it reflects the changing societal values towards equality and respect for all people regardless of gender.\n\nbut wait: i'm supposed to produce a single claim or observation based on this partition. the previous contribution was about societal",
+      "issue": "no 4-gram overlap between paragraph and cited cluster content"
+    },
+    {
+      "cited_id": "INITIAL_00105",
+      "paragraph_excerpt": "Evidence: According to [INITIAL_00105], societal support mechanisms like healthcare and social welfare provide costs, mitigating the economic impact of same-sex marriage legalization. This suggests that while legalizing same-sex marriage may have some benefits, its primary effects on economics might",
+      "cluster_content_excerpt": "should same-sex marriage be legal?\n\nyes, it should because it reflects the changing societal values towards equality and respect for all people regardless of gender.\n\nbut wait: i'm supposed to produce a single claim or observation based on this partition. the previous contribution was about societal",
+      "issue": "no 4-gram overlap between paragraph and cited cluster content"
+    }
+  ]
+}

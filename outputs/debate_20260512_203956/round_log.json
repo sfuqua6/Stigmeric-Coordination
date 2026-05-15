@@ -1,0 +1,83 @@
+[
+  {
+    "round": 1,
+    "diversity": {
+      "by_role": {
+        "scout": 0.8333333333333334,
+        "validator": 0.0,
+        "forager": 1.0,
+        "critic": 1.0,
+        "hater": 0.0
+      },
+      "overall": 0.9003068156914308
+    },
+    "stats": {
+      "total": 96,
+      "by_type": {
+        "INITIAL": 28,
+        "VERIFICATION": 6,
+        "SUPPORT": 32,
+        "CRITIQUE": 14,
+        "OBJECTION": 16
+      },
+      "avg_strength": 0.5307617838541668,
+      "max_strength": 0.8075
+    },
+    "pruned": 0,
+    "elapsed_s": 2332.3062331676483
+  },
+  {
+    "round": 2,
+    "diversity": {
+      "by_role": {
+        "scout": 0.8333333333333334,
+        "validator": 0.0,
+        "forager": 1.0,
+        "critic": 1.0,
+        "hater": 0.0
+      },
+      "overall": 0.9059829059829059
+    },
+    "stats": {
+      "total": 189,
+      "by_type": {
+        "INITIAL": 55,
+        "VERIFICATION": 12,
+        "SUPPORT": 64,
+        "CRITIQUE": 27,
+        "OBJECTION": 31
+      },
+      "avg_strength": 0.5232721326058185,
+      "max_strength": 0.767125
+    },
+    "pruned": 1,
+    "elapsed_s": 2347.9238929748535
+  },
+  {
+    "round": 3,
+    "diversity": {
+      "by_role": {
+        "scout": 0.8333333333333334,
+        "validator": 0.0,
+        "forager": 0.9761904761904763,
+        "critic": 1.0,
+        "hater": 0.0
+      },
+      "overall": 0.9037444037444038
+    },
+    "stats": {
+      "total": 282,
+      "by_type": {
+        "INITIAL": 80,
+        "VERIFICATION": 18,
+        "SUPPORT": 96,
+        "CRITIQUE": 42,
+        "OBJECTION": 46
+      },
+      "avg_strength": 0.5159467910195026,
+      "max_strength": 0.72876875
+    },
+    "pruned": 2,
+    "elapsed_s": 2161.9007771015167
+  }
+]

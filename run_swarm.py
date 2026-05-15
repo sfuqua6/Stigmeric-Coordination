@@ -1,0 +1,521 @@
+"""Pipeline orchestrator for the cleaned stigmergic swarm.
+
+Usage:
+    python run_swarm.py debate "Climate action is necessary"
+    python run_swarm.py analysis "What causes innovation?"
+    python run_swarm.py creative "Write a haiku about emergence"
+    python run_swarm.py problem_solving "How can cities reduce traffic?"
+
+Set MOCK_LLM=1 to run without loading the model.
+
+Per round:
+    1. Build/refresh the corpus and partition it across scouts.
+    2. Phase A: scouts and validators run concurrently.
+       (P2.3 / R6: validators must run BEFORE the agents whose deposits
+       benefit from the provenance boost; otherwise the boost cannot fire.)
+    3. Phase B: foragers, critics, haters run concurrently — they now see
+       any VERIFICATION signals Phase A produced and the boost can engage.
+    4. Decay all signals; prune those below the threshold.
+    5. Compute and log the diversity metric over agent context records.
+
+After all rounds, the synthesizer produces a single answer from the
+surviving signals.
+
+Outputs:
+    outputs/RUN_TIMESTAMP/        — real-model runs
+    outputs_mock/RUN_TIMESTAMP/   — MOCK_LLM=1 runs (P0.1: kept separate so
+                                     mock artifacts cannot be confused with
+                                     empirical evidence)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from core.config import (
+    NUM_SCOUTS, NUM_FORAGERS, NUM_CRITICS, NUM_HATERS, NUM_VALIDATORS,
+    NUM_ROUNDS, ITERATIONS_PER_ROUND, USE_MOCK_LLM,
+)
+from core.signal_store import SignalStore
+from core.intake import (
+    chunk_corpus, partition_for_scouts, trivial_corpus_from_thesis,
+)
+from core.sampling import (
+    strategy_for_forager, strategy_for_critic, strategy_for_validator,
+)
+from core.diversity import (
+    AgentContextRecord, role_diversity, overall_diversity, format_report,
+)
+from core.llm import make_llm
+from core.knowledge_base import KnowledgeBase
+
+from agents.scout import Scout, ScoutConfig
+from agents.forager import Forager
+from agents.critic import Critic
+from agents.hater import Hater
+from agents.validator import Validator
+from agents.synthesizer import Synthesizer
+
+
+# ---------------------------------------------------------------------------
+# Task prompt templates + role activation (P2.6 / R14 partial)
+# ---------------------------------------------------------------------------
+
+TASK_PROMPTS = {
+    "debate": "Argue both sides of the following thesis with evidence: {prompt}",
+    "analysis": "Provide a structured analysis of the following question: {prompt}",
+    "creative": "Generate creative content addressing: {prompt}",
+    "problem_solving": "Propose solutions to the following problem: {prompt}",
+}
+
+# Which roles each task type actually wants. Suppresses semantically wrong
+# pairings (e.g., Hater on a creative task asking for a "shared assumption"
+# in a haiku cluster). Roles always include scout, forager, synthesizer.
+ROLES_FOR_TASK = {
+    "debate":          {"critic", "hater", "validator"},
+    "analysis":        {"critic", "hater", "validator"},
+    "creative":        {"critic"},                       # no hater, no validator
+    "problem_solving": {"critic", "hater"},              # no validator
+}
+
+
+def build_task_prompt(task_type: str, user_prompt: str) -> str:
+    template = TASK_PROMPTS.get(task_type)
+    if template is None:
+        raise SystemExit(
+            f"Unknown task type {task_type!r}. Choose from: "
+            f"{', '.join(TASK_PROMPTS)}"
+        )
+    # P1.6 / m5: replace() avoids KeyError if user_prompt contains {curly}
+    return template.replace("{prompt}", user_prompt)
+
+
+# ---------------------------------------------------------------------------
+# Progress bar (tqdm if available, fallback otherwise)
+# ---------------------------------------------------------------------------
+
+def _make_progress(total: int, desc: str):
+    try:
+        from tqdm import tqdm
+        return tqdm(total=total, desc=desc, unit="iter",
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
+    except ImportError:
+        class _Fallback:
+            def __init__(self, total, desc):
+                self.total = total; self.n = 0; self.desc = desc
+                self.start = time.time()
+            def update(self, k=1):
+                self.n += k
+                pct = 100 * self.n / max(1, self.total)
+                elapsed = time.time() - self.start
+                rate = self.n / max(0.1, elapsed)
+                remaining = (self.total - self.n) / max(0.01, rate)
+                bar = ("#" * int(pct / 4)).ljust(25, "-")
+                print(f"\r[{self.desc}] [{bar}] {self.n}/{self.total} "
+                      f"({pct:.0f}%) elapsed={elapsed:.0f}s eta={remaining:.0f}s",
+                      end="", flush=True)
+                if self.n >= self.total:
+                    print()
+            def close(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): self.close()
+        return _Fallback(total, desc)
+
+
+def _wrap_llm_with_progress(llm, progress):
+    """Wrap llm.generate so each call ticks the progress bar."""
+    original = llm.generate
+
+    async def generate(prompt, role="agent", max_tokens=120, temperature=0.7):
+        result = await original(prompt, role=role, max_tokens=max_tokens, temperature=temperature)
+        try:
+            progress.update(1)
+        except Exception:
+            pass
+        return result
+
+    llm.generate = generate
+    return llm
+
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
+
+def _reset_kb(kb_dir: Path) -> None:
+    """Move all *.json files in kb_dir to kb_dir/.quarantine_<timestamp>/.
+
+    Called when --reset-kb is passed. Preserves the contaminated files so
+    they can be inspected or migrated, but removes them from the active KB.
+    """
+    if not kb_dir.exists():
+        print(f"[pipeline] --reset-kb: {kb_dir} does not exist, nothing to quarantine")
+        return
+    quarantine = kb_dir / f".quarantine_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for f in kb_dir.glob("*.json"):
+        shutil.move(str(f), str(quarantine / f.name))
+        moved += 1
+    if moved:
+        print(f"[pipeline] --reset-kb: moved {moved} file(s) to {quarantine}")
+    else:
+        print(f"[pipeline] --reset-kb: no *.json files found in {kb_dir}")
+
+
+async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
+                       ignore_kb: bool = False,
+                       reset_kb: bool = False) -> dict:
+    task_prompt = build_task_prompt(task_type, user_prompt)
+    llm = make_llm()
+    store = SignalStore()
+
+    active_roles = ROLES_FOR_TASK.get(task_type, {"critic", "hater", "validator"})
+    n_critics = NUM_CRITICS if "critic" in active_roles else 0
+    n_haters = NUM_HATERS if "hater" in active_roles else 0
+    n_validators = NUM_VALIDATORS if "validator" in active_roles else 0
+
+    # Knowledge base (optional — skip with --ignore-kb / reset with --reset-kb)
+    from core.knowledge_base import _topic_hash as _kb_topic_hash
+    current_topic_hash = _kb_topic_hash(user_prompt)
+    kb = KnowledgeBase()
+    if reset_kb:
+        _reset_kb(kb.kb_dir)
+    if not ignore_kb:
+        kb.load()
+        if not kb.is_empty():
+            print(f"[pipeline] knowledge base loaded: "
+                  f"{len(kb.prior_consensus(current_topic_hash))} prior survivors (topic-filtered), "
+                  f"{len(kb.prior_rejections(current_topic_hash))} prior rejections (topic-filtered)")
+
+    corpus_text = trivial_corpus_from_thesis(user_prompt)
+    chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
+    partitions = partition_for_scouts(chunks, NUM_SCOUTS)
+
+    # Estimate total LLM calls for the progress bar.
+    # Per round: scouts + validators (phase A) + foragers + critics + haters (phase B).
+    # Plus 1 synthesizer call at the end.
+    agents_per_round = NUM_SCOUTS + NUM_FORAGERS + n_critics + n_haters + n_validators
+    total_calls = agents_per_round * ITERATIONS_PER_ROUND * NUM_ROUNDS + 1
+
+    print(f"\n[pipeline] task: {task_type!r} prompt: {user_prompt!r}")
+    print(f"[pipeline] active roles: scout, forager, " + ", ".join(sorted(active_roles)) + ", synthesizer")
+    print(f"[pipeline] population: scouts={NUM_SCOUTS} foragers={NUM_FORAGERS} "
+          f"critics={n_critics} haters={n_haters} validators={n_validators}")
+    print(f"[pipeline] rounds={NUM_ROUNDS} iter/round={ITERATIONS_PER_ROUND}")
+    print(f"[pipeline] expected LLM calls: {total_calls}")
+    print(f"[pipeline] corpus chunks: {len(chunks)} | partitions: {[len(p.chunks) for p in partitions]}")
+    print(f"[pipeline] llm backend: {llm.name}\n")
+
+    progress = _make_progress(total_calls, desc="swarm")
+    llm = _wrap_llm_with_progress(llm, progress)
+
+    round_logs = []
+    for round_num in range(1, NUM_ROUNDS + 1):
+        print(f"\n=== Round {round_num} / {NUM_ROUNDS} ===")
+        round_start = time.time()
+
+        scouts = [
+            Scout(
+                agent_id=f"scout_R{round_num}_{i}",
+                llm=llm,
+                config=ScoutConfig(task_prompt=task_prompt, partition=partitions[i]),
+            )
+            for i in range(NUM_SCOUTS)
+        ]
+        validators = []
+        for i in range(n_validators):
+            name, strat = strategy_for_validator(i)
+            validators.append(Validator(
+                agent_id=f"validator_R{round_num}_{i}_{name}",
+                llm=llm, strategy=strat, strategy_name=name,
+                task_prompt=task_prompt,
+            ))
+        foragers = []
+        for i in range(NUM_FORAGERS):
+            name, strat = strategy_for_forager(i)
+            foragers.append(Forager(
+                agent_id=f"forager_R{round_num}_{i}_{name}",
+                llm=llm, strategy=strat, strategy_name=name,
+                task_prompt=task_prompt,
+            ))
+        critics = []
+        for i in range(n_critics):
+            name, strat = strategy_for_critic(i)
+            critics.append(Critic(
+                agent_id=f"critic_R{round_num}_{i}_{name}",
+                llm=llm, strategy=strat, strategy_name=name,
+                task_prompt=task_prompt,
+            ))
+        haters = [
+            Hater(agent_id=f"hater_R{round_num}_{i}", llm=llm, task_prompt=task_prompt)
+            for i in range(n_haters)
+        ]
+
+        # Phase A: scouts + validators. Scouts deposit INITIAL signals;
+        # validators (running on the previous round's INITIALs, if any)
+        # deposit VERIFICATIONs that will inform Phase B's provenance boost.
+        phase_a_stats = await asyncio.gather(
+            *(a.run(store, ITERATIONS_PER_ROUND) for a in (*scouts, *validators))
+        )
+
+        # Phase B: foragers, critics, haters. By now Phase A's VERIFICATIONs
+        # exist in the store, so any deposits here under verified lineage
+        # pick up the provenance boost.
+        phase_b_stats = await asyncio.gather(
+            *(a.run(store, ITERATIONS_PER_ROUND) for a in (*foragers, *critics, *haters))
+        )
+
+        all_stats = list(phase_a_stats) + list(phase_b_stats)
+        records = [s.context_record for s in all_stats]
+
+        store.decay_all()
+        pruned = store.prune_weak()
+
+        elapsed = time.time() - round_start
+        diversity_block = format_report(records)
+        print()
+        print(diversity_block)
+        print(f"[round {round_num}] store stats: {store.stats()}")
+        print(f"[round {round_num}] pruned this round: {pruned}")
+        print(f"[round {round_num}] elapsed: {elapsed:.1f}s")
+
+        # Build per-agent stats for the round log
+        all_agents = [*scouts, *validators, *foragers, *critics, *haters]
+        agent_stats_log = []
+        for agent, stats in zip(all_agents, all_stats):
+            agent_stats_log.append({
+                "agent_id": agent.agent_id,
+                "role": agent.ROLE,
+                "deposits": stats.deposits,
+                "rejected_dup": stats.rejected_dup,
+                "iterations": stats.iterations,
+                "novelty_per_iter": stats.novelty_per_iter,
+            })
+
+        # D3: Partition coverage logging — count INITIAL deposits per partition
+        # in THIS round (scouts are named scout_R{round}_{partition_index}).
+        partition_deposits: dict[str, int] = {}
+        for agent, stats in zip(all_agents, all_stats):
+            if agent.ROLE == "scout" and stats.deposits > 0:
+                parts = agent.agent_id.split("_")
+                tag = f"partition_{parts[2]}" if len(parts) >= 3 else "partition_unknown"
+                partition_deposits[tag] = partition_deposits.get(tag, 0) + stats.deposits
+
+        round_logs.append({
+            "round": round_num,
+            "diversity": {
+                "by_role": role_diversity(records),
+                "overall": overall_diversity(records),
+            },
+            "stats": store.stats(),
+            "pruned": pruned,
+            "elapsed_s": elapsed,
+            "agents": agent_stats_log,
+            "partition_deposits_this_round": partition_deposits,
+        })
+
+    # Persist FIRST so a synthesizer crash can't lose the run.
+    output_dir.mkdir(parents=True, exist_ok=True)
+    signal_dump = [
+        {
+            "id": s.id, "type": s.type, "strength": round(s.strength, 4),
+            "depositor": s.depositor, "parent_id": s.parent_id,
+            "visits": s.visits,
+            "metadata": s.metadata,
+            "content": s.content,
+        }
+        for s in store.all()
+    ]
+    (output_dir / "signals.json").write_text(
+        json.dumps(signal_dump, indent=2), encoding="utf-8"
+    )
+    (output_dir / "round_log.json").write_text(
+        json.dumps(round_logs, indent=2), encoding="utf-8"
+    )
+    (output_dir / "run_meta.json").write_text(json.dumps({
+        "task_type": task_type,
+        "user_prompt": user_prompt,
+        "llm_backend": llm.name,
+        "is_mock": USE_MOCK_LLM,
+        "timestamp": datetime.now().isoformat(),
+        "active_roles": sorted(active_roles),
+        "population": {
+            "scouts": NUM_SCOUTS, "foragers": NUM_FORAGERS,
+            "critics": n_critics, "haters": n_haters, "validators": n_validators,
+        },
+    }, indent=2), encoding="utf-8")
+    print(f"\n[pipeline] signals + round log saved before synthesis: {output_dir}")
+
+    # Synthesis (best-effort)
+    print("=== Synthesizing final output ===")
+    run_meta_dict = {
+        "task_type": task_type,
+        "user_prompt": user_prompt,
+        "timestamp": datetime.now().isoformat(),
+    }
+    synth = Synthesizer(llm, task_prompt)
+    try:
+        final_answer, citations, lineage_dot = await synth.synthesize(
+            store,
+            has_validators=(n_validators > 0),
+            prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
+            prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
+            output_dir=output_dir,
+        )
+    except Exception as exc:
+        print(f"[pipeline] synthesis failed ({type(exc).__name__}: {exc})")
+        print(f"[pipeline] signals.json is still on disk — run synthesize.py against it.")
+        final_answer = f"(synthesis failed: {type(exc).__name__}: {exc})"
+        citations = {}
+        lineage_dot = ""
+
+    (output_dir / "answer.txt").write_text(final_answer, encoding="utf-8")
+    if citations:
+        (output_dir / "citations.json").write_text(
+            json.dumps(citations, indent=2), encoding="utf-8"
+        )
+    if lineage_dot:
+        (output_dir / "lineage.dot").write_text(lineage_dot, encoding="utf-8")
+
+    # Save to knowledge base (best-effort)
+    kb_diff: dict = {"new": 0, "matched": 0, "archived": 0}
+    if not ignore_kb:
+        try:
+            from core.projection import build_projection
+            final_projection = build_projection(store, has_validators=(n_validators > 0))
+            diff = kb.save(final_projection, store, run_meta_dict, output_dir=output_dir)
+            kb_diff = {
+                "new": len(diff.get("new_entries", [])),
+                "matched": len(diff.get("matched_entries", [])),
+                "archived": len(diff.get("decayed_to_archive", [])),
+            }
+        except Exception as exc:
+            print(f"[pipeline] kb save failed ({type(exc).__name__}: {exc})")
+
+    try:
+        progress.close()
+    except Exception:
+        pass
+
+    # D1: summary.json — compact run scorecard for empirical cross-run comparison.
+    total_elapsed = sum(r.get("elapsed_s", 0) for r in round_logs)
+    total_llm_calls = 0
+    total_deposits = 0
+    scout_rejected = 0
+    scout_iters = 0
+    non_scout_rejected = 0
+    non_scout_iters = 0
+    junk_rejections = 0
+    for rlog in round_logs:
+        for ag in rlog.get("agents", []):
+            d = ag.get("deposits", 0)
+            r = ag.get("rejected_dup", 0)
+            its = ag.get("iterations", 0)
+            total_llm_calls += its
+            total_deposits += d
+            if ag.get("role") == "scout":
+                scout_rejected += r
+                scout_iters += its
+            else:
+                non_scout_rejected += r
+                non_scout_iters += its
+
+    # Grab audit flag count from the last written audit (best-effort).
+    try:
+        audit_data = json.loads((output_dir / "renderer_audit.json").read_text(encoding="utf-8"))
+        audit_flags = audit_data.get("total_flags", 0)
+    except Exception:
+        audit_flags = -1
+
+    # Final projection for cluster counts.
+    try:
+        from core.projection import build_projection as _bp
+        _final_proj = _bp(store, has_validators=(n_validators > 0))
+        ver_scores = [cp.verification_score for cp in _final_proj.surviving + _final_proj.contested]
+        summary = {
+            "task_type": task_type,
+            "user_prompt": user_prompt,
+            "llm_backend": llm.name,
+            "total_llm_calls": total_llm_calls,
+            "total_elapsed_s": round(total_elapsed, 1),
+            "scout_reject_rate": round(scout_rejected / max(1, scout_iters), 4),
+            "non_scout_reject_rate": round(non_scout_rejected / max(1, non_scout_iters), 4),
+            "junk_rejections": junk_rejections,
+            "n_clusters": {
+                "surviving": len(_final_proj.surviving),
+                "contested": len(_final_proj.contested),
+                "weakly_supported": len(_final_proj.weakly_supported),
+                "rejected_by_field": len(_final_proj.rejected_by_field),
+            },
+            "max_verification_score": round(max(ver_scores), 4) if ver_scores else 0.0,
+            "avg_verification_score": round(sum(ver_scores) / max(1, len(ver_scores)), 4) if ver_scores else 0.0,
+            "audit_flags": audit_flags,
+            "kb_diff": kb_diff,
+        }
+    except Exception as exc:
+        summary = {"error": str(exc)}
+
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print("\n[pipeline] summary.json:")
+    print(json.dumps(summary, indent=2))
+
+    print(f"\n[pipeline] outputs: {output_dir}")
+    if citations:
+        print(f"[pipeline] citations.json: {len(citations)} signal entries")
+    if lineage_dot:
+        print(f"[pipeline] lineage.dot: written")
+    print("=" * 60)
+    print("FINAL ANSWER")
+    print("=" * 60)
+    print(final_answer)
+    print("=" * 60)
+
+    return {"answer": final_answer, "rounds": round_logs}
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main():
+    args = sys.argv[1:]
+    ignore_kb = "--ignore-kb" in args
+    reset_kb  = "--reset-kb"  in args
+    args = [a for a in args if a not in ("--ignore-kb", "--reset-kb")]
+
+    if len(args) < 2:
+        print(__doc__)
+        sys.exit(1)
+    task_type = args[0]
+    user_prompt = " ".join(args[1:])
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # P0.1: mock runs go in a separate directory so they cannot be mistaken
+    # for empirical artifacts.
+    outputs_root = "outputs_mock" if USE_MOCK_LLM else "outputs"
+    output_dir = Path(__file__).parent / outputs_root / f"{task_type}_{timestamp}"
+
+    if ignore_kb:
+        print("[pipeline] --ignore-kb: knowledge base disabled for this run")
+    if reset_kb:
+        print("[pipeline] --reset-kb: quarantining existing knowledge base before run")
+
+    asyncio.run(run_pipeline(
+        task_type, user_prompt, output_dir,
+        ignore_kb=ignore_kb,
+        reset_kb=reset_kb,
+    ))
+
+
+if __name__ == "__main__":
+    main()

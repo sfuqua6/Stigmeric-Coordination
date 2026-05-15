@@ -1,0 +1,82 @@
+{
+  "generated_at": "2026-05-14T21:05:22",
+  "total_flags": 18,
+  "flags": [
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "## 1. POSITION SYNTHESIS"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "use gas emissions but also creates millions of new jobs globally as industries shift towards sustainable practices. This economic transformation is essential for long-term stability and sustainability"
+    },
+    {
+      "issue": "fabricated citation",
+      "cited_id": "INITIAL_00124",
+      "paragraph_excerpt": " trap heat, thereby exacerbating global warming.\n\nThe melting of polar ice caps and rising sea levels are direct consequences of this increased temperature. [INITIAL_00124] highlights the significant "
+    },
+    {
+      "issue": "fabricated citation",
+      "cited_id": "INITIAL_00124",
+      "paragraph_excerpt": " as fossil fuel combustion and land-use changes.\n\nThe impact on biodiversity is another critical factor. As temperatures rise, species struggle to adapt quickly enough, leading to population declines "
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "In summary, increased atmospheric carbon dioxide levels from human activities are"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "**Step-by-Step Explanation:**"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "**Step-by-Step Explanation:**"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "**Conclusion:**"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "But wait, how does this tie into the claim? The supporting evidence is about the link between human activity and temperature increase, using specific data points. So perhaps we can structure it as:"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "ntability mechanisms directly; it focuses on linking temperature increase to human activity and its necessity for action. So perhaps we can focus more on that initial link first before moving into how"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "## 2. OPEN QUESTIONS AND DISSENT"
+    },
+    {
+      "issue": "no 4-gram overlap between paragraph and cited cluster content",
+      "cited_id": "INITIAL_00108",
+      "paragraph_excerpt": "[INITIAL_00108] (status=surviving, dissent_pressure=0.10):",
+      "cluster_content_excerpt": "**arguing for climate action is necessary**\n\n1. **economic growth dependency**: fossil fuels are a cornerstone of global economic growth, powering industries, transportation, and manufacturing. transitioning away from them requires significant upfront investment in renewable energy infrastructure bu"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "[INITIAL_00108] (status=surviving, dissent_pressure=0.10):"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "## 3. CONSIDERED AND FILTERED"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "64, VERIFICATION_00069, VERIFICATION_00055, VERIFICATION_00006\n  Partition:     partition_2, partition_3, partition_1, partition_0\n  support_diversity=4  dissent_pressure=0.10  verification_score=0.13"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "SUPPORT_00141, SUPPORT_00151, SUPPORT_00124, SUPPORT_00096, SUPPORT_00092, SUPPORT_00101\n  Partition:     partition_2, partition_3\n  support_diversity=2  dissent_pressure=0.00  verification_score=0.00"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": "SUPPORT_00035\n  Challenges:    CRITIQUE_00122\n  Verifications: VERIFICATION_00060, VERIFICATION_00068\n  Partition:     partition_0\n  support_diversity=3  dissent_pressure=0.27  verification_score=0.23"
+    },
+    {
+      "issue": "truncated_mid_sentence",
+      "paragraph_excerpt": ":      SUPPORT_00132, SUPPORT_00129, SUPPORT_00072, SUPPORT_00077\n  Verifications: VERIFICATION_00110\n  Partition:     partition_0\n  support_diversity=4  dissent_pressure=0.00  verification_score=0.24"
+    }
+  ]
+}

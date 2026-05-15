@@ -1,0 +1,24 @@
+{
+  "task_type": "debate",
+  "user_prompt": "Climate action is necessary",
+  "llm_backend": "GGUF:DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+  "total_llm_calls": 222,
+  "total_elapsed_s": 5475.6,
+  "scout_reject_rate": 0.2,
+  "non_scout_reject_rate": 0.3333,
+  "junk_rejections": 0,
+  "n_clusters": {
+    "surviving": 5,
+    "contested": 0,
+    "weakly_supported": 0,
+    "rejected_by_field": 1
+  },
+  "max_verification_score": 0.4287,
+  "avg_verification_score": 0.206,
+  "audit_flags": 18,
+  "kb_diff": {
+    "new": 6,
+    "matched": 0,
+    "archived": 0
+  }
+}

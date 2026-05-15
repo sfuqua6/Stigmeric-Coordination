@@ -1,0 +1,5 @@
+The swarm did not converge on a stable answer for this task.
+
+Projection summary: 0 surviving, 0 contested, 16 ungrounded, 1 rejected_by_field.
+
+Consult signals.json and lineage.dot for the underlying signal field. You can re-synthesize with different filter thresholds via `python synthesize.py <run_dir>` once that script is repaired.

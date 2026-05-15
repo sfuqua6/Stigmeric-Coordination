@@ -73,6 +73,59 @@ _DISSENT_CHARS = 400
 _SUMMARY_CHARS = 150   # for Section 3 "filtered" entries
 _EXTERNAL_CHARS = 400  # Wikipedia snippet injected into Section 1 calls
 
+# Composite cluster priority score used for rendering order.
+# Higher support_diversity and verification_score = more credible.
+# Higher dissent_pressure = more contested = lower priority for Section 1.
+def _cluster_priority(cp) -> float:
+    return (cp.support_diversity * max(0.01, cp.verification_score)
+            / max(0.01, cp.dissent_pressure))
+
+
+def _rank_clusters(clusters: list) -> list:
+    """Sort clusters by composite priority score descending."""
+    return sorted(clusters, key=_cluster_priority, reverse=True)
+
+
+def _detect_inter_cluster_contradictions(
+    clusters: list, store: SignalStore
+) -> list[tuple]:
+    """Find pairs of surviving clusters that appear contradictory.
+
+    A pair is flagged as contradictory when:
+      - Both have dissent_pressure > 0.3 (both have field opposition)
+      - Their representative content shares at least 3 content words
+        (same topic) but the dissent signals overlap (same challenger claims)
+
+    Returns list of (cp_a, cp_b) pairs. Small-n heuristic — fast enough.
+    """
+    contradictions = []
+    import re as _re
+    _stop = frozenset({"the","a","an","is","are","to","of","in","and","or","it","be"})
+
+    def content_words(text: str) -> set[str]:
+        return {w.lower() for w in _re.findall(r"[a-z]+", text.lower())
+                if w.lower() not in _stop and len(w) > 3}
+
+    for i, ca in enumerate(clusters):
+        if ca.dissent_pressure < 0.3:
+            continue
+        rep_a = store.get(ca.representative_id)
+        if rep_a is None:
+            continue
+        words_a = content_words(rep_a.content)
+        for cb in clusters[i+1:]:
+            if cb.dissent_pressure < 0.3:
+                continue
+            rep_b = store.get(cb.representative_id)
+            if rep_b is None:
+                continue
+            words_b = content_words(rep_b.content)
+            shared_topic = words_a & words_b
+            shared_dissent = set(ca.dissent_set) & set(cb.dissent_set)
+            if len(shared_topic) >= 3 and shared_dissent:
+                contradictions.append((ca, cb))
+    return contradictions
+
 
 class Synthesizer:
     ROLE = "synthesizer"
@@ -138,13 +191,26 @@ class Synthesizer:
         sections: list[str] = []
 
         # ------------------------------------------------------------------
+        # Executive summary — one LLM call that names top cluster + counts
+        # ------------------------------------------------------------------
+        exec_summary = await self._render_executive_summary(projection, store)
+        if exec_summary:
+            sections.append(exec_summary)
+
+        # ------------------------------------------------------------------
         # Section 1: Position synthesis — one LLM call per surviving cluster
+        # Ranked by composite priority score (support_diversity *
+        # verification_score / dissent_pressure), highest first.
         # ------------------------------------------------------------------
         if projection.surviving:
+            ranked = _rank_clusters(projection.surviving)
             fragments: list[str] = []
-            for cp in projection.surviving:
+            for cp in ranked:
                 fragment = await self._render_cluster_position(cp, store)
                 if fragment:
+                    # Ensure paragraph ends with terminal punctuation.
+                    if fragment and fragment[-1] not in ".!?\")'":
+                        fragment += "."
                     fragments.append(fragment)
             if fragments:
                 sections.append(
@@ -153,18 +219,32 @@ class Synthesizer:
 
         # ------------------------------------------------------------------
         # Section 2: Open questions and dissent — per contested cluster AND
-        # per surviving cluster that attracted any dissent
+        # per surviving cluster that attracted any dissent.
+        # Also flags inter-cluster contradictions detected above.
         # ------------------------------------------------------------------
+        contradictions = _detect_inter_cluster_contradictions(
+            projection.surviving, store
+        )
         dissent_candidates: list[ClusterProjection] = list(projection.contested)
         dissent_candidates += [
             cp for cp in projection.surviving if cp.dissent_set
         ]
-        if dissent_candidates:
+        if dissent_candidates or contradictions:
             fragments = []
             for cp in dissent_candidates:
                 fragment = await self._render_cluster_dissent(cp, store)
                 if fragment:
+                    if fragment[-1] not in ".!?\")'":
+                        fragment += "."
                     fragments.append(fragment)
+            for ca, cb in contradictions:
+                fragments.append(
+                    f"[INTER-CLUSTER CONTRADICTION] Clusters "
+                    f"[{ca.representative_id}] and [{cb.representative_id}] "
+                    f"share topic content and share dissent signals "
+                    f"({', '.join(set(ca.dissent_set) & set(cb.dissent_set))[:3]}). "
+                    f"These may be two framings of the same contested claim."
+                )
             if fragments:
                 sections.append(
                     "## 2. OPEN QUESTIONS AND DISSENT\n\n" + "\n\n".join(fragments)
@@ -224,6 +304,45 @@ class Synthesizer:
         return answer
 
     # -----------------------------------------------------------------------
+    # Executive summary
+    # -----------------------------------------------------------------------
+
+    async def _render_executive_summary(
+        self, projection: SynthesisProjection, store: SignalStore
+    ) -> str:
+        """2-3 sentence executive summary naming cluster counts and top claim."""
+        n_surv = len(projection.surviving)
+        n_cont = len(projection.contested)
+        top_cp = (_rank_clusters(projection.surviving)[0]
+                  if projection.surviving else None)
+        top_claim = ""
+        if top_cp:
+            rep = store.get(top_cp.representative_id)
+            if rep:
+                top_claim = _truncate(rep.content, 120)
+
+        prompt = (
+            f"TASK: {self.task_prompt}\n\n"
+            f"Write 2-3 sentences summarising a swarm analysis result. "
+            f"State: {n_surv} claim cluster(s) survived field pressure, "
+            f"{n_cont} are contested. "
+            f"{'The strongest surviving claim is: ' + top_claim if top_claim else ''} "
+            f"Be concrete and direct. Do not hedge with 'it appears' or 'seems'.\n\n"
+            f"EXECUTIVE SUMMARY:"
+        )
+        try:
+            raw = await self.llm.generate(
+                prompt, role=self.ROLE,
+                max_tokens=150, temperature=_RENDERER_TEMPERATURE,
+            )
+            summary = strip_reasoning(raw.strip())
+            if summary and summary[-1] not in ".!?":
+                summary += "."
+            return summary
+        except Exception:
+            return ""
+
+    # -----------------------------------------------------------------------
     # Per-cluster render helpers
     # -----------------------------------------------------------------------
 
@@ -264,6 +383,19 @@ class Synthesizer:
             if support_lines else ""
         )
 
+        # Dissent injection: if surviving cluster has meaningful field pressure,
+        # include the strongest dissent signal and ask for an acknowledgement.
+        dissent_block = ""
+        if cp.dissent_pressure > 0.5 and cp.dissent_set:
+            strongest = _strongest_signal_content(cp.dissent_set, store)
+            if strongest:
+                dissent_block = (
+                    f"\nCounter-position (dissent_pressure={cp.dissent_pressure:.2f}): "
+                    f"{_truncate(strongest, _DISSENT_CHARS)}\n"
+                    f"Briefly acknowledge this counter-position in one sentence "
+                    f"at the end of the paragraph.\n"
+                )
+
         prompt = (
             f"TASK: {self.task_prompt}\n\n"
             f"Write one clear paragraph synthesizing the following surviving claim "
@@ -271,7 +403,10 @@ class Synthesizer:
             f"Do not introduce claims not present in the input. "
             f"If the claim is marked 'not externally verified', keep that phrase.\n\n"
             f"Claim [{cp.representative_id}]: {content}{unver_note}\n"
+            f"support_diversity={cp.support_diversity}  "
+            f"verification_score={cp.verification_score:.2f}\n"
             f"{support_block}"
+            f"{dissent_block}"
             f"{ext_block}"
             f"{partition_note}\n\n"
             f"PARAGRAPH:"
@@ -464,6 +599,14 @@ def _build_faithfulness_audit(
                     "issue": "truncated_mid_sentence",
                     "paragraph_excerpt": para[-200:],
                 })
+
+        # Check 6: suspiciously short paragraph (likely incomplete render).
+        if cited_ids and len(para) < 50:
+            flags.append({
+                "issue": "suspiciously_short_paragraph",
+                "paragraph_excerpt": para,
+                "length": len(para),
+            })
 
     return flags
 

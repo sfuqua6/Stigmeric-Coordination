@@ -6,6 +6,13 @@ Usage:
     python run_swarm.py creative "Write a haiku about emergence"
     python run_swarm.py problem_solving "How can cities reduce traffic?"
 
+Flags:
+    --mode={stigmergic,baseline}   Default: stigmergic. Use baseline to run an
+                                   independent-agent comparison (no signal store).
+    --corpus={real,placeholder}    Default: real. Use placeholder to skip retrieval.
+    --ignore-kb                    Disable knowledge base for this run.
+    --reset-kb                     Quarantine existing KB entries before run.
+
 Set MOCK_LLM=1 to run without loading the model.
 
 Per round:
@@ -561,6 +568,17 @@ def main():
         corpus_mode = val
     args = [a for a in args if not a.startswith("--corpus=")]
 
+    # --mode={stigmergic,baseline}
+    run_mode = "stigmergic"
+    mode_flags = [a for a in args if a.startswith("--mode=")]
+    if mode_flags:
+        val = mode_flags[-1].split("=", 1)[1]
+        if val not in ("stigmergic", "baseline"):
+            print(f"[pipeline] unknown --mode value {val!r}; use 'stigmergic' or 'baseline'")
+            sys.exit(1)
+        run_mode = val
+    args = [a for a in args if not a.startswith("--mode=")]
+
     if len(args) < 2:
         print(__doc__)
         sys.exit(1)
@@ -571,7 +589,8 @@ def main():
     # P0.1: mock runs go in a separate directory so they cannot be mistaken
     # for empirical artifacts.
     outputs_root = "outputs_mock" if USE_MOCK_LLM else "outputs"
-    output_dir = Path(__file__).parent / outputs_root / f"{task_type}_{timestamp}"
+    mode_suffix = "_baseline" if run_mode == "baseline" else ""
+    output_dir = Path(__file__).parent / outputs_root / f"{task_type}_{timestamp}{mode_suffix}"
 
     if ignore_kb:
         print("[pipeline] --ignore-kb: knowledge base disabled for this run")
@@ -579,13 +598,66 @@ def main():
         print("[pipeline] --reset-kb: quarantining existing knowledge base before run")
     if corpus_mode == "placeholder":
         print("[pipeline] --corpus=placeholder: using engineered corpus (diversity numbers invalid)")
+    if run_mode == "baseline":
+        print("[pipeline] --mode=baseline: running non-stigmergic independent-agent baseline")
 
-    asyncio.run(run_pipeline(
-        task_type, user_prompt, output_dir,
-        ignore_kb=ignore_kb,
-        reset_kb=reset_kb,
-        corpus_mode=corpus_mode,
+    if run_mode == "baseline":
+        _run_baseline(task_type, user_prompt, output_dir, corpus_mode=corpus_mode)
+    else:
+        asyncio.run(run_pipeline(
+            task_type, user_prompt, output_dir,
+            ignore_kb=ignore_kb,
+            reset_kb=reset_kb,
+            corpus_mode=corpus_mode,
+        ))
+
+
+def _run_baseline(
+    task_type: str,
+    user_prompt: str,
+    output_dir: Path,
+    corpus_mode: str = "real",
+) -> None:
+    """Entry point for --mode=baseline: runs BaselineCoordinator and writes outputs."""
+    from core.baseline import BaselineCoordinator
+    from core.config import NUM_SCOUTS, NUM_FORAGERS, USE_MOCK_LLM
+
+    task_prompt = build_task_prompt(task_type, user_prompt)
+    llm = make_llm()
+
+    # Corpus — same logic as stigmergic path
+    corpus_text = ""
+    if task_type != "coding":
+        if corpus_mode == "placeholder":
+            corpus_text = trivial_corpus_from_thesis(user_prompt)
+        else:
+            try:
+                from core.retrieval import CachedRetriever, CompositeRetriever
+                chunks = CachedRetriever(CompositeRetriever()).retrieve(user_prompt)
+                corpus_text = "\n\n".join(c.text for c in chunks)
+            except Exception as exc:
+                print(f"[baseline] retrieval failed ({exc}); using placeholder corpus")
+                corpus_text = trivial_corpus_from_thesis(user_prompt)
+
+    coordinator = BaselineCoordinator(n_agents=NUM_SCOUTS + NUM_FORAGERS)
+    result = asyncio.run(coordinator.run(
+        task_type=task_type,
+        user_prompt=user_prompt,
+        task_prompt=task_prompt,
+        llm=llm,
+        corpus_text=corpus_text,
+        output_dir=output_dir,
+        is_mock=USE_MOCK_LLM,
     ))
+
+    print("\n[baseline] summary.json:")
+    print(json.dumps(result.summary_dict(), indent=2))
+    print(f"\n[baseline] outputs: {output_dir}")
+    print("=" * 60)
+    print("BASELINE FINAL ANSWER")
+    print("=" * 60)
+    print(result.final_answer)
+    print("=" * 60)
 
 
 if __name__ == "__main__":

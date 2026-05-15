@@ -60,8 +60,11 @@ from core.sampling import (
     strategy_for_forager, strategy_for_critic, strategy_for_validator,
 )
 from core.diversity import (
-    AgentContextRecord, role_diversity, overall_diversity, format_report,
+    AgentContextRecord,
+    _role_partition_overlap, _overall_partition_overlap, format_partition_overlap_report,
+    role_diversity, overall_diversity, format_report,  # backward-compat aliases
 )
+from core.output_diversity import format_output_diversity_report
 from core.llm import make_llm
 from core.knowledge_base import KnowledgeBase
 
@@ -186,7 +189,8 @@ def _reset_kb(kb_dir: Path) -> None:
 async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                        ignore_kb: bool = False,
                        reset_kb: bool = False,
-                       corpus_mode: str = "real") -> dict:
+                       corpus_mode: str = "real",
+                       show_partition_overlap: bool = False) -> dict:
     task_prompt = build_task_prompt(task_type, user_prompt)
     llm = make_llm()
     store = SignalStore()
@@ -345,9 +349,15 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         pruned = store.prune_weak()
 
         elapsed = time.time() - round_start
-        diversity_block = format_report(records)
+
+        # Output diversity: collect all deposited texts from this round
+        all_deposit_texts = [
+            c for rec in records for c in rec.deposit_contents if c
+        ]
         print()
-        print(diversity_block)
+        print(format_output_diversity_report(all_deposit_texts, round_num))
+        if show_partition_overlap:
+            print(format_partition_overlap_report(records))
         print(f"[round {round_num}] store stats: {store.stats()}")
         print(f"[round {round_num}] pruned this round: {pruned}")
         print(f"[round {round_num}] elapsed: {elapsed:.1f}s")
@@ -374,11 +384,17 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 tag = f"partition_{parts[2]}" if len(parts) >= 3 else "partition_unknown"
                 partition_deposits[tag] = partition_deposits.get(tag, 0) + stats.deposits
 
+        from core.output_diversity import centroid_cosine_distance, self_bleu as _self_bleu
         round_logs.append({
             "round": round_num,
-            "diversity": {
-                "by_role": role_diversity(records),
-                "overall": overall_diversity(records),
+            "partition_overlap": {
+                "by_role": _role_partition_overlap(records),
+                "overall": _overall_partition_overlap(records),
+            },
+            "output_diversity": {
+                "centroid_cosine_dist": centroid_cosine_distance(all_deposit_texts),
+                "self_bleu": _self_bleu(all_deposit_texts),
+                "n_deposits": len(all_deposit_texts),
             },
             "stats": store.stats(),
             "pruned": pruned,
@@ -555,7 +571,8 @@ def main():
     args = sys.argv[1:]
     ignore_kb = "--ignore-kb" in args
     reset_kb  = "--reset-kb"  in args
-    args = [a for a in args if a not in ("--ignore-kb", "--reset-kb")]
+    show_partition_overlap = "--show-partition-overlap" in args
+    args = [a for a in args if a not in ("--ignore-kb", "--reset-kb", "--show-partition-overlap")]
 
     # --corpus={real,placeholder}
     corpus_mode = "real"
@@ -609,6 +626,7 @@ def main():
             ignore_kb=ignore_kb,
             reset_kb=reset_kb,
             corpus_mode=corpus_mode,
+            show_partition_overlap=show_partition_overlap,
         ))
 
 

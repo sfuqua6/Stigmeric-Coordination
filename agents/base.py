@@ -238,6 +238,7 @@ class BaseAgent:
                 consecutive_dups = 0
                 stats.deposits += 1
                 own_ids.append(sid)
+                stats.context_record.deposit_contents.append(content)
 
                 # per-iteration semantic novelty (cosine dist to centroid of prior deposits)
                 emb = store.get_embedding(sid)

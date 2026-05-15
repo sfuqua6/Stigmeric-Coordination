@@ -87,6 +87,21 @@ The driver for the sweep is `tools/sweep.py` (see §6 below).
 - `deposit_with_context` injecting `parent_content` into child metadata: removed. A child may know it has a parent (by ID); it may not see what the parent said.
 - All explicit `asyncio.sleep(random.uniform(...))` polling delays: replaced with proper event-loop yielding and signal events.
 
+### What this build adds
+
+- **Per-role model routing.** `--heterogeneous` enables sequential
+  per-phase loading of distinct GGUF models per role. See
+  `configs/heterogeneous.json` for the default assignment and
+  `core/llm_router.py` for the load/unload mechanics. Total disk
+  footprint for the default assignment is ~33 GB across six models.
+- **Per-role diversity logging.** `round_log.json` now includes
+  `diversity.cross_model_delta` so the contribution of model
+  heterogeneity (vs. partition heterogeneity vs. strategy heterogeneity)
+  can be isolated in ablation analysis.
+- **Cloud-validator stub.** `--cloud-validator={anthropic,gemini}`
+  flag wired through but not implemented. To enable, see comments
+  in `agents/validator.py`.
+
 ## Folder layout
 
 ```

@@ -128,13 +128,14 @@ review and the P-phase IDs from the plan.
 
 ## Writing / framing
 
-- **Q1 — the stigmergy metaphor is rhetorical.** When the paper draft
-  starts, demote "stigmergic" from a claim to a label and lead with
-  "trace-only multi-agent LLM coordination with information partitioning."
-  No code change required.
-
 - **Q9 — task_type now changes behavior** (partial: roles are
   task-conditional after this session's patches), but the dynamics
   inside each active role are still identical across tasks. Worth
   revisiting per-role temperatures and per-task synthesizer prompts
   before the paper draft.
+
+- **Cloud validator implementation.** The flag exists, the SDK is not
+  wired. Implement against Anthropic Haiku 4.5 (paid, ~$0.005/run) or
+  Gemini Flash 2.0 (free tier, 15 req/min). Decide first whether the
+  fully-local property is worth preserving for the headline experiment;
+  cloud validator is recommended only as a follow-up ablation.

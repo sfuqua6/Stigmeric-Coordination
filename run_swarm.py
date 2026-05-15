@@ -65,6 +65,7 @@ from agents.critic import Critic
 from agents.hater import Hater
 from agents.validator import Validator
 from agents.synthesizer import Synthesizer
+from core.role_registry import get_role_classes
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +77,7 @@ TASK_PROMPTS = {
     "analysis": "Provide a structured analysis of the following question: {prompt}",
     "creative": "Generate creative content addressing: {prompt}",
     "problem_solving": "Propose solutions to the following problem: {prompt}",
+    "coding": "Implement a Python solution for the following programming task: {prompt}",
 }
 
 # Which roles each task type actually wants. Suppresses semantically wrong
@@ -86,6 +88,7 @@ ROLES_FOR_TASK = {
     "analysis":        {"critic", "hater", "validator"},
     "creative":        {"critic"},                       # no hater, no validator
     "problem_solving": {"critic", "hater"},              # no validator
+    "coding":          {"critic", "hater", "validator"}, # all roles, domain-specific classes
 }
 
 
@@ -225,18 +228,37 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         print(f"\n=== Round {round_num} / {NUM_ROUNDS} ===")
         round_start = time.time()
 
-        scouts = [
-            Scout(
-                agent_id=f"scout_R{round_num}_{i}",
-                llm=llm,
-                config=ScoutConfig(task_prompt=task_prompt, partition=partitions[i]),
-            )
-            for i in range(NUM_SCOUTS)
-        ]
+        # Look up domain-specific role classes (coding tasks override defaults)
+        role_cls = get_role_classes(task_type)
+        ScoutClass = role_cls["scout"]
+        DeveloperClass = role_cls["developer"]
+        CriticClass = role_cls["critic"]
+        HaterClass = role_cls["hater"]
+        ValidatorClass = role_cls["validator"]
+
+        if task_type == "coding":
+            # Coding scouts don't use corpus partitions
+            scouts = [
+                ScoutClass(
+                    agent_id=f"scout_R{round_num}_{i}",
+                    llm=llm,
+                    task_prompt=task_prompt,
+                )
+                for i in range(NUM_SCOUTS)
+            ]
+        else:
+            scouts = [
+                ScoutClass(
+                    agent_id=f"scout_R{round_num}_{i}",
+                    llm=llm,
+                    config=ScoutConfig(task_prompt=task_prompt, partition=partitions[i]),
+                )
+                for i in range(NUM_SCOUTS)
+            ]
         validators = []
         for i in range(n_validators):
             name, strat = strategy_for_validator(i)
-            validators.append(Validator(
+            validators.append(ValidatorClass(
                 agent_id=f"validator_R{round_num}_{i}_{name}",
                 llm=llm, strategy=strat, strategy_name=name,
                 task_prompt=task_prompt,
@@ -244,7 +266,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         foragers = []
         for i in range(NUM_FORAGERS):
             name, strat = strategy_for_forager(i)
-            foragers.append(Developer(
+            foragers.append(DeveloperClass(
                 agent_id=f"forager_R{round_num}_{i}_{name}",
                 llm=llm, strategy=strat, strategy_name=name,
                 task_prompt=task_prompt,
@@ -252,13 +274,13 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         critics = []
         for i in range(n_critics):
             name, strat = strategy_for_critic(i)
-            critics.append(Critic(
+            critics.append(CriticClass(
                 agent_id=f"critic_R{round_num}_{i}_{name}",
                 llm=llm, strategy=strat, strategy_name=name,
                 task_prompt=task_prompt,
             ))
         haters = [
-            Hater(agent_id=f"hater_R{round_num}_{i}", llm=llm, task_prompt=task_prompt)
+            HaterClass(agent_id=f"hater_R{round_num}_{i}", llm=llm, task_prompt=task_prompt)
             for i in range(n_haters)
         ]
 
@@ -364,7 +386,8 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         "user_prompt": user_prompt,
         "timestamp": datetime.now().isoformat(),
     }
-    synth = Synthesizer(llm, task_prompt)
+    SynthesizerClass = get_role_classes(task_type).get("synthesizer", Synthesizer)
+    synth = SynthesizerClass(llm, task_prompt)
     try:
         final_answer, citations, lineage_dot = await synth.synthesize(
             store,

@@ -1,12 +1,11 @@
 > **Status note (P0.3).** This implementation is a working apparatus for
 > an experiment that has not yet been performed. All artifacts in
 > `outputs_mock/` are from MockLLM and prove only plumbing, not behavior.
-> The Jaccard numbers logged per round measure *input-side* signal-ID
-> overlap, not output-side informational independence — a meaningfully
-> different quantity, addressed in DEFERRED.md (R2). The trivial
-> placeholder corpus in `core/intake.py` is engineered to make
-> partitioning succeed by construction; diversity numbers from it should
-> not be cited as evidence until a real retriever is wired in (R9).
+> Real retrieval (Wikipedia → Web → placeholder fallback) is now wired in
+> via `core/retrieval.py`; use `--corpus=placeholder` to revert to the
+> engineered corpus, though diversity numbers from it are not evidence.
+> A non-stigmergic baseline mode is available via `--mode=baseline`;
+> run both modes and compare with `python tools/compare_runs.py`.
 > See `DEFERRED.md` for the full list of non-integrated items.
 
 ---
@@ -60,30 +59,62 @@ MOCK_LLM=1 python run_swarm.py debate "Test thesis"
 ```
 Attempt At Cleaning/
 ├── README.md                  (this file)
-├── run_swarm.py               (pipeline orchestrator)
+├── run_swarm.py               (pipeline orchestrator; --mode, --corpus flags)
 ├── core/
 │   ├── config.py              (small, validated tunables)
-│   ├── signal_types.py        (universal types only)
-│   ├── signal_store.py        (typed DAG, trace-only API)
+│   ├── signal_types.py        (INITIAL, SUPPORT, CRITIQUE_POSITIVE/NEGATIVE, ...)
+│   ├── signal_store.py        (typed DAG, logit-space dynamics, DBSCAN clustering)
 │   ├── intake.py              (corpus partitioner)
 │   ├── sampling.py            (differentiated sampling strategies)
-│   ├── diversity.py           (Jaccard distance over agent context sets)
-│   └── llm.py                 (DeepSeek-R1-Distill wrapper + MockLLM)
-└── agents/
-    ├── base.py                (BaseAgent — enforces no-leak rule)
-    ├── scout.py               (corpus-partition-conditioned)
-    ├── forager.py             (signal-trace-conditioned, varied sampling)
-    ├── critic.py              (artifact evaluation, no chain rendering)
-    ├── hater.py               (consensus-cluster gradient, no agent reasoning)
-    ├── validator.py           (external grounding via Wikipedia/web)
-    └── synthesizer.py         (final read-out from surviving signals)
+│   ├── diversity.py           (partition-overlap metrics — input-health only)
+│   ├── output_diversity.py    (centroid cosine distance, Self-BLEU)
+│   ├── baseline.py            (non-stigmergic independent-agent baseline)
+│   ├── retrieval.py           (Wikipedia -> Web -> placeholder CompositeRetriever)
+│   ├── projection.py          (DAG projection: surviving/contested/weakly_supported)
+│   ├── knowledge_base.py      (cross-run consensus/rejection memory)
+│   ├── role_registry.py       (task-type -> role class mapping)
+│   └── llm.py                 (model wrapper + MockLLM)
+├── agents/
+│   ├── base.py                (BaseAgent — enforces no-leak rule)
+│   ├── scout.py               (corpus-partition-conditioned)
+│   ├── developer.py           (signal-trace-conditioned; renamed from Forager)
+│   ├── forager.py             (backward-compat alias for developer.py)
+│   ├── critic.py              (CRITIQUE_POSITIVE / CRITIQUE_NEGATIVE routing)
+│   ├── hater.py               (DBSCAN cluster targeting, no agent reasoning)
+│   ├── validator.py           (signed-avg external grounding)
+│   ├── synthesizer.py         (ranked cluster render + executive summary)
+│   └── coding_roles.py        (coding task: RequirementsScout, StaticCritic, ...)
+└── tools/
+    └── compare_runs.py        (side-by-side summary.json comparison)
 ```
 
 ## What this implementation does *not* yet do
 
-- An A/B benchmark against a deliberative baseline. The infrastructure is in place; the experiment is not run.
-- Ablation of the provenance boost.
-- Beyond-Jaccard information-theoretic measures of inter-agent independence.
-- Multi-GPU or model-serving scaling. By design — this targets a single 6GB consumer GPU.
+- **A run of the actual experiment.** The baseline coordinator and stigmergic pipeline are wired and tested, but no GPU run with a real model has been performed. All per-round numbers in `outputs_mock/` prove only plumbing.
+- **Ablation of the provenance boost.** The boost is on by default; there is no flag to disable it for a controlled comparison.
+- **Multi-GPU or model-serving scaling.** By design — this targets a single 6GB consumer GPU (NVIDIA RTX 3060 Laptop, 4-bit NF4).
+
+## The Jaccard metric was renamed (not removed)
+
+Earlier versions reported a "diversity" number per round that was actually
+**Jaccard distance over agent context sets** — which corpus chunks and signal
+IDs each agent consumed. That is a partition-health diagnostic (did agents read
+disjoint inputs?) not an output-diversity metric (did agents produce different
+ideas?). Two agents who read completely different chunks can still produce
+identical outputs; the Jaccard number wouldn't catch it.
+
+The functions are now named `_partition_overlap_jaccard`, `_role_partition_overlap`,
+and `_overall_partition_overlap` in `core/diversity.py`. The old public names
+are kept as backward-compat aliases. Partition overlap is suppressed from the
+round log by default; enable it with `--show-partition-overlap` when debugging
+corpus partitioning.
+
+The **actual** output diversity metrics are in `core/output_diversity.py`:
+- `centroid_cosine_distance` — average cosine distance from each deposit's
+  embedding to the group centroid. Uses `sentence-transformers` when available,
+  falls back to bag-of-words TF vectors.
+- `self_bleu` — average BLEU of each deposit against all others. Low = diverse.
+
+Both are logged per round in `round_log.json` under `output_diversity`.
 
 See the research note at the project root for the full motivation.

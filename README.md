@@ -16,10 +16,31 @@ Reference implementation of stigmergic multi-agent LLM coordination through info
 
 ## What this is
 
-A from-scratch rebuild of the swarm pipeline that respects two principles the parent project gestures at but does not enforce:
+A from-scratch rebuild of the swarm pipeline that treats multi-agent coordination
+as the system, and treats *every* source of inter-agent decorrelation as an
+independently measurable lever. The levers we instrument are:
 
-1. **No-leak rule.** Agents observe deposited signals as artifacts (content + ID + structural metadata only). Agents never see another agent's reasoning chain, ancestry text, or chain-of-thought.
-2. **Information partitioning as the diversity engine.** Diversity comes from what each agent has been shown, not from what role prompt or temperature it was given. Scouts get disjoint corpus partitions; downstream agents get differentiated sampling strategies over the shared signal store.
+1. **Information partitioning.** Scouts receive disjoint slices of a retrieved
+   corpus. They cannot see each other's slices.
+2. **Model heterogeneity.** Different roles run on different local LLM
+   checkpoints from different families and size classes, sequentially loaded
+   per phase so a 6 GB consumer GPU can host the ensemble across time rather
+   than in space.
+3. **Strategy heterogeneity.** Foragers/critics/validators use different
+   sampling strategies over the shared signal store.
+4. **Trace-only coordination.** Agents see deposited signals as artifacts;
+   they never see another agent's reasoning chain. (The no-leak rule.)
+
+The dissertation claim is NOT "information partitioning is the diversity
+engine." The claim is "multi-agent coordination produces emergent task
+performance from multiple independently-ablatable sources of diversity, and
+the architecture lets us measure which sources contribute."
+
+This framing matters for what counts as evidence. A single-source claim
+would require us to control all confounds and demonstrate the chosen lever
+in isolation. A multi-source claim requires us to ablate each lever and
+report per-lever contribution. The current experimental apparatus (with
+the baseline-mode comparison from prior work) is designed for the latter.
 
 ## Run it
 

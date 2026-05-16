@@ -37,22 +37,22 @@ MAX_TOKENS_SYNTHESIZER = 600
 # Population
 # ---------------------------------------------------------------------------
 
-NUM_SCOUTS = 4*5
-NUM_FORAGERS = 4*5
-NUM_CRITICS = 2*5
-NUM_HATERS = 2*5
-NUM_VALIDATORS = 1*5
-NUM_ROUNDS = 3*8
+NUM_SCOUTS = 4#*5
+NUM_FORAGERS = 4#*5
+NUM_CRITICS = 2#*5
+NUM_HATERS = 2#*5
+NUM_VALIDATORS = 1#*5
+NUM_ROUNDS = 3#*8
 ITERATIONS_PER_ROUND = 8*2
 
 # Scout saturation cap: stop after this many successful INITIAL deposits per round.
 # Prevents scouts from burning 6-7 iterations generating near-duplicate claims.
 # The 8-iteration ceiling (ITERATIONS_PER_ROUND) still applies as an absolute cap.
-SCOUT_MAX_DEPOSITS_PER_ROUND = 3*5
+SCOUT_MAX_DEPOSITS_PER_ROUND = 3#*5
 
 # Characters from a scout's last successful deposit to include in the re-seed hint.
 # Steers the scout away from its most recent claim without injecting other agents' work.
-SCOUT_RESEED_CHARS = 100*3
+SCOUT_RESEED_CHARS = 100*1.5
 
 # ---------------------------------------------------------------------------
 # Signal store dynamics

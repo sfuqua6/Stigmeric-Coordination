@@ -179,6 +179,13 @@ class Synthesizer:
             cont = len(projection.contested)
             weak = len(projection.weakly_supported)
             rej  = len(projection.rejected_by_field)
+            # Bug 3: write a minimal renderer_audit.json on the no-consensus
+            # short-circuit so summary.json reads audit_flags=0 (ran clean,
+            # zero flags) rather than the -1 sentinel that meant "file
+            # missing". Skip the actual faithfulness audit — there's no
+            # rendered answer to audit.
+            if output_dir is not None:
+                _write_no_consensus_audit(output_dir)
             return (
                 f"The swarm did not converge on a stable answer for this task.\n\n"
                 f"Projection summary: {surv} surviving, {cont} contested, "
@@ -292,14 +299,26 @@ class Synthesizer:
         # ------------------------------------------------------------------
         # Post-hoc faithfulness audit
         # ------------------------------------------------------------------
-        audit_flags = _build_faithfulness_audit(answer, projection, store)
-        if output_dir is not None:
-            _write_faithfulness_audit(audit_flags, output_dir)
-        elif audit_flags:
-            print(
-                f"[synthesizer] faithfulness audit: {len(audit_flags)} flag(s) "
-                f"(pass output_dir to write renderer_audit.json)"
-            )
+        # Bug 3: wrap so an audit crash writes a -2 sentinel + error message
+        # rather than leaving renderer_audit.json absent (which made summary
+        # report audit_flags=-1 ambiguously). Sentinel semantics now:
+        #     0  = audit ran clean
+        #     N>=1 = audit ran, found N flags
+        #     -2 = audit crashed (audit_error field carries the reason)
+        try:
+            audit_flags = _build_faithfulness_audit(answer, projection, store)
+            if output_dir is not None:
+                _write_faithfulness_audit(audit_flags, output_dir)
+            elif audit_flags:
+                print(
+                    f"[synthesizer] faithfulness audit: {len(audit_flags)} flag(s) "
+                    f"(pass output_dir to write renderer_audit.json)"
+                )
+        except Exception as exc:
+            print(f"[synthesizer] faithfulness audit crashed: "
+                  f"{type(exc).__name__}: {exc}")
+            if output_dir is not None:
+                _write_crashed_audit(output_dir, exc)
 
         return answer
 
@@ -630,6 +649,42 @@ def _write_faithfulness_audit(flags: list[dict], output_dir: Path) -> None:
             print("[synthesizer] faithfulness audit: 0 flags (all citations faithful)")
     except Exception as exc:
         print(f"[synthesizer] could not write renderer_audit.json: {exc}")
+
+
+def _write_no_consensus_audit(output_dir: Path) -> None:
+    """No-consensus short-circuit: there's no rendered answer to audit, so
+    write total_flags=0 (audit ran clean) rather than leaving the file
+    absent — which downstream reads as the -1 'unknown' sentinel."""
+    audit = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "total_flags": 0,
+        "flags": [],
+        "reason": "no_consensus",
+    }
+    try:
+        (output_dir / "renderer_audit.json").write_text(
+            json.dumps(audit, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        print(f"[synthesizer] could not write no-consensus renderer_audit.json: {exc}")
+
+
+def _write_crashed_audit(output_dir: Path, exc: Exception) -> None:
+    """Audit crashed mid-call. Write total_flags=-2 with an audit_error
+    field so downstream summary.audit_flags is unambiguous (-2 = crashed,
+    not -1 = file missing for unknown reason)."""
+    audit = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "total_flags": -2,
+        "flags": [],
+        "audit_error": f"{type(exc).__name__}: {exc}",
+    }
+    try:
+        (output_dir / "renderer_audit.json").write_text(
+            json.dumps(audit, indent=2), encoding="utf-8"
+        )
+    except Exception as exc2:
+        print(f"[synthesizer] could not write crashed-audit renderer_audit.json: {exc2}")
 
 
 # ---------------------------------------------------------------------------

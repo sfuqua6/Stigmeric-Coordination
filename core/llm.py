@@ -49,6 +49,10 @@ def make_llm(force_mock: bool = False):
     """Return an LLM instance. Selects backend via SWARM_BACKEND env var.
 
     SWARM_BACKEND values:
+        "vllm" (auto-selected on Colab if vllm is importable)
+               — one non-quantized model in VRAM; vLLM batches internally
+                 via AsyncLLMEngine. Best for T4 / L4 / A100. Set COLAB=1
+                 to force this path on a non-Colab GPU host.
         "gguf" (default if llama-cpp-python is installed)
                — llama-cpp-python with GGUF 4-bit weights; bypasses
                  bitsandbytes entirely. Best for 16 GB RAM / 6 GB VRAM.
@@ -57,17 +61,44 @@ def make_llm(force_mock: bool = False):
         anything else — treated as "hf"
 
     Falls back to MockLLM on any load failure or when MOCK_LLM=1.
-
-    The default flipped from "hf" to "gguf" when llama-cpp-python is
-    installed, because HF+bnb on Windows with the default model hits
-    paging-file pressure (~14 GB transient) that the GGUF path avoids.
     """
     if force_mock or USE_MOCK_LLM:
         return MockLLM()
 
-    # New default: prefer GGUF if available; old explicit value still wins.
-    if os.environ.get("SWARM_BACKEND"):
-        backend = os.environ["SWARM_BACKEND"].lower()
+    # vLLM path: explicit SWARM_BACKEND=vllm, or COLAB=1, or auto-detect
+    # when a Colab-tier GPU is detected by config._TIER.
+    explicit_backend = os.environ.get("SWARM_BACKEND", "").lower()
+    colab_flag = os.environ.get("COLAB", "").strip() not in ("", "0", "false", "False")
+    try:
+        from .config import _TIER as _detected_tier
+    except Exception:
+        _detected_tier = None
+    want_vllm = (
+        explicit_backend == "vllm"
+        or (explicit_backend == "" and (colab_flag or _detected_tier is not None))
+    )
+    if want_vllm:
+        try:
+            from .llm_vllm import VLLMBackend, _VLLM_AVAILABLE
+            if _VLLM_AVAILABLE:
+                from .config import VLLM_DTYPE, LLM_CONCURRENCY
+                return VLLMBackend(
+                    model_name=MODEL_NAME,
+                    dtype=VLLM_DTYPE,
+                    max_num_seqs=max(32, LLM_CONCURRENCY),
+                )
+            print("[llm] vllm not importable; falling back to GGUF/HF path")
+        except Exception as exc:
+            print(f"[llm] vLLM backend init failed "
+                  f"({type(exc).__name__}: {exc}); falling back to GGUF/HF.")
+        if explicit_backend == "vllm":
+            # User explicitly asked for vllm and it failed; don't silently
+            # pretend the laptop path is equivalent.
+            print("[llm] WARNING: SWARM_BACKEND=vllm requested but unavailable.")
+
+    # Laptop / GGUF / HF path
+    if explicit_backend:
+        backend = explicit_backend
     elif _gguf_available():
         backend = "gguf"
         print("[llm] Auto-selected GGUF backend (llama-cpp-python detected).")

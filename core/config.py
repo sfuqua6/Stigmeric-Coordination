@@ -3,15 +3,77 @@
 import os
 
 # ---------------------------------------------------------------------------
+# Colab tier detection — drives model selection, populations, dtype, etc.
+# ---------------------------------------------------------------------------
+# Detect GPU tier so we can pick reasonable defaults for Colab T4 / L4 / A100
+# without forcing the user to set every knob. _TIER is None off-Colab (laptop /
+# CPU dev), or "t4" | "l4" | "a100_40" | "a100_80" | "unknown" on Colab.
+# Force the Colab path on a non-Colab host with COLAB=1.
+
+def _detect_colab_tier():
+    """Return one of ('t4', 'l4', 'a100_40', 'a100_80', 'unknown') or None."""
+    forced = bool(os.environ.get("COLAB", "").strip() not in ("", "0", "false", "False"))
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "unknown" if forced else None
+        name = torch.cuda.get_device_name(0).lower()
+        mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        if "a100" in name:
+            return "a100_80" if mem_gb > 60 else "a100_40"
+        if "l4" in name:
+            return "l4"
+        if "t4" in name:
+            return "t4"
+        return "unknown" if forced else None
+    except Exception:
+        return "unknown" if forced else None
+
+
+_TIER = _detect_colab_tier()
+
+# Drop reasoning-distilled models on Colab — the </think> / scratchpad
+# pathology lives there and the base agent's _SCRATCHPAD_RE is a partial
+# mitigation, not a fix. Plain -Instruct variants are cleaner.
+_MODEL_BY_TIER = {
+    "t4":      "Qwen/Qwen2.5-7B-Instruct",
+    "l4":      "Qwen/Qwen2.5-14B-Instruct",
+    "a100_40": "Qwen/Qwen2.5-32B-Instruct",
+    "a100_80": "Qwen/Qwen2.5-32B-Instruct",
+    "unknown": "Qwen/Qwen2.5-7B-Instruct",
+}
+
+_DTYPE_BY_TIER = {
+    "t4":      "float16",
+    "l4":      "float16",
+    "a100_40": "bfloat16",
+    "a100_80": "bfloat16",
+    "unknown": "float16",
+}
+
+# Chat-template identifiers per model. vLLM picks up the HF chat template
+# from the tokenizer automatically; this dict is informational + a check
+# against typos in the manifest.
+CHAT_TEMPLATES = {
+    "Qwen/Qwen2.5-7B-Instruct":  "qwen",
+    "Qwen/Qwen2.5-14B-Instruct": "qwen",
+    "Qwen/Qwen2.5-32B-Instruct": "qwen",
+}
+
+# ---------------------------------------------------------------------------
 # Model & hardware
 # ---------------------------------------------------------------------------
 
-# Default model: ~3 GB download, fits comfortably on a laptop with 4-5 GB free.
-# Override with the SWARM_MODEL env var, e.g.:
-#     $env:SWARM_MODEL = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"    # ~15 GB
-#     $env:SWARM_MODEL = "microsoft/phi-2"                            # ~5.4 GB
-#     $env:SWARM_MODEL = "Qwen/Qwen2.5-3B-Instruct"                   # ~6 GB
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+# Default (laptop / non-Colab) model: GGUF-friendly DeepSeek 7B.
+# Override with the SWARM_MODEL env var.
+_DEFAULT_LAPTOP_MODEL = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+MODEL_NAME = (
+    os.environ.get("SWARM_MODEL")
+    or (_MODEL_BY_TIER[_TIER] if _TIER is not None else _DEFAULT_LAPTOP_MODEL)
+)
+
+# vLLM dtype: bfloat16 on A100 (faster on Ampere), float16 elsewhere.
+VLLM_DTYPE = os.environ.get("VLLM_DTYPE") or _DTYPE_BY_TIER.get(_TIER or "unknown", "float16")
 
 # Sized for a 6GB laptop GPU running a small model in 4-bit NF4.
 LLM_CONCURRENCY = 1

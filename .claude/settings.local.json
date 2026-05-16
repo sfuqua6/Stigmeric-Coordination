@@ -23,7 +23,17 @@
       "Bash(python -c \"import run_swarm; import core.sampling; import core.knowledge_base; import core.projection; import agents.synthesizer; import agents.base; print\\('All imports OK'\\)\")",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(python -m unittest discover tests -v)",
+      "Bash(python -m unittest tests.test_coding_roles -v)",
+      "Bash(python -m unittest tests.test_retrieval -v)",
+      "Bash(python -m unittest tests.test_baseline_mode -v)",
+      "Bash(python -m unittest discover tests)",
+      "Bash(python -m unittest tests.test_coding_roles)",
+      "Bash(python -c \"import tests.test_coding_roles\")",
+      "Bash(python -m unittest tests.test_no_leak_real_patterns tests.test_renderer_audit_coverage -v)",
+      "Bash(python -m unittest tests.test_renderer_audit_coverage -v)",
+      "Bash(python -m unittest tests.test_renderer_audit_coverage tests.test_no_leak_real_patterns -v)"
     ]
   }
 }

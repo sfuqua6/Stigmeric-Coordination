@@ -1,1 +1,41 @@
-[]
+[
+  {
+    "schema_version": 2,
+    "cluster_hash": "2bf42dde395585ec",
+    "representative_content": "The evidence in chunk 173429 suggests an initial pattern worth tracking. Reading partition 173429, one observation stands out as a candidate claim. From this slice (173429), a tentative hypothesis emerges.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00004"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00004",
+      "SUPPORT_00008",
+      "CRITIQUE_POSITIVE_00026",
+      "OBJECTION_00017",
+      "OBJECTION_00018"
+    ],
+    "partition_origins": [
+      "partition_3"
+    ],
+    "support_diversity": 2,
+    "dissent_pressure": 0.8082,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-16T12:47:55.500951",
+    "status": "contested",
+    "first_seen": "2026-05-16T12:47:55.500951",
+    "last_seen": "2026-05-16T12:47:55.500951",
+    "decay_strength": 0.9025,
+    "run_count": 1,
+    "originating_run": {
+      "timestamp": "2026-05-16T12:47:55.500951",
+      "task_type": "debate",
+      "user_prompt": "Test thesis"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "859f9fa9b09d9361",
+      "user_prompt_excerpt": "Test thesis"
+    },
+    "contradicts": []
+  }
+]

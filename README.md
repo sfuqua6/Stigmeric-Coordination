@@ -17,7 +17,7 @@ Reference implementation of stigmergic multi-agent LLM coordination through info
 ## What this is
 
 A from-scratch rebuild of the swarm pipeline that treats multi-agent coordination
-as the system, and treats *every* source of inter-agent decorrelation as an
+as the system, and treats _every_ source of inter-agent decorrelation as an
 independently measurable lever. The levers we instrument are:
 
 1. **Information partitioning.** Scouts receive disjoint slices of a retrieved
@@ -58,14 +58,39 @@ To develop without a GPU, set `MOCK_LLM=1`:
 MOCK_LLM=1 python run_swarm.py debate "Test thesis"
 ```
 
+## Execution Modes
+
+The stigmergic swarm supports two deployment modes optimized for hardware configurations:
+
+1. **Laptop Mode (GGUF Path)**
+   - **Backend**: `llama-cpp-python` / single serialized sequence.
+   - **Constraints**: Quantized `Q4_K_M` model stack, `LLM_CONCURRENCY=1`.
+   - **Trigger**: Automatic fallback if no GPU acceleration is present, or forced local initialization.
+
+2. **Colab / Cloud Compute Mode (vLLM Path)**
+   - **Backend**: `vLLM` high-throughput async engine leveraging unified fp16/bf16 weights.
+   - **Execution**: Concurrent multi-agent execution loops bypass manual synchronization semaphores.
+   - **Trigger**: Automatically scales agent populations and sets precision modes based on runtime hardware detection.
+
+### Environment Variable Configurations
+
+- `COLAB=1` : Forces the system to evaluate vLLM paths and expand agent cluster coverage parameters.
+- `SWARM_MODEL="your-repo/your-model"` : Overrides automatic tier selection and forces a specific Hugging Face model template path.
+
+### Installation for Parallel Processing Capabilities
+
+```bash
+pip install vllm torch
+```
+
 ## Experimental design
 
 The four levers are independently controlled via CLI flags:
 
-  --mode={stigmergic, baseline}        trace-hiding on/off
-  --corpus={real, placeholder}         real retriever vs. engineered corpus
-  --heterogeneous                      enable role→model routing per `configs/heterogeneous.json`
-  --strategy-variant={diverse,single}  strategy library: full vs. single-strategy
+--mode={stigmergic, baseline} trace-hiding on/off
+--corpus={real, placeholder} real retriever vs. engineered corpus
+--heterogeneous enable role→model routing per `configs/heterogeneous.json`
+--strategy-variant={diverse,single} strategy library: full vs. single-strategy
 
 A factorial sweep across these gives the ablation table the dissertation needs.
 The driver for the sweep is `tools/sweep.py` (see §6 below).
@@ -109,7 +134,7 @@ The driver for the sweep is `tools/sweep.py` (see §6 below).
   in memory at any time — the canonical workaround for
   llama-cpp-python's incomplete model unload on Windows / 16 GB-RAM
   hardware. Orchestrator: `python tools/run_isolated.py debate
-  "..." [--heterogeneous]`. `run_meta.json` records
+"..." [--heterogeneous]`. `run_meta.json` records
   `execution_mode: "phase_isolated"` so isolated and in-process
   runs are distinguishable in cross-run analysis.
 - **Path overrides for non-local environments (Colab, scratch dirs).**
@@ -156,7 +181,7 @@ Attempt At Cleaning/
     └── compare_runs.py        (side-by-side summary.json comparison)
 ```
 
-## What this implementation does *not* yet do
+## What this implementation does _not_ yet do
 
 - **A run of the actual experiment.** The baseline coordinator and stigmergic pipeline are wired and tested, but no GPU run with a real model has been performed. All per-round numbers in `outputs_mock/` prove only plumbing.
 - **Ablation of the provenance boost.** The boost is on by default; there is no flag to disable it for a controlled comparison.
@@ -178,6 +203,7 @@ round log by default; enable it with `--show-partition-overlap` when debugging
 corpus partitioning.
 
 The **actual** output diversity metrics are in `core/output_diversity.py`:
+
 - `centroid_cosine_distance` — average cosine distance from each deposit's
   embedding to the group centroid. Uses `sentence-transformers` when available,
   falls back to bag-of-words TF vectors.

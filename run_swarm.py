@@ -215,24 +215,49 @@ def _make_progress(total: int, desc: str):
         return _Fallback(total, desc)
 
 
+_LLM_INFLIGHT_METRICS = {"peak": 0, "total_calls": 0, "total_tokens_generated": 0}
+
+
 def _wrap_llm_with_progress(llm, progress):
     """Wrap llm.generate so each call ticks the progress bar.
 
     Idempotent: re-wrapping the same llm (e.g. when the router reuses a
     cached model across phases) returns it untouched so the progress bar
     doesn't double-count.
+
+    Also tracks peak in-flight concurrency on the wrapped object so
+    summary.json can report concurrent_calls_peak and token throughput.
     """
     if getattr(llm, "_progress_wrapped", False):
         return llm
     original = llm.generate
+    if not hasattr(llm, "_inflight_state"):
+        llm._inflight_state = {"count": 0, "peak": 0, "total_calls": 0, "total_tokens_generated": 0}
+    state = llm._inflight_state
 
     async def generate(prompt, role="agent", max_tokens=120, temperature=0.7):
-        result = await original(prompt, role=role, max_tokens=max_tokens, temperature=temperature)
+        state["count"] += 1
+        if state["count"] > state["peak"]:
+            state["peak"] = state["count"]
+            _LLM_INFLIGHT_METRICS["peak"] = max(_LLM_INFLIGHT_METRICS["peak"], state["peak"])
+        state["total_calls"] += 1
+        _LLM_INFLIGHT_METRICS["total_calls"] += 1
         try:
-            progress.update(1)
-        except Exception:
-            pass
-        return result
+            result = await original(prompt, role=role, max_tokens=max_tokens, temperature=temperature)
+            token_count = 0
+            if isinstance(result, str):
+                token_count = len(result.split())
+            elif isinstance(result, (list, tuple)):
+                token_count = sum(len(str(item).split()) for item in result)
+            state["total_tokens_generated"] += token_count
+            _LLM_INFLIGHT_METRICS["total_tokens_generated"] += token_count
+            return result
+        finally:
+            state["count"] -= 1
+            try:
+                progress.update(1)
+            except Exception:
+                pass
 
     llm.generate = generate
     llm._progress_wrapped = True
@@ -385,6 +410,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         return [stats_by_id[a.agent_id] for a in agents]
 
     round_logs = []
+    pipeline_start = time.time()
     for round_num in range(1, NUM_ROUNDS + 1):
         print(f"\n=== Round {round_num} / {NUM_ROUNDS} ===")
         round_start = time.time()
@@ -558,12 +584,21 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
     )
     backend_label = "heterogeneous" if router is not None else llm.name
     model_assignment = router.manifest() if router is not None else {"all": llm.name}
+    # Phase M: record migration-relevant context so cross-run analysis can
+    # distinguish laptop / Colab / heterogeneous / phase-isolated runs.
+    model_loaded_once = (router is None and not config.USE_HETEROGENEOUS)
     (output_dir / "run_meta.json").write_text(json.dumps({
         "task_type": task_type,
         "user_prompt": user_prompt,
         "llm_backend": backend_label,
         "is_mock": USE_MOCK_LLM,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": os.environ.get("SWARM_RUN_TIMESTAMP", datetime.now().isoformat()),
+        "colab_tier": config._TIER,
+        "vllm_concurrency": int(config.LLM_CONCURRENCY),
+        "vllm_dtype": str(config.VLLM_DTYPE),
+        "population_scaled_for": config._TIER if config._TIER else "laptop",
+        "model_loaded_once": model_loaded_once,
+        "model_name": config.MODEL_NAME,
         "active_roles": sorted(active_roles),
         "population": {
             "scouts": NUM_SCOUTS, "foragers": NUM_FORAGERS,
@@ -676,12 +711,20 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         from core.projection import build_projection as _bp
         _final_proj = _bp(store, has_validators=(n_validators > 0))
         ver_scores = [cp.verification_score for cp in _final_proj.surviving + _final_proj.contested]
+        wall_clock_s = round(time.time() - pipeline_start, 1)
+        total_tokens_generated = _LLM_INFLIGHT_METRICS.get("total_tokens_generated", 0)
+        peak_concurrency = _LLM_INFLIGHT_METRICS.get("peak", 0)
+        tokens_per_second = total_tokens_generated / wall_clock_s if wall_clock_s > 0 else 0.0
         summary = {
             "task_type": task_type,
             "user_prompt": user_prompt,
             "llm_backend": backend_label,
             "total_llm_calls": total_llm_calls,
             "total_elapsed_s": round(total_elapsed, 1),
+            "wall_clock_s": float(wall_clock_s),
+            "total_tokens_generated": int(total_tokens_generated),
+            "tokens_per_second": float(round(tokens_per_second, 4)),
+            "concurrent_calls_peak": int(peak_concurrency),
             "scout_reject_rate": round(scout_rejected / max(1, scout_iters), 4),
             "non_scout_reject_rate": round(non_scout_rejected / max(1, non_scout_iters), 4),
             "junk_rejections": junk_rejections,
@@ -1048,7 +1091,13 @@ async def run_phase_isolated(
             "task_type": task_type, "user_prompt": user_prompt,
             "llm_backend": backend_label,
             "is_mock": USE_MOCK_LLM,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": os.environ.get("SWARM_RUN_TIMESTAMP", datetime.now().isoformat()),
+            "colab_tier": config._TIER,
+            "vllm_concurrency": int(config.LLM_CONCURRENCY),
+            "vllm_dtype": str(config.VLLM_DTYPE),
+            "population_scaled_for": config._TIER if config._TIER else "laptop",
+            "model_loaded_once": (router is None and not config.USE_HETEROGENEOUS),
+            "model_name": config.MODEL_NAME,
             "active_roles": sorted(active_roles),
             "population": {"scouts": NUM_SCOUTS, "foragers": NUM_FORAGERS,
                             "critics": n_critics, "haters": n_haters,

@@ -1,10 +1,19 @@
 # Deferred Fixes — Things This Session Didn't Touch
 
-Items from the doctoral-critique plan that were *not* integrated in the
+Items from the doctoral-critique plan that were _not_ integrated in the
 patches dated this session. Roughly in order of impact-per-hour to fix.
 
 Refs back to the plan use the M / m / R / Q numbering from the original
 review and the P-phase IDs from the plan.
+
+## Resolved Tasks (Colab Migration Sync)
+
+- [x] **M10 Concurrency Gate**: Bypassed serialization semaphores on internal batching paths. Concurrent multi-agent inference runs cleanly over AsyncLLMEngine.
+- [x] **Multi-GPU / High-VRAM Resource Scaling**: Scaled populations to match hardware capacities (T4 up to A100_80 tiers).
+
+## Active Research Directions
+
+- [ ] **P4.2 A/B Empirical Baseline**: Evaluate the performance profiles of the multi-agent clusters versus unified monolithic generations across test sets.
 
 ## Architectural (next big work block)
 
@@ -95,7 +104,7 @@ review and the P-phase IDs from the plan.
 
 ## Smaller items not yet patched
 
-- **m6 / P1.7 — RealLLM._input_device.** Currently uses
+- **m6 / P1.7 — RealLLM.\_input_device.** Currently uses
   `next(model.parameters()).device`; should be
   `model.get_input_embeddings().weight.device`. One-line fix in
   `core/llm.py`. Mostly cosmetic until you actually run the HF/bnb

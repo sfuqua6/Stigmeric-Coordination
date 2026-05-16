@@ -79,9 +79,21 @@ The stigmergic swarm supports two deployment modes optimized for hardware config
 
 ### Installation for Parallel Processing Capabilities
 
+Full Colab dep set (vLLM + retrieval + embeddings):
+
 ```bash
-pip install vllm torch
+pip install -r requirements-colab.txt
 ```
+
+Or the minimum for vLLM-only:
+
+```bash
+pip install vllm
+```
+
+The retrieval stack (`wikipedia`, `requests`, `beautifulsoup4`) is needed for
+real corpus retrieval on Colab. Without it, the pipeline falls back to a
+4-chunk engineered placeholder corpus and diversity numbers are not valid.
 
 ## Experimental design
 

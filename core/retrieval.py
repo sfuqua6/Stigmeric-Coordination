@@ -134,9 +134,12 @@ class WikipediaRetriever(Retriever):
     """
 
     def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
+        print(f"[retrieval] attempting wikipedia for query: {query!r}")
         try:
             import wikipedia  # type: ignore
-        except ImportError:
+        except ImportError as exc:
+            print(f"[retrieval] wikipedia: package not installed ({exc}); "
+                  f"install with `pip install wikipedia` (also in requirements-colab.txt)")
             return []
 
         keyphrases = _extract_keyphrases(query, max_phrases=_WIKI_QUERIES_MAX)
@@ -147,6 +150,7 @@ class WikipediaRetriever(Retriever):
         chunks: list[CorpusChunk] = []
         seen_titles: set[str] = set()
         n = 0
+        last_exc: Optional[Exception] = None
 
         for q in all_queries:
             if n >= _WIKI_QUERIES_MAX:
@@ -171,9 +175,11 @@ class WikipediaRetriever(Retriever):
                         option = e.options[0] if e.options else q
                         summary = wikipedia.summary(option, sentences=_WIKI_MAX_SENTENCES)
                         title = option
-                    except Exception:
+                    except Exception as exc:
+                        last_exc = exc
                         continue
-                except Exception:
+                except Exception as exc:
+                    last_exc = exc
                     # Try search fallback
                     try:
                         hits = wikipedia.search(q, results=2)
@@ -181,7 +187,8 @@ class WikipediaRetriever(Retriever):
                             continue
                         summary = wikipedia.summary(hits[0], sentences=_WIKI_MAX_SENTENCES)
                         title = hits[0]
-                    except Exception:
+                    except Exception as exc2:
+                        last_exc = exc2
                         continue
 
                 if title in seen_titles:
@@ -194,9 +201,16 @@ class WikipediaRetriever(Retriever):
                     text=text,
                     source_tag=title,
                 ))
-            except Exception:
+            except Exception as exc:
+                last_exc = exc
                 continue
 
+        if chunks:
+            print(f"[retrieval] wikipedia: retrieved {len(chunks)} chunks "
+                  f"({n} queries attempted)")
+        else:
+            err = f" ({type(last_exc).__name__}: {last_exc})" if last_exc else ""
+            print(f"[retrieval] wikipedia: 0 chunks after {n} queries{err}")
         return chunks
 
 
@@ -212,10 +226,14 @@ class WebRetriever(Retriever):
     """
 
     def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
+        print(f"[retrieval] attempting web (DuckDuckGo) for query: {query!r}")
         try:
             import requests
             from bs4 import BeautifulSoup
-        except ImportError:
+        except ImportError as exc:
+            print(f"[retrieval] web: deps not installed ({exc}); "
+                  f"install with `pip install requests beautifulsoup4` "
+                  f"(also in requirements-colab.txt)")
             return []
 
         chunks: list[CorpusChunk] = []
@@ -232,6 +250,7 @@ class WebRetriever(Retriever):
                 timeout=min(10, deadline - time.time()),
             )
             if resp.status_code != 200:
+                print(f"[retrieval] web: DDG returned HTTP {resp.status_code}")
                 return chunks
             soup = BeautifulSoup(resp.text, "html.parser")
             result_links = []
@@ -240,9 +259,12 @@ class WebRetriever(Retriever):
                 if href.startswith("http"):
                     result_links.append(href)
             result_links = result_links[:_WEB_MAX_RESULTS]
-        except Exception:
+        except Exception as exc:
+            print(f"[retrieval] web: DDG search failed "
+                  f"({type(exc).__name__}: {exc})")
             return chunks
 
+        last_exc: Optional[Exception] = None
         for i, url in enumerate(result_links):
             if time.time() >= deadline:
                 break
@@ -265,9 +287,16 @@ class WebRetriever(Retriever):
                     text=text,
                     source_tag=url[:80],
                 ))
-            except Exception:
+            except Exception as exc:
+                last_exc = exc
                 continue
 
+        if chunks:
+            print(f"[retrieval] web: retrieved {len(chunks)} chunks "
+                  f"from {len(result_links)} candidate URLs")
+        else:
+            err = f" ({type(last_exc).__name__}: {last_exc})" if last_exc else ""
+            print(f"[retrieval] web: 0 chunks from {len(result_links)} candidates{err}")
         return chunks
 
 
@@ -288,24 +317,40 @@ class CompositeRetriever(Retriever):
 
     def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
         # Try Wikipedia
-        chunks = self._wiki.retrieve(query, target_chars)
+        try:
+            chunks = self._wiki.retrieve(query, target_chars)
+        except Exception as exc:
+            print(f"[retrieval] wikipedia retriever crashed: "
+                  f"{type(exc).__name__}: {exc}")
+            chunks = []
         if chunks:
             return chunks
 
         # Try Web
-        chunks = self._web.retrieve(query, target_chars)
+        try:
+            chunks = self._web.retrieve(query, target_chars)
+        except Exception as exc:
+            print(f"[retrieval] web retriever crashed: "
+                  f"{type(exc).__name__}: {exc}")
+            chunks = []
         if chunks:
             return chunks
 
-        # Last resort: engineered placeholder corpus
-        print(
-            "[retrieval] WARNING: falling back to engineered placeholder corpus "
-            "— partition diversity numbers from this run are not evidence"
-        )
+        # Last resort: engineered placeholder corpus. Banner the fallback so
+        # nothing downstream can mistake the run for an empirical one.
+        print("=" * 72)
+        print("[retrieval] WARNING / FALLBACK: both wikipedia and web retrievers returned 0 chunks.")
+        print("[retrieval]   Possible causes:")
+        print("[retrieval]     - `wikipedia` / `requests` / `beautifulsoup4` not installed")
+        print("[retrieval]       (install: pip install -r requirements-colab.txt)")
+        print("[retrieval]     - no network connectivity")
+        print("[retrieval]     - DDG / Wikipedia rate-limited or blocked this IP")
+        print("[retrieval]   Using the engineered placeholder corpus instead — diversity")
+        print("[retrieval]   numbers from this run are NOT evidence.")
+        print("=" * 72)
         from .intake import trivial_corpus_from_thesis, chunk_corpus
         text = trivial_corpus_from_thesis(query)
         raw_chunks = chunk_corpus(text, source_tag="placeholder_corpus")
-        # Return the text content packed into CorpusChunks
         return raw_chunks
 
 

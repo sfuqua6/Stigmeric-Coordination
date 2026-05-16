@@ -703,12 +703,18 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 non_scout_rejected += r
                 non_scout_iters += its
 
-    # Grab audit flag count from the last written audit (best-effort).
+    # Grab audit flag count from the last written audit. Sentinel semantics
+    # (Bug 3): 0 = audit ran clean, N>=1 = N flags, -2 = audit crashed
+    # (renderer_audit.json carries audit_error). Default to 0 when the file
+    # is missing — the synthesizer now writes it on every branch including
+    # no_consensus, so absence means the synth itself crashed before audit;
+    # that's already captured by the (synthesis failed: ...) string in
+    # answer.txt and we shouldn't add a separate ambiguous -1 sentinel.
     try:
         audit_data = json.loads((output_dir / "renderer_audit.json").read_text(encoding="utf-8"))
         audit_flags = audit_data.get("total_flags", 0)
     except Exception:
-        audit_flags = -1
+        audit_flags = 0
 
     # Final projection for cluster counts.
     try:
@@ -1282,7 +1288,17 @@ def main():
     if reset_kb:
         print("[pipeline] --reset-kb: quarantining existing knowledge base before run")
     if corpus_mode == "placeholder":
-        print("[pipeline] --corpus=placeholder: using engineered corpus (diversity numbers invalid)")
+        # Loud, multi-line so it's obvious in Colab logs that this run's
+        # corpus is 4 engineered chunks and downstream diversity / cluster
+        # numbers are NOT empirical evidence. The --corpus flag is for
+        # development only.
+        print("=" * 72)
+        print("[pipeline] --corpus=placeholder is DEVELOPMENT-ONLY.")
+        print("[pipeline]   The engineered corpus produces ~4 chunks regardless of prompt;")
+        print("[pipeline]   scouts at NUM_SCOUTS>=6 will get EMPTY partitions, foragers")
+        print("[pipeline]   will heavily dedup-reject, and clusters will collapse to")
+        print("[pipeline]   weakly_supported. Drop --corpus=placeholder for a real run.")
+        print("=" * 72)
     if run_mode == "baseline":
         print("[pipeline] --mode=baseline: running non-stigmergic independent-agent baseline")
     if isolated:

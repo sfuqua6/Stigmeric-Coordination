@@ -1,48 +1,6 @@
 [
   {
     "schema_version": 2,
-    "cluster_hash": "04584c01f9e6e5c7",
-    "representative_content": "From this slice (807192), a tentative hypothesis emerges. The evidence in chunk 807192 suggests an initial pattern worth tracking. Reading partition 807192, one observation stands out as a candidate claim.",
-    "representative_embedding": null,
-    "member_signal_ids": [
-      "INITIAL_00003"
-    ],
-    "lineage_signal_ids": [
-      "INITIAL_00003",
-      "CRITIQUE_POSITIVE_00012",
-      "OBJECTION_00029",
-      "OBJECTION_00019",
-      "OBJECTION_00020",
-      "OBJECTION_00026",
-      "OBJECTION_00027",
-      "OBJECTION_00028"
-    ],
-    "partition_origins": [
-      "partition_0"
-    ],
-    "support_diversity": 1,
-    "dissent_pressure": 6.7255,
-    "verification_score": 0.0,
-    "run_timestamp": "2026-05-15T15:59:42.387307",
-    "status": "rejected_by_field",
-    "first_seen": "2026-05-15T15:59:42.387307",
-    "last_seen": "2026-05-15T15:59:42.387307",
-    "decay_strength": 0.30735686772502346,
-    "run_count": 1,
-    "originating_run": {
-      "timestamp": "2026-05-15T15:59:42.387307",
-      "task_type": "debate",
-      "user_prompt": "Test thesis"
-    },
-    "task_context": {
-      "task_type": "debate",
-      "topic_hash": "859f9fa9b09d9361",
-      "user_prompt_excerpt": "Test thesis"
-    },
-    "contradicts": []
-  },
-  {
-    "schema_version": 2,
     "cluster_hash": "a1b6be7e2adf8617",
     "representative_content": "Reading partition e44af1, one observation stands out as a candidate claim. The evidence in chunk e44af1 suggests an initial pattern worth tracking. From this slice (e44af1), a tentative hypothesis emerges.",
     "representative_embedding": null,
@@ -64,9 +22,9 @@
     "run_timestamp": "2026-05-15T16:00:22.505292",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:00:22.505292",
-    "last_seen": "2026-05-16T12:33:20.311280",
-    "decay_strength": 0.7737809374999999,
-    "run_count": 12,
+    "last_seen": "2026-05-16T18:08:22.075962",
+    "decay_strength": 0.95,
+    "run_count": 16,
     "originating_run": {
       "timestamp": "2026-05-15T16:00:22.505292",
       "task_type": "debate",
@@ -103,7 +61,7 @@
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:00:22.505292",
     "last_seen": "2026-05-16T12:44:43.161074",
-    "decay_strength": 0.8573749999999999,
+    "decay_strength": 0.6634204312890623,
     "run_count": 5,
     "originating_run": {
       "timestamp": "2026-05-15T16:00:22.505292",
@@ -145,9 +103,9 @@
     "run_timestamp": "2026-05-15T16:02:21.049641",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:02:21.049641",
-    "last_seen": "2026-05-16T13:04:54.065924",
+    "last_seen": "2026-05-16T18:10:35.690293",
     "decay_strength": 1.0,
-    "run_count": 9,
+    "run_count": 11,
     "originating_run": {
       "timestamp": "2026-05-15T16:02:21.049641",
       "task_type": "debate",
@@ -182,9 +140,9 @@
     "run_timestamp": "2026-05-15T16:02:21.049641",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:02:21.049641",
-    "last_seen": "2026-05-16T12:50:45.842266",
+    "last_seen": "2026-05-16T18:08:22.075962",
     "decay_strength": 0.95,
-    "run_count": 6,
+    "run_count": 7,
     "originating_run": {
       "timestamp": "2026-05-15T16:02:21.049641",
       "task_type": "debate",
@@ -218,9 +176,9 @@
     "run_timestamp": "2026-05-15T16:02:49.046880",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:02:49.046880",
-    "last_seen": "2026-05-16T12:47:55.500951",
-    "decay_strength": 0.9025,
-    "run_count": 4,
+    "last_seen": "2026-05-16T17:26:44.332434",
+    "decay_strength": 0.8145062499999999,
+    "run_count": 5,
     "originating_run": {
       "timestamp": "2026-05-15T16:02:49.046880",
       "task_type": "debate",
@@ -260,7 +218,7 @@
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:05:11.762830",
     "last_seen": "2026-05-16T12:50:45.842266",
-    "decay_strength": 0.95,
+    "decay_strength": 0.7350918906249998,
     "run_count": 3,
     "originating_run": {
       "timestamp": "2026-05-15T16:05:11.762830",
@@ -295,9 +253,9 @@
     "run_timestamp": "2026-05-15T16:05:11.762830",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:05:11.762830",
-    "last_seen": "2026-05-16T13:04:54.065924",
+    "last_seen": "2026-05-16T18:10:35.690293",
     "decay_strength": 1.0,
-    "run_count": 6,
+    "run_count": 10,
     "originating_run": {
       "timestamp": "2026-05-15T16:05:11.762830",
       "task_type": "debate",
@@ -333,7 +291,7 @@
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:41:09.773567",
     "last_seen": "2026-05-16T12:38:05.524330",
-    "decay_strength": 0.8145062499999999,
+    "decay_strength": 0.6302494097246091,
     "run_count": 3,
     "originating_run": {
       "timestamp": "2026-05-15T16:41:09.773567",
@@ -374,7 +332,7 @@
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T22:19:09.675851",
     "last_seen": "2026-05-15T22:19:09.675851",
-    "decay_strength": 0.7350918906249998,
+    "decay_strength": 0.5688000922764596,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-15T22:19:09.675851",

@@ -56,9 +56,11 @@ class VLLMBackend:
     _uses_internal_batching = True
 
     def __init__(self, model_name: str, dtype: str = "float16",
-                 gpu_memory_utilization: float = 0.90,
-                 max_num_seqs: int = 32,
-                 max_model_len: int = 4096,
+                 gpu_memory_utilization: float = 0.95,
+                 max_num_seqs: int = 8,
+                 max_model_len: int = 2048,
+                 enforce_eager: bool = True,
+                 kv_cache_dtype: str = "fp8_e5m2",
                  trust_remote_code: bool = True):
         if not _VLLM_AVAILABLE:
             raise RuntimeError(
@@ -73,7 +75,8 @@ class VLLMBackend:
             gpu_memory_utilization=gpu_memory_utilization,
             max_num_seqs=max_num_seqs,
             max_model_len=max_model_len,
-            enforce_eager=False,
+            enforce_eager=enforce_eager,
+            kv_cache_dtype=kv_cache_dtype,
             trust_remote_code=trust_remote_code,
         )
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)

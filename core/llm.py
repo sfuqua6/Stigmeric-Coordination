@@ -81,12 +81,22 @@ def make_llm(force_mock: bool = False):
         try:
             from .llm_vllm import VLLMBackend, _VLLM_AVAILABLE
             if _VLLM_AVAILABLE:
-                from .config import VLLM_DTYPE, LLM_CONCURRENCY
-                return VLLMBackend(
-                    model_name=MODEL_NAME,
-                    dtype=VLLM_DTYPE,
-                    max_num_seqs=max(32, LLM_CONCURRENCY),
-                )
+                from .config import VLLM_DTYPE, LLM_CONCURRENCY, _TIER as tier_detected
+                # Aggressive T4 settings (Option B: fit 7B with KV cache constraints)
+                vllm_kwargs = {
+                    "model_name": MODEL_NAME,
+                    "dtype": VLLM_DTYPE,
+                    "max_num_seqs": max(32, LLM_CONCURRENCY),
+                }
+                if tier_detected == "t4":
+                    vllm_kwargs.update({
+                        "gpu_memory_utilization": 0.95,
+                        "max_num_seqs": 8,
+                        "max_model_len": 2048,
+                        "enforce_eager": True,
+                        "kv_cache_dtype": "fp8_e5m2",
+                    })
+                return VLLMBackend(**vllm_kwargs)
             print("[llm] vllm not importable; falling back to GGUF/HF path")
         except Exception as exc:
             print(f"[llm] vLLM backend init failed "

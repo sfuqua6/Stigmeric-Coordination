@@ -125,6 +125,7 @@ class MockLLM:
     """Deterministic pseudo-LLM for development without GPU."""
 
     name = "MockLLM"
+    _uses_internal_batching = False  # legacy semaphore is the gate
 
     def __init__(self):
         self._sem = asyncio.Semaphore(LLM_CONCURRENCY)
@@ -181,6 +182,7 @@ class RealLLM:
     """
 
     name = MODEL_NAME
+    _uses_internal_batching = False  # legacy semaphore is the gate
 
     def __init__(self):
         import torch

@@ -75,8 +75,11 @@ MODEL_NAME = (
 # vLLM dtype: bfloat16 on A100 (faster on Ampere), float16 elsewhere.
 VLLM_DTYPE = os.environ.get("VLLM_DTYPE") or _DTYPE_BY_TIER.get(_TIER or "unknown", "float16")
 
-# Sized for a 6GB laptop GPU running a small model in 4-bit NF4.
-LLM_CONCURRENCY = 1
+# Tier-aware concurrency. On Colab/vLLM the AsyncLLMEngine batches internally
+# so this is the cap on in-flight async generate() calls — bigger is fine, the
+# vLLM scheduler queues. On laptop GGUF this MUST stay at 1 (llama-cpp-python
+# is single-threaded per Llama instance).
+LLM_CONCURRENCY = 1 if _TIER is None else 32
 
 # Mock mode: set MOCK_LLM=1 to skip model loading entirely (CI / dev).
 USE_MOCK_LLM = os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False")

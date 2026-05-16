@@ -1106,9 +1106,18 @@ def main():
         "--ignore-kb", "--reset-kb", "--show-partition-overlap", "--heterogeneous",
     )]
     if heterogeneous:
-        # Mutate module attribute so run_pipeline's `config.USE_HETEROGENEOUS`
-        # read picks up the flag.
-        config.USE_HETEROGENEOUS = True
+        # On Colab tiers (vLLM single-model batching is the win), heterogeneous
+        # per-role routing is counterproductive — one capable model batched at
+        # concurrency 32 beats six quantized specialists each loaded once.
+        if config._TIER is not None:
+            print("[pipeline] WARNING: --heterogeneous ignored on Colab "
+                  f"(tier={config._TIER}). vLLM single-model batching is "
+                  "the intended path here. Unset COLAB / SWARM_BACKEND=vllm "
+                  "to re-enable.")
+        else:
+            # Mutate module attribute so run_pipeline's `config.USE_HETEROGENEOUS`
+            # read picks up the flag.
+            config.USE_HETEROGENEOUS = True
 
     # --corpus={real,placeholder}
     corpus_mode = "real"

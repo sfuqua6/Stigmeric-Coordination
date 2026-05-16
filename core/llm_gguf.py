@@ -37,6 +37,8 @@ _DEFAULT_FILE = "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
 class LlamaCppLLM:
     """llama-cpp-python wrapper matching the RealLLM async interface."""
 
+    _uses_internal_batching = False  # llama-cpp-python is single-threaded per Llama
+
     def __init__(self, model_path: Optional[str] = None, **kwargs):
         # Bypass xet BEFORE huggingface_hub is imported — it reads env at import.
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")

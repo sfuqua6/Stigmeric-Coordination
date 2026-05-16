@@ -25,9 +25,17 @@ import random
 from .config import MODEL_NAME, LLM_CONCURRENCY, USE_MOCK_LLM
 
 
-# How much VRAM to reserve for weights only. The remaining VRAM (~1 GB on a
-# 6GB card) is used by activations and the KV cache during generation.
-# Override with SWARM_GPU_MEM env var, e.g. "4500MiB" for a tighter cap.
+# Detect if on Colab and set cache to local SSD (CRITICAL for performance).
+# On Colab, HF_HOME may be set to Google Drive (~46 MB/s). Override it to
+# /content/hf_cache (local SSD, ~500 MB/s). This is done here at import time
+# to ensure all HF operations use the fast path.
+if "content/drive" in os.environ.get("HF_HOME", "").lower():
+    os.environ["HF_HOME"] = "/content/hf_cache"
+
+# GPU memory budget for HF 4-bit backend.
+# Note: vLLM uses gpu_memory_utilization parameter instead, not this budget.
+# For HF 4-bit, a conservative budget ensures device_map uses CPU offload for activations.
+# Override with SWARM_GPU_MEM env var, e.g. "5500MiB" for tighter Colab constraints.
 _GPU_MEM_BUDGET = os.environ.get("SWARM_GPU_MEM") or "5000MiB"
 _CPU_MEM_BUDGET = os.environ.get("SWARM_CPU_MEM") or "30GiB"
 
@@ -90,9 +98,9 @@ def make_llm(force_mock: bool = False):
                 }
                 if tier_detected == "t4":
                     vllm_kwargs.update({
-                        "gpu_memory_utilization": 0.94,
-                        "max_num_seqs": 4,
-                        "max_model_len": 1024,
+                        "gpu_memory_utilization": 0.91,
+                        "max_num_seqs": 2,  # Reduced further for profile_run stability
+                        "max_model_len": 768,  # Reduced for tighter KV cache
                         "enforce_eager": True,
                         "kv_cache_dtype": "fp8_e5m2",
                         "enable_chunked_prefill": False,

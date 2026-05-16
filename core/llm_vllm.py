@@ -31,6 +31,12 @@ except Exception:
     _VLLM_AVAILABLE = False
 
 
+# Set HF cache to local SSD if on Colab (critical for ~10× performance improvement).
+# HF_HOME might be pre-set to Google Drive (~46 MB/s). Override to /content/hf_cache (~500 MB/s).
+if "content/drive" in os.environ.get("HF_HOME", "").lower():
+    os.environ["HF_HOME"] = "/content/hf_cache"
+
+
 # Stop tokens covering Qwen / Llama / Mistral chat closers plus a triple-newline
 # guard that catches the "multiple paragraph retries in one generation"
 # pathology seen on the free-will laptop run.
@@ -56,12 +62,12 @@ class VLLMBackend:
     _uses_internal_batching = True
 
     def __init__(self, model_name: str, dtype: str = "float16",
-                 gpu_memory_utilization: float = 0.95,
-                 max_num_seqs: int = 8,
-                 max_model_len: int = 2048,
+                 gpu_memory_utilization: float = 0.92,
+                 max_num_seqs: int = 4,
+                 max_model_len: int = 1024,
                  enforce_eager: bool = True,
                  kv_cache_dtype: str = "fp8_e5m2",
-                 enable_chunked_prefill: bool = True,
+                 enable_chunked_prefill: bool = False,
                  trust_remote_code: bool = True):
         if not _VLLM_AVAILABLE:
             raise RuntimeError(

@@ -295,6 +295,9 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                        corpus_mode: str = "real",
                        show_partition_overlap: bool = False,
                        cloud_provider: str = "none") -> dict:
+    # Phase M: wall-clock from pipeline start (covers retrieval, all rounds,
+    # AND synthesis — round_logs only sum each round's compute time).
+    pipeline_start = time.time()
     task_prompt = build_task_prompt(task_type, user_prompt)
     if config.USE_HETEROGENEOUS:
         router = HeterogeneousRouter()
@@ -410,7 +413,8 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         return [stats_by_id[a.agent_id] for a in agents]
 
     round_logs = []
-    pipeline_start = time.time()
+    # pipeline_start is captured at function entry (Phase M wall-clock) —
+    # don't reset it here or the wall_clock_s would exclude retrieval time.
     for round_num in range(1, NUM_ROUNDS + 1):
         print(f"\n=== Round {round_num} / {NUM_ROUNDS} ===")
         round_start = time.time()

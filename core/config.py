@@ -233,6 +233,22 @@ if _TIER is not None:
     MAX_TOKENS_VALIDATOR   = 100
     MAX_TOKENS_SYNTHESIZER = 800
 
+    # Phase H: strength dynamics recalibrated for higher deposit volume.
+    # Laptop deltas were tuned for ~30 deposits/round; Colab tiers run
+    # 80–150 deposits/round, so amplification fires more often and decay
+    # needs to bite harder to prevent saturation at 1.0.
+    DELTA_AMPLIFY          = 0.20
+    DELTA_DEDUP_AMPLIFY    = 0.07
+    DELTA_DECAY            = -0.12
+    DELTA_DECAY_CONTRARIAN = -0.05
+    DELTA_BOOST_BETA       = 0.45
+
+# Phase I — cluster threshold. Lower on laptop (0.55, justified by the
+# in-code comment in projection.py) because quantized-model diversity at
+# 0.65 fragments into 17 narrow clusters. On Colab tiers, fp16 Qwen-Instruct
+# produces sufficiently distinct claims that a tighter threshold is safe.
+CLUSTER_SIM_THRESHOLD = 0.72 if _TIER is not None else 0.55
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------

@@ -34,13 +34,14 @@ from .signal_types import (
     INITIAL, SUPPORT, CRITIQUE, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE,
     OBJECTION, VERIFICATION,
 )
-from .config import BOOST_THRESHOLD
+from .config import BOOST_THRESHOLD, CLUSTER_SIM_THRESHOLD
 
-_CLUSTER_SIM_THRESHOLD = 0.55   # looser than dedup (0.85) — "same claim, different words"
-                                 # At real-LLM diversity, 0.65 was too tight: scouts
-                                 # produce semantically equivalent claims with different
-                                 # vocabulary that score 0.60–0.64 and create 17 narrow
-                                 # clusters instead of 4–5 broad ones.
+# Module-private alias preserved for back-compat with existing code paths
+# and tests. Sourced from config.CLUSTER_SIM_THRESHOLD which is tier-aware:
+# 0.55 on laptop (quantized-model diversity at 0.65 fragments into 17 narrow
+# clusters; a looser threshold yields 4–5 broad ones), 0.72 on Colab where
+# fp16 Qwen-Instruct produces sufficiently distinct claims.
+_CLUSTER_SIM_THRESHOLD = CLUSTER_SIM_THRESHOLD
 _KB_MATCH_THRESHOLD = 0.75      # similarity above which a prior KB entry is applied
 _KB_REJECTION_PENALTY = 0.5     # added to dissent_pressure for prior-rejected clusters
 _EPS = 1e-9

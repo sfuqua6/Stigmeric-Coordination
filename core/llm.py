@@ -90,11 +90,12 @@ def make_llm(force_mock: bool = False):
                 }
                 if tier_detected == "t4":
                     vllm_kwargs.update({
-                        "gpu_memory_utilization": 0.95,
-                        "max_num_seqs": 8,
-                        "max_model_len": 2048,
+                        "gpu_memory_utilization": 0.94,
+                        "max_num_seqs": 4,
+                        "max_model_len": 1024,
                         "enforce_eager": True,
                         "kv_cache_dtype": "fp8_e5m2",
+                        "enable_chunked_prefill": False,
                     })
                 return VLLMBackend(**vllm_kwargs)
             print("[llm] vllm not importable; falling back to GGUF/HF path")

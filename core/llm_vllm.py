@@ -61,6 +61,7 @@ class VLLMBackend:
                  max_model_len: int = 2048,
                  enforce_eager: bool = True,
                  kv_cache_dtype: str = "fp8_e5m2",
+                 enable_chunked_prefill: bool = True,
                  trust_remote_code: bool = True):
         if not _VLLM_AVAILABLE:
             raise RuntimeError(
@@ -77,6 +78,7 @@ class VLLMBackend:
             max_model_len=max_model_len,
             enforce_eager=enforce_eager,
             kv_cache_dtype=kv_cache_dtype,
+            enable_chunked_prefill=enable_chunked_prefill,
             trust_remote_code=trust_remote_code,
         )
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)

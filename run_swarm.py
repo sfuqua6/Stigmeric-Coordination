@@ -47,6 +47,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Silence verbose load output from transformers / sentence-transformers /
+# huggingface_hub before any of those libraries get imported. These print
+# multi-line "BertModel LOAD REPORT" tables and duplicated "Loading weights:
+# 100%" tqdm bars on every embedder load, which on Colab obscures the actual
+# pipeline output. Override SWARM_QUIET_LIBS=0 to re-enable the chatter.
+if os.environ.get("SWARM_QUIET_LIBS", "1") != "0":
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    try:
+        import transformers as _tf
+        _tf.logging.set_verbosity_error()
+        if hasattr(_tf.utils, "logging") and hasattr(_tf.utils.logging, "disable_progress_bar"):
+            _tf.utils.logging.disable_progress_bar()
+    except Exception:
+        pass
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core import config

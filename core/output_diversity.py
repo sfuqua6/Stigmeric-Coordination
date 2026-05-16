@@ -202,7 +202,15 @@ def _agent_centroid(texts: list[str], embedder) -> Optional[list[float]]:
                 raw = embedder.encode(t)
             except Exception:
                 continue
-            vec = list(raw) if not isinstance(raw, list) else raw
+            # Convert to native Python list[float]; sentence-transformers returns
+            # numpy.ndarray and downstream json.dumps() can't serialize numpy
+            # types. .tolist() recursively converts numpy scalars to Python.
+            if hasattr(raw, "tolist"):
+                vec = raw.tolist()
+            elif isinstance(raw, list):
+                vec = [float(x) for x in raw]
+            else:
+                vec = [float(x) for x in list(raw)]
             unit = _normalize_vec(vec)
             if unit:
                 vecs.append(unit)
@@ -247,10 +255,10 @@ def _cosine_centroids(a, b) -> Optional[float]:
     if a_is_bow != b_is_bow:
         return None
     if a_is_bow:
-        return _cosine(a["__bow__"], b["__bow__"])
+        return float(_cosine(a["__bow__"], b["__bow__"]))
     if len(a) != len(b):
         return None
-    return max(-1.0, min(1.0, sum(x * y for x, y in zip(a, b))))
+    return float(max(-1.0, min(1.0, sum(x * y for x, y in zip(a, b)))))
 
 
 def output_diversity_by_model(records, embedder, model_assignment: dict) -> dict:
@@ -307,7 +315,12 @@ def output_diversity_by_model(records, embedder, model_assignment: dict) -> dict
         else:
             between_dists.append(dist)
 
-    within_model = {m: round(sum(ds) / len(ds), 4) for m, ds in within_pairs.items() if ds}
+    # float() wraps guarantee native Python floats for JSON serialization,
+    # in case any upstream value is a numpy scalar that slipped through.
+    within_model = {
+        m: float(round(sum(ds) / len(ds), 4))
+        for m, ds in within_pairs.items() if ds
+    }
 
     # If every agent shares one model, there is no between-model signal.
     distinct_models = {m for m, _ in agents}
@@ -317,15 +330,15 @@ def output_diversity_by_model(records, embedder, model_assignment: dict) -> dict
     if not between_dists:
         return {"within_model": within_model, "between_model": None, "delta": None}
 
-    between = sum(between_dists) / len(between_dists)
+    between = float(sum(between_dists) / len(between_dists))
     mean_within = (
-        sum(within_model.values()) / len(within_model)
+        float(sum(within_model.values()) / len(within_model))
         if within_model else 0.0
     )
     return {
         "within_model": within_model,
-        "between_model": round(between, 4),
-        "delta": round(between - mean_within, 4),
+        "between_model": float(round(between, 4)),
+        "delta": float(round(between - mean_within, 4)),
     }
 
 

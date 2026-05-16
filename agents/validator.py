@@ -25,7 +25,10 @@ validator falls back to its assigned sampling strategy.
 
 from __future__ import annotations
 
+import json
+import os
 import random
+import re
 from typing import Optional
 
 from agents.base import BaseAgent
@@ -36,6 +39,11 @@ from core.sampling import SamplingStrategy
 
 # Minimum SUPPORT children before an INITIAL is considered worth a Wikipedia lookup.
 _MIN_SUPPORT_FOR_VALIDATION = 2
+
+# Phase K diagnostic: when SWARM_VALIDATOR_DIAGNOSTIC=1, print the extracted
+# keyphrase and the raw LLM output for every validator sample. Useful for
+# verifying that the new JSON-output path actually receives parseable text.
+_DIAGNOSTIC = os.environ.get("SWARM_VALIDATOR_DIAGNOSTIC", "").strip() not in ("", "0", "false", "False")
 
 
 class Validator(BaseAgent):
@@ -84,29 +92,62 @@ class Validator(BaseAgent):
     def build_prompt(self, samples: list[Signal], *,
                      store_count: int = 0, own_ids: tuple = ()) -> str:
         if not samples:
-            return "No claim to verify.\n\nVERIFICATION:\nSCORE: 0.0"
+            return (
+                "No claim to verify.\n\n"
+                'Reply with this JSON: {"supports": false, "confidence": 0.0, "note": "no claim"}'
+            )
         s = samples[0]
         count_hint = (
             f"There are currently {store_count} verification signals in the store. "
             f"Verify a distinct claim.\n"
         )
-        external = _wiki_lookup(_extract_keyphrase(s.content))
+        keyphrase = _extract_keyphrase(s.content)
+        external = _wiki_lookup(keyphrase)
+        if _DIAGNOSTIC:
+            print(f"[validator-diag {self.agent_id}] keyphrase={keyphrase!r}")
+        # JSON output is far more reliably parseable on non-reasoning Instruct
+        # models (Phase K). Falls back to "SCORE: X" regex if the model
+        # ignores the JSON format.
         return (
             f"TASK: {self.task_prompt}\n\n"
             f"{count_hint}"
             f"Verify the following claim against the external snippet.\n\n"
             f"---CLAIM [{s.id}]---\n{s.content}\n---END CLAIM---\n\n"
             f"---EXTERNAL SNIPPET---\n{external}\n---END SNIPPET---\n\n"
-            f"Does the snippet support, contradict, or fail to address "
-            f"the claim? Reply with one short sentence followed by:\n\n"
-            f"SCORE: <number in [0, 1]>"
+            f"Reply with EXACTLY this JSON object (no other text):\n"
+            f'{{"supports": true|false, "confidence": <number in [0,1]>, '
+            f'"note": "<one short sentence>"}}\n\n'
+            f"`supports` is true if the snippet plausibly backs the claim, "
+            f"false if it contradicts or fails to address it. `confidence` "
+            f"is your subjective certainty in the assessment."
         )
 
     def parse(self, raw: str) -> tuple[str, float]:
         text = raw.strip()
+        if _DIAGNOSTIC:
+            print(f"[validator-diag {self.agent_id}] raw={text[:300]!r}")
+        # Phase K: try JSON first. If the model produced extra text around
+        # the JSON object, extract the first {...} block.
         score = 0.5
-        # cheap parse — same as critic
-        import re
+        json_match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(0))
+                supports = bool(parsed.get("supports", False))
+                conf = float(parsed.get("confidence", 0.5))
+                conf = max(0.0, min(1.0, conf))
+                # Combine into a single score: supports=True → conf, supports=False → 1-conf
+                # but clamp so a low-confidence "false" doesn't accidentally
+                # land near 0.5 and read as a non-call.
+                score = conf if supports else max(0.0, 1.0 - conf)
+                note = str(parsed.get("note", "")).strip()
+                if note:
+                    text = note
+                return text, score
+            except (ValueError, TypeError):
+                pass
+        # Fallback: legacy SCORE: regex (kept for cases where the model
+        # produces freeform text despite the JSON instruction).
         m = re.search(r"score\s*[:=]\s*([+-]?(?:\d+\.?\d*|\.\d+))", text, re.IGNORECASE)
         if m:
             try:

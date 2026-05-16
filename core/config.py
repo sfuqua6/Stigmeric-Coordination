@@ -168,6 +168,72 @@ CHUNK_OVERLAP = 80
 CHUNKS_PER_SCOUT_MAX = 4*2
 
 # ---------------------------------------------------------------------------
+# Colab tier overrides (Phase E + F + G of the Colab migration)
+# ---------------------------------------------------------------------------
+# When a Colab tier is detected, override the laptop defaults above with
+# values that exploit real concurrency: more scouts/foragers/critics/haters
+# for richer cluster coverage; lower iterations per agent because the
+# non-quantized model produces denser content per call; larger token
+# budgets per agent; narrower per-scout partitions (smaller CHUNK_WORDS so
+# more chunks exist to feed more scouts at fewer chunks each).
+#
+# Laptop values above are preserved verbatim — the overrides only fire when
+# _TIER is not None.
+
+_POP_BY_TIER = {
+    "t4":       {"scouts": 6,  "foragers": 6,  "critics": 3, "haters": 2, "validators": 2},
+    "l4":       {"scouts": 8,  "foragers": 8,  "critics": 4, "haters": 3, "validators": 2},
+    "a100_40":  {"scouts": 10, "foragers": 10, "critics": 4, "haters": 4, "validators": 3},
+    "a100_80":  {"scouts": 12, "foragers": 12, "critics": 5, "haters": 4, "validators": 3},
+    "unknown":  {"scouts": 6,  "foragers": 6,  "critics": 3, "haters": 2, "validators": 2},
+}
+
+_ITER_BY_TIER = {
+    "t4":      10,
+    "l4":      8,
+    "a100_40": 8,
+    "a100_80": 6,
+    "unknown": 10,
+}
+
+_CHUNKS_BY_TIER = {
+    "t4":      4,
+    "l4":      3,
+    "a100_40": 3,
+    "a100_80": 2,
+    "unknown": 4,
+}
+
+if _TIER is not None:
+    _pop = _POP_BY_TIER[_TIER]
+    NUM_SCOUTS     = _pop["scouts"]
+    NUM_FORAGERS   = _pop["foragers"]
+    NUM_CRITICS    = _pop["critics"]
+    NUM_HATERS     = _pop["haters"]
+    NUM_VALIDATORS = _pop["validators"]
+    # Three rounds gives logit-space strength dynamics time to differentiate
+    # clusters; two rounds is too few for the contrarian-decay path to matter;
+    # four is wasted wall-clock at these populations.
+    NUM_ROUNDS = 3
+    ITERATIONS_PER_ROUND = _ITER_BY_TIER[_TIER]
+    # More scouts → fewer needed per scout to saturate the corpus partition.
+    SCOUT_MAX_DEPOSITS_PER_ROUND = 2 if NUM_SCOUTS >= 8 else 3
+    # Narrower partitions: keep each scout focused on a small slice.
+    CHUNKS_PER_SCOUT_MAX = _CHUNKS_BY_TIER[_TIER]
+    # Smaller chunks so the corpus yields enough partitions to feed the
+    # larger scout population at the lower per-scout chunk count.
+    CHUNK_WORDS = 400
+    # Token budgets: non-quantized Qwen-Instruct produces denser content per
+    # token, so we raise budgets modestly. Don't go higher — at fp16 with a
+    # strong model, longer generations risk drift back into chat-style retry.
+    MAX_TOKENS_SCOUT       = 140
+    MAX_TOKENS_FORAGER     = 200
+    MAX_TOKENS_CRITIC      = 150
+    MAX_TOKENS_HATER       = 200
+    MAX_TOKENS_VALIDATOR   = 100
+    MAX_TOKENS_SYNTHESIZER = 800
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 

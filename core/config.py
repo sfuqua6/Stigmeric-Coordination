@@ -37,22 +37,22 @@ MAX_TOKENS_SYNTHESIZER = 600
 # Population
 # ---------------------------------------------------------------------------
 
-NUM_SCOUTS = 4
-NUM_FORAGERS = 4
-NUM_CRITICS = 2
-NUM_HATERS = 2
-NUM_VALIDATORS = 1
-NUM_ROUNDS = 3
-ITERATIONS_PER_ROUND = 8
+NUM_SCOUTS = 4*5
+NUM_FORAGERS = 4*5
+NUM_CRITICS = 2*5
+NUM_HATERS = 2*5
+NUM_VALIDATORS = 1*5
+NUM_ROUNDS = 3*8
+ITERATIONS_PER_ROUND = 8*2
 
 # Scout saturation cap: stop after this many successful INITIAL deposits per round.
 # Prevents scouts from burning 6-7 iterations generating near-duplicate claims.
 # The 8-iteration ceiling (ITERATIONS_PER_ROUND) still applies as an absolute cap.
-SCOUT_MAX_DEPOSITS_PER_ROUND = 3
+SCOUT_MAX_DEPOSITS_PER_ROUND = 3*5
 
 # Characters from a scout's last successful deposit to include in the re-seed hint.
 # Steers the scout away from its most recent claim without injecting other agents' work.
-SCOUT_RESEED_CHARS = 100
+SCOUT_RESEED_CHARS = 100*3
 
 # ---------------------------------------------------------------------------
 # Signal store dynamics
@@ -87,7 +87,7 @@ DELTA_BOOST_BETA = 0.60          # provenance boost: delta = BOOST_BETA * avg_ve
 
 # Maximum number of surviving clusters the synthesizer renders in full (§6a).
 # Tail clusters beyond this limit appear in Section 3 (filtered) only.
-MAX_RENDERED_CLUSTERS = 4
+MAX_RENDERED_CLUSTERS = 4*8
 
 assert isinstance(USE_LOGIT_DYNAMICS, bool)
 assert DELTA_DECAY < 0 and DELTA_DECAY_CONTRARIAN < 0
@@ -100,7 +100,7 @@ assert DELTA_AMPLIFY > 0 and DELTA_DEDUP_AMPLIFY > 0 and DELTA_BOOST_BETA > 0
 
 CHUNK_WORDS = 600
 CHUNK_OVERLAP = 80
-CHUNKS_PER_SCOUT_MAX = 4
+CHUNKS_PER_SCOUT_MAX = 4*2
 
 # ---------------------------------------------------------------------------
 # Validation

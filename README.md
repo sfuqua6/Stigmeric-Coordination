@@ -112,6 +112,15 @@ The driver for the sweep is `tools/sweep.py` (see §6 below).
   "..." [--heterogeneous]`. `run_meta.json` records
   `execution_mode: "phase_isolated"` so isolated and in-process
   runs are distinguishable in cross-run analysis.
+- **Path overrides for non-local environments (Colab, scratch dirs).**
+  Four env vars redirect where the pipeline reads and writes:
+  `SWARM_OUTPUTS_BASE_DIR` (run output trees), `SWARM_MODELS_DIR`
+  (GGUF files), `SWARM_KB_DIR` (cross-run knowledge base),
+  `SWARM_RETRIEVAL_CACHE_DIR` (Wikipedia/Web cache). A turnkey
+  Colab notebook is at `notebooks/colab_setup.ipynb` — handles
+  Drive mount, model download from Hugging Face, env-var wiring,
+  and either execution mode (in-process heterogeneous or
+  phase-isolated).
 
 ## Folder layout
 

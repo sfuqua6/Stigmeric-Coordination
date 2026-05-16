@@ -316,14 +316,21 @@ class CompositeRetriever(Retriever):
 class CachedRetriever(Retriever):
     """On-disk cache wrapping another retriever.
 
-    Cache is keyed by SHA1(query). Stored under `retrieval_cache/` in the
-    current working directory. Each entry is a JSON file containing the list
-    of CorpusChunk dicts.
+    Cache is keyed by SHA1(query). Each entry is a JSON file containing the
+    list of CorpusChunk dicts. Cache directory resolution:
+
+        1. constructor `cache_dir` argument
+        2. SWARM_RETRIEVAL_CACHE_DIR env var
+        3. `retrieval_cache/` in the current working directory (default)
     """
 
     def __init__(self, inner: Retriever, cache_dir: Optional[str] = None) -> None:
         self._inner = inner
-        self._cache_dir = Path(cache_dir or "retrieval_cache")
+        self._cache_dir = Path(
+            cache_dir
+            or os.environ.get("SWARM_RETRIEVAL_CACHE_DIR")
+            or "retrieval_cache"
+        )
 
     def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
         key = hashlib.sha1(query.encode("utf-8")).hexdigest()

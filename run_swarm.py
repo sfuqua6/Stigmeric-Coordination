@@ -1185,10 +1185,18 @@ def main():
     # for empirical artifacts.
     outputs_root = "outputs_mock" if USE_MOCK_LLM else "outputs"
     mode_suffix = "_baseline" if run_mode == "baseline" else ""
-    if run_id is not None:
-        output_dir = Path(__file__).parent / outputs_root / run_id
+    # SWARM_OUTPUTS_BASE_DIR redirects the outputs/ and outputs_mock/ trees
+    # to a custom location (Google Drive, scratch dir, etc.). Mock/real
+    # subdirectory split is preserved per P0.1.
+    _base_env = os.environ.get("SWARM_OUTPUTS_BASE_DIR")
+    if _base_env:
+        output_base = Path(_base_env) / outputs_root
     else:
-        output_dir = Path(__file__).parent / outputs_root / f"{task_type}_{timestamp}{mode_suffix}"
+        output_base = Path(__file__).parent / outputs_root
+    if run_id is not None:
+        output_dir = output_base / run_id
+    else:
+        output_dir = output_base / f"{task_type}_{timestamp}{mode_suffix}"
 
     if ignore_kb:
         print("[pipeline] --ignore-kb: knowledge base disabled for this run")

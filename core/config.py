@@ -52,7 +52,7 @@ SCOUT_MAX_DEPOSITS_PER_ROUND = 3#*5
 
 # Characters from a scout's last successful deposit to include in the re-seed hint.
 # Steers the scout away from its most recent claim without injecting other agents' work.
-SCOUT_RESEED_CHARS = 100*1.5
+SCOUT_RESEED_CHARS = 175
 
 # ---------------------------------------------------------------------------
 # Signal store dynamics

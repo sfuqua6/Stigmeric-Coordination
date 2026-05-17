@@ -4,14 +4,25 @@
 #     pip install -r requirements-colab.txt
 #
 # vllm is the main heavy dep; it brings its own torch+CUDA wheel.
-# The rest are for retrieval, embedding, and the renderer-audit external
-# grounding lookups.
+# cohere + datasets + faiss-cpu power the primary retrieval path
+# (CohereCorpusRetriever — pre-computed Wikipedia embeddings).
+# The wikipedia / duckduckgo-search / requests / beautifulsoup4 set is
+# the secondary fallback chain when Cohere is unavailable.
 
 vllm
 sentence-transformers
+
+# Primary retrieval: Cohere pre-computed embeddings + FAISS
+# Requires COHERE_API_KEY env var at runtime (free key at cohere.com).
+cohere
+datasets
+faiss-cpu
+
+# Fallback retrieval: Wikipedia HTTP + DuckDuckGo
 wikipedia
 duckduckgo-search
 requests
 beautifulsoup4
+
 tqdm
 huggingface_hub

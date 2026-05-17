@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.retrieval import (
     WikipediaRetriever,
     WebRetriever,
+    CohereCorpusRetriever,
     CompositeRetriever,
     CachedRetriever,
     _extract_keyphrases,
@@ -118,14 +119,60 @@ class TestWikipediaRetriever(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# CohereCorpusRetriever adapter
+# ---------------------------------------------------------------------------
+
+class TestCohereCorpusRetriever(unittest.TestCase):
+    """Doesn't require cohere/datasets/faiss installed — mocks the store."""
+
+    def test_translates_search_to_retrieve(self):
+        from core import corpus_store_cohere
+        fake_store = MagicMock()
+        fake_store.search.return_value = [
+            CorpusChunk(chunk_id="cohere_00_abc", text="Renewable energy text.",
+                        source_tag="Renewable energy")
+        ]
+        with patch.object(corpus_store_cohere, "get_store",
+                          return_value=fake_store):
+            r = CohereCorpusRetriever(n_chunks=20)
+            chunks = r.retrieve("renewable energy", target_chars=8000)
+        fake_store.search.assert_called_once_with("renewable energy", n_chunks=20)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].source_tag, "Renewable energy")
+
+    def test_returns_empty_on_dep_missing(self):
+        from core import corpus_store_cohere
+        with patch.object(corpus_store_cohere, "get_store",
+                          side_effect=ImportError("No module named 'faiss'")):
+            r = CohereCorpusRetriever()
+            chunks = r.retrieve("anything")
+        self.assertEqual(chunks, [])
+
+    def test_returns_empty_on_api_key_missing(self):
+        from core import corpus_store_cohere
+        with patch.object(corpus_store_cohere, "get_store",
+                          side_effect=RuntimeError("COHERE_API_KEY not set")):
+            r = CohereCorpusRetriever()
+            chunks = r.retrieve("anything")
+        self.assertEqual(chunks, [])
+
+
+# ---------------------------------------------------------------------------
 # CompositeRetriever fallthrough
 # ---------------------------------------------------------------------------
 
 class TestCompositeRetriever(unittest.TestCase):
-    def test_falls_through_to_placeholder_when_both_fail(self):
-        """When Wikipedia and Web both return nothing, placeholder is used."""
+    def _mock_cohere_empty(self, comp):
+        """Replace comp._cohere with one that returns []."""
+        from core.retrieval import CohereCorpusRetriever
+        comp._cohere = MagicMock(spec=CohereCorpusRetriever)
+        comp._cohere.retrieve.return_value = []
+        return comp._cohere
+
+    def test_falls_through_to_placeholder_when_all_fail(self):
+        """When every real source returns nothing, placeholder is used."""
         comp = CompositeRetriever()
-        # Patch inner retrievers to return empty
+        self._mock_cohere_empty(comp)
         comp._wiki = MagicMock(spec=WikipediaRetriever)
         comp._wiki.retrieve.return_value = []
         comp._web = MagicMock(spec=WebRetriever)
@@ -143,16 +190,32 @@ class TestCompositeRetriever(unittest.TestCase):
         self.assertIn("WARNING", output, "Fallback must print a WARNING")
         self.assertIn("placeholder corpus", output)
 
-    def test_uses_wikipedia_when_available(self):
-        """If Wikipedia returns enough chunks, Web is not called.
-
-        "Enough" means >= _MIN_USEFUL_CHUNKS — see the in-code rationale.
-        A 1-chunk Wikipedia result used to short-circuit and produce the
-        `corpus chunks: 1` pathology; the new path keeps querying Web in
-        that case.
-        """
+    def test_cohere_short_circuits_when_fat(self):
+        """When Cohere returns >= _MIN_USEFUL_CHUNKS, Wikipedia and Web are skipped."""
         from core.retrieval import _MIN_USEFUL_CHUNKS
         comp = CompositeRetriever()
+        from core.retrieval import CohereCorpusRetriever
+        comp._cohere = MagicMock(spec=CohereCorpusRetriever)
+        cohere_chunks = [
+            CorpusChunk(chunk_id=f"cohere_{i:02d}_abcd", text=f"Cohere text {i}.",
+                        source_tag=f"Wiki article {i}")
+            for i in range(_MIN_USEFUL_CHUNKS)
+        ]
+        comp._cohere.retrieve.return_value = cohere_chunks
+        comp._wiki = MagicMock(spec=WikipediaRetriever)
+        comp._web = MagicMock(spec=WebRetriever)
+
+        chunks = comp.retrieve("test query")
+        self.assertEqual(len(chunks), _MIN_USEFUL_CHUNKS)
+        comp._wiki.retrieve.assert_not_called()
+        comp._web.retrieve.assert_not_called()
+
+    def test_uses_wikipedia_when_cohere_empty(self):
+        """If Cohere is unavailable and Wikipedia returns enough chunks,
+        Web is not called."""
+        from core.retrieval import _MIN_USEFUL_CHUNKS
+        comp = CompositeRetriever()
+        self._mock_cohere_empty(comp)
         comp._wiki = MagicMock(spec=WikipediaRetriever)
         wiki_chunks = [
             CorpusChunk(chunk_id=f"w{i}", text=f"Wikipedia text {i}.",
@@ -168,10 +231,11 @@ class TestCompositeRetriever(unittest.TestCase):
         comp._web.retrieve.assert_not_called()
 
     def test_keeps_querying_web_when_wiki_thin(self):
-        """If Wikipedia returns < _MIN_USEFUL_CHUNKS, Web is still called and
-        chunks are combined. Regression guard for the 1-chunk pathology."""
+        """Cohere+Wiki together still < _MIN_USEFUL_CHUNKS → Web is called.
+        Regression guard for the 1-chunk pathology."""
         from core.retrieval import _MIN_USEFUL_CHUNKS
         comp = CompositeRetriever()
+        self._mock_cohere_empty(comp)
         comp._wiki = MagicMock(spec=WikipediaRetriever)
         comp._wiki.retrieve.return_value = [
             CorpusChunk(chunk_id="w1", text="Lone Wikipedia text.",
@@ -188,8 +252,9 @@ class TestCompositeRetriever(unittest.TestCase):
         self.assertEqual(len(chunks), 1 + _MIN_USEFUL_CHUNKS)
 
     def test_falls_through_to_web_when_wiki_fails(self):
-        """If Wikipedia returns nothing, Web is tried next."""
+        """If Cohere and Wikipedia return nothing, Web is tried next."""
         comp = CompositeRetriever()
+        self._mock_cohere_empty(comp)
         comp._wiki = MagicMock(spec=WikipediaRetriever)
         comp._wiki.retrieve.return_value = []
         comp._web = MagicMock(spec=WebRetriever)

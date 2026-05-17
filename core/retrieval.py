@@ -1,9 +1,9 @@
 """Real retriever implementations (§1 directive).
 
 Replaces trivial_corpus_from_thesis() in core/intake.py with actual evidence
-retrieval. The CompositeRetriever tries Wikipedia → Web → placeholder, falling
-back to the engineered corpus ONLY if both fail, and prints a loud warning
-when it does so.
+retrieval. The CompositeRetriever tries Cohere → Wikipedia → Web → placeholder,
+falling back to the engineered corpus ONLY if all real sources fail, and prints
+a loud warning when it does so.
 
 # FUTURE-CLAUDE NOTE: The trivial_corpus_from_thesis fallback in
 # CompositeRetriever exists ONLY as a last-resort safety net so the pipeline
@@ -13,11 +13,13 @@ when it does so.
 
 Classes
 -------
-    Retriever(ABC)          — abstract base
-    WikipediaRetriever      — uses `wikipedia` package; noun-phrase keyphrases
-    WebRetriever            — DuckDuckGo HTML search + beautifulsoup4
-    CompositeRetriever      — Wikipedia → Web → placeholder fallback
-    CachedRetriever         — on-disk SHA1-keyed cache wrapping any retriever
+    Retriever(ABC)              — abstract base
+    CohereCorpusRetriever       — pre-computed Cohere Wikipedia embeddings + FAISS
+                                  (requires COHERE_API_KEY for query embedding)
+    WikipediaRetriever          — uses `wikipedia` package; noun-phrase keyphrases
+    WebRetriever                — DuckDuckGo (package preferred) + page scrape
+    CompositeRetriever          — Cohere → Wikipedia → Web → placeholder fallback
+    CachedRetriever             — on-disk SHA1-keyed cache wrapping any retriever
 
 All retrievers return list[CorpusChunk] from core.intake.
 """
@@ -125,6 +127,54 @@ def _extract_keyphrases(text: str, max_phrases: int = 8) -> list[str]:
             unique.append(p)
 
     return unique[:max_phrases]
+
+
+# ---------------------------------------------------------------------------
+# CohereCorpusRetriever — primary path
+# ---------------------------------------------------------------------------
+
+class CohereCorpusRetriever(Retriever):
+    """Adapter that wraps CohereWikiSimpleStore as a Retriever.
+
+    Translates the store's `search(query, n_chunks)` API into the
+    `retrieve(query, target_chars)` API expected by CompositeRetriever.
+    Default n_chunks is sized at _MIN_USEFUL_CHUNKS * 5 so a 6-scout run
+    on Colab T4 gets a healthy partition spread (typical: 20 chunks for
+    6 scouts at 3–4 each).
+
+    Failure modes:
+      - cohere / datasets / faiss-cpu not installed → ImportError → []
+      - COHERE_API_KEY missing → RuntimeError → []
+      - Network / API error mid-call → []
+    All failures print the cause; CompositeRetriever then tries the next source.
+    """
+
+    def __init__(self, n_chunks: int = max(20, _MIN_USEFUL_CHUNKS * 5)) -> None:
+        self._n_chunks = n_chunks
+
+    def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
+        try:
+            from .corpus_store_cohere import get_store
+        except ImportError as exc:
+            print(f"[retrieval] cohere store: module import failed "
+                  f"({type(exc).__name__}: {exc}); skipping.")
+            return []
+        try:
+            store = get_store()
+            return store.search(query, n_chunks=self._n_chunks)
+        except ImportError as exc:
+            # cohere / datasets / faiss missing — surfaced loudly so the
+            # user can `pip install -r requirements-colab.txt` and retry.
+            print(f"[retrieval] cohere store: dependency missing "
+                  f"({type(exc).__name__}: {exc}); install with "
+                  f"`pip install cohere datasets faiss-cpu` "
+                  f"(also in requirements-colab.txt). Falling through.")
+            return []
+        except Exception as exc:
+            # API key missing, network, FAISS load failure, etc.
+            print(f"[retrieval] cohere store: {type(exc).__name__}: {exc}. "
+                  f"Falling through to Wikipedia HTTP.")
+            return []
 
 
 # ---------------------------------------------------------------------------
@@ -359,23 +409,44 @@ class WebRetriever(Retriever):
 # ---------------------------------------------------------------------------
 
 class CompositeRetriever(Retriever):
-    """Wikipedia + Web → placeholder fallback.
+    """Cohere → Wikipedia → Web → placeholder fallback.
 
-    Unlike a strict failover ladder, this aggregates from both Wikipedia
-    and Web until at least `_MIN_USEFUL_CHUNKS` chunks have been collected
-    (or both sources are exhausted). Previously, a Wikipedia call that
-    returned 1 short chunk would short-circuit and prevent Web retrieval
-    from ever running — producing `corpus chunks: 1` for a 6-scout run.
+    Cohere's pre-computed Wikipedia embeddings are the primary path: a
+    single embedding call returns ~20 semantically-ranked passages from
+    a 250k-article index. When Cohere returns >= _MIN_USEFUL_CHUNKS, the
+    chain short-circuits and Wikipedia / Web aren't called.
 
-    When neither source produces enough, prints a loud warning and falls
-    back to the engineered placeholder corpus.
+    If Cohere fails (no API key, network, or missing deps), the chain
+    falls through to the existing Wikipedia HTTP retriever, then Web
+    (DuckDuckGo), aggregating until at least _MIN_USEFUL_CHUNKS chunks
+    are collected. The old "1 wikipedia chunk → skip web" bug stays
+    fixed via the aggregation logic below.
+
+    Engineered placeholder fires only when every real source produced 0.
     """
 
     def __init__(self) -> None:
+        self._cohere = CohereCorpusRetriever()
         self._wiki = WikipediaRetriever()
         self._web = WebRetriever()
 
     def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
+        # Primary: Cohere pre-computed Wikipedia embeddings.
+        cohere_chunks: list[CorpusChunk] = []
+        cohere_exc: Optional[Exception] = None
+        try:
+            cohere_chunks = self._cohere.retrieve(query, target_chars)
+        except Exception as exc:
+            cohere_exc = exc
+            print(f"[retrieval] cohere retriever crashed: "
+                  f"{type(exc).__name__}: {exc}")
+        if len(cohere_chunks) >= _MIN_USEFUL_CHUNKS:
+            print(f"[retrieval] sources combined: cohere={len(cohere_chunks)} "
+                  f"(short-circuit; wiki/web skipped)")
+            return cohere_chunks
+
+        # Secondary: Wikipedia HTTP. Only runs when Cohere is unavailable or
+        # returned fewer than _MIN_USEFUL_CHUNKS.
         wiki_chunks: list[CorpusChunk] = []
         wiki_exc: Optional[Exception] = None
         try:
@@ -385,12 +456,12 @@ class CompositeRetriever(Retriever):
             print(f"[retrieval] wikipedia retriever crashed: "
                   f"{type(exc).__name__}: {exc}")
 
+        # Tertiary: Web (DuckDuckGo). Only runs when cohere+wiki combined
+        # are below threshold. The old "wiki succeeded with N>=1 → skip web"
+        # branch was the specific path that produced the 1-chunk pathology.
         web_chunks: list[CorpusChunk] = []
         web_exc: Optional[Exception] = None
-        # Always run web too if wiki returned fewer than _MIN_USEFUL_CHUNKS.
-        # The old "wiki succeeded with N>=1 chunks → skip web" branch was the
-        # specific path that produced the 1-chunk-degenerate-run pathology.
-        if len(wiki_chunks) < _MIN_USEFUL_CHUNKS:
+        if len(cohere_chunks) + len(wiki_chunks) < _MIN_USEFUL_CHUNKS:
             try:
                 web_chunks = self._web.retrieve(query, target_chars)
             except Exception as exc:
@@ -398,11 +469,11 @@ class CompositeRetriever(Retriever):
                 print(f"[retrieval] web retriever crashed: "
                       f"{type(exc).__name__}: {exc}")
 
-        combined = wiki_chunks + web_chunks
+        combined = cohere_chunks + wiki_chunks + web_chunks
         if combined:
-            print(f"[retrieval] sources combined: wiki={len(wiki_chunks)} "
-                  f"web={len(web_chunks)} total={len(combined)} "
-                  f"(target>={_MIN_USEFUL_CHUNKS})")
+            print(f"[retrieval] sources combined: cohere={len(cohere_chunks)} "
+                  f"wiki={len(wiki_chunks)} web={len(web_chunks)} "
+                  f"total={len(combined)} (target>={_MIN_USEFUL_CHUNKS})")
             if len(combined) < _MIN_USEFUL_CHUNKS:
                 print(f"[retrieval] WARNING: only {len(combined)} chunks "
                       f"retrieved; the partition will spread thin across scouts.")
@@ -411,14 +482,18 @@ class CompositeRetriever(Retriever):
         # Last resort: engineered placeholder corpus. Banner the fallback so
         # nothing downstream can mistake the run for an empirical one.
         print("=" * 72)
-        print("[retrieval] WARNING / FALLBACK: both wikipedia and web retrievers returned 0 chunks.")
+        print("[retrieval] WARNING / FALLBACK: every real source returned 0 chunks.")
+        if cohere_exc:
+            print(f"[retrieval]   cohere error:    {type(cohere_exc).__name__}: {cohere_exc}")
         if wiki_exc:
             print(f"[retrieval]   wikipedia error: {type(wiki_exc).__name__}: {wiki_exc}")
         if web_exc:
             print(f"[retrieval]   web error:       {type(web_exc).__name__}: {web_exc}")
         print("[retrieval]   Common causes:")
         print("[retrieval]     - missing deps: `pip install -r requirements-colab.txt`")
-        print("[retrieval]       (needs wikipedia, requests, beautifulsoup4, duckduckgo-search)")
+        print("[retrieval]       (needs cohere, datasets, faiss-cpu, wikipedia,")
+        print("[retrieval]        requests, beautifulsoup4, duckduckgo-search)")
+        print("[retrieval]     - COHERE_API_KEY env var not set")
         print("[retrieval]     - no network connectivity")
         print("[retrieval]     - DDG / Wikipedia rate-limited or blocked this IP")
         print("[retrieval]   Using the engineered placeholder corpus instead — diversity")

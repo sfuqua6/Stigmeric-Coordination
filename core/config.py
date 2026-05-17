@@ -250,6 +250,27 @@ if _TIER is not None:
 CLUSTER_SIM_THRESHOLD = 0.72 if _TIER is not None else 0.55
 
 # ---------------------------------------------------------------------------
+# Survival-filter thresholds (consumed by core/projection.py)
+# ---------------------------------------------------------------------------
+# Exposed here (not in projection.py) so the notebook can override via env
+# vars without editing projection.py. projection.py imports these directly.
+#
+#   support_diversity >= SURVIVAL_MIN_SUPPORT_DIVERSITY     -> not weakly_supported
+#   dissent_pressure  >  SURVIVAL_REJECT_DISSENT_PRESSURE   -> rejected_by_field
+#   dissent_pressure in [SURVIVAL_CONTEST_MIN, SURVIVAL_CONTEST_MAX] -> contested
+#   credibility gate: passes if ANY of:
+#     verification_score >= SURVIVAL_VERIFY_MIN
+#     len(dissent_set)   >= SURVIVAL_DISSENT_MIN (=1)
+#     support_diversity  >= SURVIVAL_BROAD_SUPPORT
+SURVIVAL_MIN_SUPPORT_DIVERSITY = 3
+SURVIVAL_REJECT_DISSENT_PRESSURE = 1.5
+SURVIVAL_CONTEST_MIN = 0.5
+SURVIVAL_CONTEST_MAX = 1.5
+SURVIVAL_VERIFY_MIN = 0.3
+SURVIVAL_DISSENT_MIN = 1
+SURVIVAL_BROAD_SUPPORT = 4
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -268,6 +289,85 @@ assert CHUNK_WORDS > 0 and CHUNK_OVERLAP >= 0 and CHUNK_OVERLAP < CHUNK_WORDS
 assert LLM_CONCURRENCY >= 1
 assert SCOUT_MAX_DEPOSITS_PER_ROUND >= 1
 assert SCOUT_RESEED_CHARS >= 0
+
+
+# ---------------------------------------------------------------------------
+# Env-var overrides (notebook playground knobs)
+# ---------------------------------------------------------------------------
+# Anything below can be overridden by setting the matching SWARM_* env var
+# BEFORE the pipeline imports core.config. This is the entry point for the
+# Colab playground cells — keep the names stable so the notebook can rely
+# on them.
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[config] WARNING: {name}={raw!r} is not an int; using {default}")
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[config] WARNING: {name}={raw!r} is not a float; using {default}")
+        return default
+
+
+# Round / iteration knobs
+NUM_ROUNDS                    = _int_env("SWARM_NUM_ROUNDS",           NUM_ROUNDS)
+ITERATIONS_PER_ROUND          = _int_env("SWARM_ITERATIONS_PER_ROUND", ITERATIONS_PER_ROUND)
+
+# Agent population knobs
+NUM_SCOUTS                    = _int_env("SWARM_NUM_SCOUTS",     NUM_SCOUTS)
+NUM_FORAGERS                  = _int_env("SWARM_NUM_FORAGERS",   NUM_FORAGERS)
+NUM_CRITICS                   = _int_env("SWARM_NUM_CRITICS",    NUM_CRITICS)
+NUM_HATERS                    = _int_env("SWARM_NUM_HATERS",     NUM_HATERS)
+NUM_VALIDATORS                = _int_env("SWARM_NUM_VALIDATORS", NUM_VALIDATORS)
+SCOUT_MAX_DEPOSITS_PER_ROUND  = _int_env("SWARM_SCOUT_MAX_DEPOSITS", SCOUT_MAX_DEPOSITS_PER_ROUND)
+
+# Token budgets
+MAX_TOKENS_SCOUT       = _int_env("SWARM_MAX_TOKENS_SCOUT",       MAX_TOKENS_SCOUT)
+MAX_TOKENS_FORAGER     = _int_env("SWARM_MAX_TOKENS_FORAGER",     MAX_TOKENS_FORAGER)
+MAX_TOKENS_CRITIC      = _int_env("SWARM_MAX_TOKENS_CRITIC",      MAX_TOKENS_CRITIC)
+MAX_TOKENS_HATER       = _int_env("SWARM_MAX_TOKENS_HATER",       MAX_TOKENS_HATER)
+MAX_TOKENS_VALIDATOR   = _int_env("SWARM_MAX_TOKENS_VALIDATOR",   MAX_TOKENS_VALIDATOR)
+MAX_TOKENS_SYNTHESIZER = _int_env("SWARM_MAX_TOKENS_SYNTHESIZER", MAX_TOKENS_SYNTHESIZER)
+
+# Intake
+CHUNK_WORDS            = _int_env("SWARM_CHUNK_WORDS",          CHUNK_WORDS)
+CHUNKS_PER_SCOUT_MAX   = _int_env("SWARM_CHUNKS_PER_SCOUT_MAX", CHUNKS_PER_SCOUT_MAX)
+LLM_CONCURRENCY        = _int_env("SWARM_LLM_CONCURRENCY",      LLM_CONCURRENCY)
+
+# Survival-filter thresholds
+SURVIVAL_MIN_SUPPORT_DIVERSITY   = _int_env(  "SWARM_SURVIVAL_MIN_SUPPORT_DIVERSITY",   SURVIVAL_MIN_SUPPORT_DIVERSITY)
+SURVIVAL_REJECT_DISSENT_PRESSURE = _float_env("SWARM_SURVIVAL_REJECT_DISSENT_PRESSURE", SURVIVAL_REJECT_DISSENT_PRESSURE)
+SURVIVAL_CONTEST_MIN             = _float_env("SWARM_SURVIVAL_CONTEST_MIN",             SURVIVAL_CONTEST_MIN)
+SURVIVAL_CONTEST_MAX             = _float_env("SWARM_SURVIVAL_CONTEST_MAX",             SURVIVAL_CONTEST_MAX)
+SURVIVAL_VERIFY_MIN              = _float_env("SWARM_SURVIVAL_VERIFY_MIN",              SURVIVAL_VERIFY_MIN)
+SURVIVAL_BROAD_SUPPORT           = _int_env(  "SWARM_SURVIVAL_BROAD_SUPPORT",           SURVIVAL_BROAD_SUPPORT)
+CLUSTER_SIM_THRESHOLD            = _float_env("SWARM_CLUSTER_SIM_THRESHOLD",            CLUSTER_SIM_THRESHOLD)
+
+# Re-validate after overrides so a bad value crashes early rather than
+# producing weird mid-run behavior.
+assert NUM_SCOUTS > 0 and NUM_FORAGERS > 0
+assert NUM_CRITICS >= 0 and NUM_HATERS >= 0 and NUM_VALIDATORS >= 0
+assert NUM_ROUNDS > 0 and ITERATIONS_PER_ROUND > 0
+assert CHUNK_WORDS > 0 and CHUNKS_PER_SCOUT_MAX >= 1
+assert LLM_CONCURRENCY >= 1
+assert SCOUT_MAX_DEPOSITS_PER_ROUND >= 1
+assert SURVIVAL_MIN_SUPPORT_DIVERSITY >= 1
+assert SURVIVAL_REJECT_DISSENT_PRESSURE >= SURVIVAL_CONTEST_MAX
+assert SURVIVAL_CONTEST_MIN < SURVIVAL_CONTEST_MAX
+assert 0.0 <= SURVIVAL_VERIFY_MIN <= 1.0
+assert 0.0 < CLUSTER_SIM_THRESHOLD < 1.0
 
 # ---------------------------------------------------------------------------
 # Heterogeneous model routing (Pattern 1: sequential per-phase loading)

@@ -34,7 +34,12 @@ from .signal_types import (
     INITIAL, SUPPORT, CRITIQUE, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE,
     OBJECTION, VERIFICATION,
 )
-from .config import BOOST_THRESHOLD, CLUSTER_SIM_THRESHOLD
+from .config import (
+    BOOST_THRESHOLD, CLUSTER_SIM_THRESHOLD,
+    SURVIVAL_MIN_SUPPORT_DIVERSITY, SURVIVAL_REJECT_DISSENT_PRESSURE,
+    SURVIVAL_CONTEST_MIN, SURVIVAL_CONTEST_MAX,
+    SURVIVAL_VERIFY_MIN, SURVIVAL_BROAD_SUPPORT,
+)
 
 # Module-private alias preserved for back-compat with existing code paths
 # and tests. Sourced from config.CLUSTER_SIM_THRESHOLD which is tier-aware:
@@ -391,49 +396,43 @@ def _apply_kb(
 def _apply_survival_filter(cp: ClusterProjection, has_validators: bool) -> None:
     """Classify a cluster by mutating cp.status (and cp.unverified) in-place.
 
+    Thresholds come from config (SURVIVAL_*); the notebook can override
+    them via SWARM_SURVIVAL_* env vars. Defaults shown in parentheses.
+
     Evaluated in priority order:
 
-    1. rejected_by_field  — dissent_pressure > 1.5
-    2. weakly_supported   — support_diversity < 3 (was 2; bumped because the
-                            old threshold let 41-cluster bloat through)
-    3. contested          — 0.5 <= dissent_pressure <= 1.5
-    4. credibility gate   — a cluster that passed (1)-(3) must additionally
-                            satisfy ONE of:
-                                verification_score >= 0.3
+    1. rejected_by_field  — dissent_pressure > SURVIVAL_REJECT_DISSENT_PRESSURE (1.5)
+    2. weakly_supported   — support_diversity < SURVIVAL_MIN_SUPPORT_DIVERSITY (3)
+    3. contested          — SURVIVAL_CONTEST_MIN (0.5) <= dissent_pressure
+                            <= SURVIVAL_CONTEST_MAX (1.5)
+    4. credibility gate   — passed (1)-(3) but must additionally satisfy ANY of:
+                                verification_score >= SURVIVAL_VERIFY_MIN (0.3)
                                 len(dissent_set)   >= 1
-                                support_diversity  >= 4
-                            otherwise it's tagged `unverified` (a fourth
-                            bucket, distinct from weakly_supported so the
-                            renderer can explain the holdback).
+                                support_diversity  >= SURVIVAL_BROAD_SUPPORT (4)
+                            otherwise tagged `unverified` (fourth bucket).
     5. surviving          — everything else; cp.unverified=True flag also
-                            set when validators ran but none hit this cluster
-                            (preserved for renderer's "(not externally
-                            verified)" annotation on Section 1 paragraphs).
+                            set when validators ran but none hit this cluster.
     """
-    if cp.dissent_pressure > 1.5:
+    if cp.dissent_pressure > SURVIVAL_REJECT_DISSENT_PRESSURE:
         cp.status = "rejected_by_field"
         return
 
-    if cp.support_diversity < 3:
+    if cp.support_diversity < SURVIVAL_MIN_SUPPORT_DIVERSITY:
         cp.status = "weakly_supported"
         return
 
-    if 0.5 <= cp.dissent_pressure <= 1.5:
+    if SURVIVAL_CONTEST_MIN <= cp.dissent_pressure <= SURVIVAL_CONTEST_MAX:
         cp.status = "contested"
         return
 
-    # Credibility gate: structurally OK, but must have at least one of
-    # external verification, internal field pressure that didn't tip it,
-    # or unusually broad support.
-    has_verification = cp.verification_score >= 0.3
+    # Credibility gate
+    has_verification = cp.verification_score >= SURVIVAL_VERIFY_MIN
     has_dissent = len(cp.dissent_set) >= 1
-    has_broad_support = cp.support_diversity >= 4
+    has_broad_support = cp.support_diversity >= SURVIVAL_BROAD_SUPPORT
     if not (has_verification or has_dissent or has_broad_support):
         cp.status = "unverified"
         return
 
-    # Passes all structural checks AND credibility gate — survives. Mark the
-    # legacy unverified flag when validators ran but none reached this cluster
-    # (so the renderer can annotate "(not externally verified)" in Section 1).
+    # Survives. Legacy unverified flag preserves the Section 1 annotation.
     cp.status = "surviving"
     cp.unverified = has_validators and not cp.verification_set

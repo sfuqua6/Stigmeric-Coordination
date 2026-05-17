@@ -15,7 +15,10 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.llm_router import HeterogeneousRouter
+from core.llm_router import (
+    HeterogeneousRouter, LoRAHeterogeneousRouter, make_router,
+    _load_lora_assignment,
+)
 
 
 class _FakeAgent:
@@ -62,6 +65,76 @@ class TestRouterLoadCount(unittest.TestCase):
             self.assertEqual(r._load_count, 2)
             await r.teardown()
         asyncio.run(go())
+
+
+class TestLoRARouterFallback(unittest.TestCase):
+    """Without adapter files on disk, LoRAHeterogeneousRouter logs and
+    behaves as a single-base-model pass-through. Validates the scaffold
+    is safe to land before any LoRAs are trained.
+
+    Runs under MOCK_LLM=1 so VLLMBackend is never touched — the test
+    proves the *routing logic* degrades cleanly, not that vLLM works.
+    """
+
+    def test_no_adapters_means_no_lora(self):
+        # Heuristic: the scaffold config exists but the actual .safetensors
+        # files do not (LoRA training is future work). Router must fall
+        # back to single-base-model and set has_adapters=False.
+        r = LoRAHeterogeneousRouter()
+        self.assertFalse(r.has_adapters,
+                         "scaffold should produce no resolved adapters until "
+                         "LoRA files actually exist in loras/")
+        self.assertEqual(r.assignment, {})
+
+    def test_loads_config_strips_doc_metadata(self):
+        """_load_lora_assignment must skip the _doc array and only return
+        role->path entries (the JSON config carries documentation alongside
+        the mapping)."""
+        assignment = _load_lora_assignment()
+        # _doc is the only non-role key in the scaffold config
+        self.assertNotIn("_doc", assignment)
+        # Adapter files don't exist yet, so this should be empty
+        self.assertEqual(assignment, {})
+
+    def test_model_for_role_returns_lora_base_key(self):
+        r = LoRAHeterogeneousRouter()
+        # No adapters → every role maps to "lora:base"
+        self.assertEqual(r.model_for_role("scout"), "lora:base")
+        self.assertEqual(r.model_for_role("synthesizer"), "lora:base")
+
+    def test_group_agents_single_group_when_no_adapters(self):
+        r = LoRAHeterogeneousRouter()
+        agents = [_FakeAgent("scout"), _FakeAgent("critic"), _FakeAgent("hater")]
+        groups = r.group_agents(agents)
+        # All agents land in the same "lora:base" group since no adapters
+        self.assertEqual(list(groups.keys()), ["lora:base"])
+        self.assertEqual(len(groups["lora:base"]), 3)
+
+    def test_manifest_lists_every_role(self):
+        r = LoRAHeterogeneousRouter()
+        m = r.manifest()
+        for role in ("scout", "developer", "forager", "critic",
+                     "hater", "validator", "synthesizer"):
+            self.assertIn(role, m)
+        # With no adapters, every entry should be the base model only
+        for v in m.values():
+            self.assertNotIn("lora:", v)
+
+
+class TestMakeRouter(unittest.TestCase):
+    def test_laptop_tier_returns_homogeneous(self):
+        self.assertIsInstance(make_router(None), HeterogeneousRouter)
+
+    def test_l4_returns_lora(self):
+        self.assertIsInstance(make_router("l4"), LoRAHeterogeneousRouter)
+
+    def test_a100_returns_lora(self):
+        self.assertIsInstance(make_router("a100_40"), LoRAHeterogeneousRouter)
+        self.assertIsInstance(make_router("a100_80"), LoRAHeterogeneousRouter)
+
+    def test_t4_raises(self):
+        with self.assertRaises(RuntimeError):
+            make_router("t4")
 
 
 class TestPipelineSmoke(unittest.TestCase):

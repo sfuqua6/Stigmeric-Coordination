@@ -70,6 +70,9 @@ class VLLMBackend:
                  enable_chunked_prefill: bool = False,
                  quantization: Optional[str] = None,
                  trust_remote_code: bool = True,
+                 enable_lora: bool = False,
+                 max_loras: int = 8,
+                 max_lora_rank: int = 32,
                  **extra_engine_args):
         if not _VLLM_AVAILABLE:
             raise RuntimeError(
@@ -79,7 +82,8 @@ class VLLMBackend:
               f"(dtype={dtype}, max_num_seqs={max_num_seqs}, "
               f"max_model_len={max_model_len}, "
               f"quant={quantization or 'none'}, "
-              f"kv_cache={kv_cache_dtype or 'auto'})")
+              f"kv_cache={kv_cache_dtype or 'auto'}, "
+              f"lora={'on' if enable_lora else 'off'})")
         engine_kwargs = dict(
             model=model_name,
             dtype=dtype,
@@ -97,11 +101,18 @@ class VLLMBackend:
             engine_kwargs["kv_cache_dtype"] = kv_cache_dtype
         if quantization:
             engine_kwargs["quantization"] = quantization
+        # LoRA support — only enable when requested. Loading with enable_lora=False
+        # avoids any extra setup on T4 and laptop paths.
+        if enable_lora:
+            engine_kwargs["enable_lora"] = True
+            engine_kwargs["max_loras"] = max_loras
+            engine_kwargs["max_lora_rank"] = max_lora_rank
         # Forward any other knobs the caller passed (e.g. tensor_parallel_size).
         for k, v in extra_engine_args.items():
             engine_kwargs[k] = v
         engine_args = AsyncEngineArgs(**engine_kwargs)
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)
+        self._lora_enabled = enable_lora
         # Load tokenizer separately. vLLM's engine.get_tokenizer() is
         # awaitable in recent versions; the HF AutoTokenizer is version-stable
         # and only loads vocab/template files (cheap relative to the model).
@@ -135,7 +146,13 @@ class VLLMBackend:
 
     async def generate(self, prompt: str, role: str = "agent",
                        max_tokens: int = 120,
-                       temperature: float = 0.7) -> str:
+                       temperature: float = 0.7,
+                       lora_request=None) -> str:
+        """Generate one completion. Pass lora_request to select a LoRA adapter.
+
+        lora_request: an instance of vllm.lora.request.LoRARequest or None.
+        Ignored if the engine wasn't loaded with enable_lora=True.
+        """
         formatted = self._apply_chat_template(prompt, role)
         params = SamplingParams(
             max_tokens=max_tokens,
@@ -147,7 +164,17 @@ class VLLMBackend:
         self._request_counter += 1
         req_id = f"req-{self._request_counter}"
         final_output = None
-        async for output in self._engine.generate(formatted, params, req_id):
+        # Only pass lora_request when LoRA is enabled and an adapter was
+        # supplied; the AsyncLLMEngine.generate signature accepts it as a
+        # keyword in vllm 0.4+, and rejecting it cleanly via a try/except
+        # would mask real schedule errors. Branching at the call site is
+        # the cleaner shape.
+        if self._lora_enabled and lora_request is not None:
+            stream = self._engine.generate(formatted, params, req_id,
+                                            lora_request=lora_request)
+        else:
+            stream = self._engine.generate(formatted, params, req_id)
+        async for output in stream:
             final_output = output
         if final_output is None or not getattr(final_output, "outputs", None):
             return ""

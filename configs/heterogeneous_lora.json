@@ -1,0 +1,22 @@
+{
+  "_doc": [
+    "Per-role LoRA adapter paths for LoRAHeterogeneousRouter.",
+    "Paths are relative to the repo root. Adapter files must exist",
+    "or the router logs the missing role and uses the base model.",
+    "",
+    "When this file is missing OR every listed adapter is absent,",
+    "the router falls back to single-base-model with a log line —",
+    "see core/llm_router.py:LoRAHeterogeneousRouter for details.",
+    "",
+    "LoRA training is future work. The mappings below are scaffold",
+    "placeholders; create the safetensors files at these paths to",
+    "activate per-role adapter routing on L4/A100 tiers."
+  ],
+  "scout":       "loras/scout-r32.safetensors",
+  "forager":     "loras/forager-r32.safetensors",
+  "developer":   "loras/forager-r32.safetensors",
+  "critic":      "loras/critic-r32.safetensors",
+  "hater":       "loras/hater-r32.safetensors",
+  "validator":   "loras/validator-r32.safetensors",
+  "synthesizer": "loras/synthesizer-r32.safetensors"
+}

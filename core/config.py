@@ -279,6 +279,16 @@ from pathlib import Path as _Path
 # Default: homogeneous — every role uses SWARM_MODEL.
 USE_HETEROGENEOUS = False
 
+# B1: T4 cannot run heterogeneous routing. A single 7B AWQ weighs ~4.5 GB
+# and leaves room for ~3 GB of KV cache and activation memory in T4's 16 GB
+# VRAM. Multiple models or even multiple LoRA adapters of significant rank
+# can't co-reside. Force-off and log — defensive guard against anyone
+# setting USE_HETEROGENEOUS=True via env or downstream config. The L4 and
+# A100 tiers have headroom for the LoRA path (core/llm_router.py).
+if _TIER == "t4" and USE_HETEROGENEOUS:
+    print("[config] heterogeneous suppressed on T4 — single-model required by VRAM")
+    USE_HETEROGENEOUS = False
+
 # Models directory. Override with SWARM_MODELS_DIR env var.
 MODELS_DIR = _Path(os.environ.get("SWARM_MODELS_DIR", "models")).resolve()
 

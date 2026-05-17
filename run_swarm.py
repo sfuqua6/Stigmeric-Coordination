@@ -85,7 +85,7 @@ from core.diversity import (
 )
 from core.output_diversity import format_output_diversity_report
 from core.llm import make_llm
-from core.llm_router import HeterogeneousRouter
+from core.llm_router import HeterogeneousRouter, make_router
 from core.knowledge_base import KnowledgeBase
 
 from agents.scout import Scout, ScoutConfig
@@ -300,8 +300,13 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
     pipeline_start = time.time()
     task_prompt = build_task_prompt(task_type, user_prompt)
     if config.USE_HETEROGENEOUS:
-        router = HeterogeneousRouter()
-        print(f"[pipeline] heterogeneous routing enabled.")
+        # make_router picks LoRAHeterogeneousRouter on L4/A100 (vLLM + LoRA)
+        # and HeterogeneousRouter on laptop (GGUF sequential). T4 raises —
+        # config._TIER='t4' should have flipped USE_HETEROGENEOUS off in
+        # config.py already (B1), so reaching this with tier='t4' is a bug.
+        router = make_router(config._TIER)
+        print(f"[pipeline] heterogeneous routing enabled "
+              f"(router={type(router).__name__}, tier={config._TIER}).")
         print(f"[pipeline] router manifest: {json.dumps(router.manifest(), indent=2)}")
         llm = None  # phase loops will acquire per-model below
     else:
@@ -899,8 +904,9 @@ async def run_phase_isolated(
 
     # ------ LLM (router for heterogeneous; single model otherwise) -----------
     if config.USE_HETEROGENEOUS:
-        router = HeterogeneousRouter()
-        print(f"[phase] heterogeneous routing enabled (one model will be loaded)")
+        router = make_router(config._TIER)
+        print(f"[phase] heterogeneous routing enabled "
+              f"(router={type(router).__name__}, tier={config._TIER})")
         llm = None
     else:
         router = None
@@ -1165,14 +1171,16 @@ def main():
         "--ignore-kb", "--reset-kb", "--show-partition-overlap", "--heterogeneous",
     )]
     if heterogeneous:
-        # On Colab tiers (vLLM single-model batching is the win), heterogeneous
-        # per-role routing is counterproductive — one capable model batched at
-        # concurrency 32 beats six quantized specialists each loaded once.
-        if config._TIER is not None:
-            print("[pipeline] WARNING: --heterogeneous ignored on Colab "
-                  f"(tier={config._TIER}). vLLM single-model batching is "
-                  "the intended path here. Unset COLAB / SWARM_BACKEND=vllm "
-                  "to re-enable.")
+        # Tier-gated. T4 cannot run heterogeneous: VRAM (16 GB) only fits one
+        # 7B AWQ with usable KV cache. Per-role GGUF specialists were never the
+        # plan on Colab anyway — on L4/A100 the path is vLLM multi-LoRA (see
+        # core/llm_router.py:LoRAHeterogeneousRouter), which loads the base
+        # once and selects adapters per-request. Laptop still uses the legacy
+        # GGUF HeterogeneousRouter.
+        if config._TIER == "t4":
+            print("[pipeline] WARNING: --heterogeneous ignored on T4 "
+                  "(VRAM-bound to a single 7B AWQ). vLLM single-model batching "
+                  "is the intended path here.")
         else:
             # Mutate module attribute so run_pipeline's `config.USE_HETEROGENEOUS`
             # read picks up the flag.

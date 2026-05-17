@@ -10,6 +10,7 @@
 vllm
 sentence-transformers
 wikipedia
+duckduckgo-search
 requests
 beautifulsoup4
 tqdm

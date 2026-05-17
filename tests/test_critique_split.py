@@ -24,8 +24,9 @@ from core.projection import build_projection
 
 class TestCritiqueSplit(unittest.TestCase):
     def test_projection_treats_critique_positive_as_support(self):
-        """An INITIAL with two CRITIQUE_POSITIVE deposits from distinct critics
-        should survive (support_diversity >= 2, no dissent)."""
+        """An INITIAL with four CRITIQUE_POSITIVE deposits from distinct critics
+        should survive (support_diversity >= 4 clears both the weakly_supported
+        threshold AND the credibility gate, with no validators / no dissent)."""
         store = SignalStore(embedder=_NULL_EMBEDDER)
         init_id = store.deposit(
             INITIAL, "a substantive claim about renewable energy economics",
@@ -33,22 +34,24 @@ class TestCritiqueSplit(unittest.TestCase):
             metadata={"scout_agent_id": "scout_R1_0", "depositor_agent_id": "scout_R1_0"},
         )
         self.assertIsNotNone(init_id)
-        # Two distinct critic strategy names → support_diversity=2
-        store.deposit(
-            CRITIQUE_POSITIVE, "well-grounded — corroborates multiple references",
-            0.7, "critic", parent_id=init_id,
-            metadata={"depositor_agent_id": "critic_R1_0_weighted_default"},
-        )
-        store.deposit(
-            CRITIQUE_POSITIVE, "agrees with the broader evidence base",
-            0.7, "critic", parent_id=init_id,
-            metadata={"depositor_agent_id": "critic_R1_1_stratified_extremes"},
-        )
+        # Four distinct critic strategy names → support_diversity=4.
+        # Need >= 4 here because there's no verification and no dissent, so
+        # the credibility gate requires broad support to let this through.
+        for strategy in (
+            "weighted_default", "stratified_extremes",
+            "least_examined", "under_visited_only",
+        ):
+            store.deposit(
+                CRITIQUE_POSITIVE, f"corroborates references ({strategy})",
+                0.7, "critic", parent_id=init_id,
+                metadata={"depositor_agent_id": f"critic_R1_0_{strategy}"},
+            )
         proj = build_projection(store, has_validators=False)
         self.assertEqual(len(proj.surviving), 1,
                          f"expected 1 surviving, got {len(proj.surviving)} "
-                         f"(weakly_supported={len(proj.weakly_supported)})")
-        self.assertGreaterEqual(proj.surviving[0].support_diversity, 2)
+                         f"(weakly_supported={len(proj.weakly_supported)}, "
+                         f"unverified={len(proj.unverified)})")
+        self.assertGreaterEqual(proj.surviving[0].support_diversity, 4)
 
     def test_projection_treats_critique_negative_as_dissent(self):
         """An INITIAL with four CRITIQUE_NEGATIVE deposits and no support

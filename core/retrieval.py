@@ -41,8 +41,14 @@ from .intake import CorpusChunk
 _WEB_TOTAL_TIMEOUT_S = 30   # total budget for all web requests in one retrieve() call
 _MAX_CONTENT_CHARS = 2000   # max chars per chunk from any source
 _WIKI_MAX_SENTENCES = 5     # max sentences per Wikipedia summary
-_WEB_MAX_RESULTS = 4        # max DuckDuckGo results to pull
+_WEB_MAX_RESULTS = 6        # max DuckDuckGo results to pull
 _WIKI_QUERIES_MAX = 8       # max keyphrase queries to send to Wikipedia
+
+# Below this chunk count, CompositeRetriever keeps trying additional sources
+# instead of short-circuiting. Also the threshold below which CachedRetriever
+# refuses to persist a result (thin caches are usually one-off scrape failures
+# that the user will hit forever after, since the cache key is just sha1(query)).
+_MIN_USEFUL_CHUNKS = 4
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +225,17 @@ class WikipediaRetriever(Retriever):
 # ---------------------------------------------------------------------------
 
 class WebRetriever(Retriever):
-    """Retrieve evidence via DuckDuckGo HTML search + page text scraping.
+    """Retrieve evidence via DuckDuckGo + page text scraping.
 
-    Uses requests + beautifulsoup4. Respects a 30s total timeout budget.
-    No API key required (uses DDG HTML endpoint).
+    Tries the `duckduckgo_search` Python package first (which adapts to DDG's
+    backend changes). If that's not installed or fails at runtime, falls back
+    to scraping the HTML endpoint with requests + beautifulsoup4.
+
+    The HTML scraper has historically broken whenever DDG changed their result
+    class names (`a.result__url` → something else); the package is maintained
+    against the live API and is the more reliable path.
+
+    Respects a 30s total timeout budget. No API key required.
     """
 
     def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
@@ -236,37 +249,26 @@ class WebRetriever(Retriever):
                   f"(also in requirements-colab.txt)")
             return []
 
-        chunks: list[CorpusChunk] = []
         deadline = time.time() + _WEB_TOTAL_TIMEOUT_S
 
-        # DuckDuckGo HTML search — no API key, but rate-limited
-        ddg_url = "https://html.duckduckgo.com/html/"
-        headers = {"User-Agent": "Mozilla/5.0 (academic research bot; not commercial)"}
-        params = {"q": query, "t": "h_"}
+        # Search step: prefer the duckduckgo_search package, fall back to HTML.
+        result_links, search_via, search_exc = self._search(query, deadline)
+        if not result_links:
+            cause = (f" ({type(search_exc).__name__}: {search_exc})"
+                     if search_exc is not None else "")
+            print(f"[retrieval] web: 0 URLs from DDG ({search_via}){cause}. "
+                  f"Try `pip install duckduckgo-search` (in requirements-colab.txt).")
+            return []
+        print(f"[retrieval] web: {len(result_links)} URL(s) from DDG ({search_via})")
 
-        try:
-            resp = requests.post(
-                ddg_url, data=params, headers=headers,
-                timeout=min(10, deadline - time.time()),
-            )
-            if resp.status_code != 200:
-                print(f"[retrieval] web: DDG returned HTTP {resp.status_code}")
-                return chunks
-            soup = BeautifulSoup(resp.text, "html.parser")
-            result_links = []
-            for a in soup.select("a.result__url"):
-                href = a.get("href", "")
-                if href.startswith("http"):
-                    result_links.append(href)
-            result_links = result_links[:_WEB_MAX_RESULTS]
-        except Exception as exc:
-            print(f"[retrieval] web: DDG search failed "
-                  f"({type(exc).__name__}: {exc})")
-            return chunks
-
+        # Scrape step: pull text from each URL, skip noise.
+        chunks: list[CorpusChunk] = []
         last_exc: Optional[Exception] = None
+        headers = {"User-Agent": "Mozilla/5.0 (academic research bot; not commercial)"}
         for i, url in enumerate(result_links):
             if time.time() >= deadline:
+                print(f"[retrieval] web: hit {_WEB_TOTAL_TIMEOUT_S}s deadline "
+                      f"after {i} URL(s); stopping early")
                 break
             try:
                 remaining = max(3.0, deadline - time.time())
@@ -274,7 +276,6 @@ class WebRetriever(Retriever):
                     url, headers=headers, timeout=min(8, remaining),
                 )
                 soup2 = BeautifulSoup(page_resp.text, "html.parser")
-                # Remove scripts and styles
                 for tag in soup2(["script", "style", "nav", "footer", "header"]):
                     tag.decompose()
                 text = soup2.get_text(separator=" ", strip=True)
@@ -295,9 +296,62 @@ class WebRetriever(Retriever):
             print(f"[retrieval] web: retrieved {len(chunks)} chunks "
                   f"from {len(result_links)} candidate URLs")
         else:
-            err = f" ({type(last_exc).__name__}: {last_exc})" if last_exc else ""
-            print(f"[retrieval] web: 0 chunks from {len(result_links)} candidates{err}")
+            err = f" (last scrape error: {type(last_exc).__name__}: {last_exc})" \
+                if last_exc else ""
+            print(f"[retrieval] web: 0 chunks from {len(result_links)} "
+                  f"candidates{err}")
         return chunks
+
+    def _search(self, query: str, deadline: float) -> tuple[list[str], str, Optional[Exception]]:
+        """Return (links, via, exc). `via` is 'ddg-package' or 'html-scrape'."""
+        # Path A: duckduckgo_search package (preferred — maintained against DDG)
+        try:
+            from duckduckgo_search import DDGS  # type: ignore
+            try:
+                links: list[str] = []
+                with DDGS(timeout=int(max(3, deadline - time.time()))) as ddgs:
+                    for r in ddgs.text(query, max_results=_WEB_MAX_RESULTS):
+                        href = r.get("href") or r.get("url") or ""
+                        if href.startswith("http"):
+                            links.append(href)
+                        if len(links) >= _WEB_MAX_RESULTS:
+                            break
+                if links:
+                    return links, "ddg-package", None
+                return [], "ddg-package", None
+            except Exception as exc:
+                # Package present but call failed (rate limit, network, etc).
+                # Fall through to HTML scraper.
+                pkg_exc = exc
+        except ImportError:
+            pkg_exc = None
+
+        # Path B: HTML scrape fallback.
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+            ddg_url = "https://html.duckduckgo.com/html/"
+            headers = {"User-Agent": "Mozilla/5.0 (academic research bot; not commercial)"}
+            resp = requests.post(
+                ddg_url, data={"q": query, "t": "h_"}, headers=headers,
+                timeout=min(10, max(3, deadline - time.time())),
+            )
+            if resp.status_code != 200:
+                err = RuntimeError(f"DDG HTML returned HTTP {resp.status_code}")
+                return [], "html-scrape", pkg_exc or err
+            soup = BeautifulSoup(resp.text, "html.parser")
+            links: list[str] = []
+            # DDG occasionally renames classes; try a few selectors.
+            for selector in ("a.result__url", "a.result__a", "a[href*='http']"):
+                for a in soup.select(selector):
+                    href = a.get("href", "")
+                    if href.startswith("http"):
+                        links.append(href)
+                if links:
+                    break
+            return links[:_WEB_MAX_RESULTS], "html-scrape", pkg_exc
+        except Exception as exc:
+            return [], "html-scrape", pkg_exc or exc
 
 
 # ---------------------------------------------------------------------------
@@ -305,10 +359,16 @@ class WebRetriever(Retriever):
 # ---------------------------------------------------------------------------
 
 class CompositeRetriever(Retriever):
-    """Wikipedia → Web → placeholder fallback.
+    """Wikipedia + Web → placeholder fallback.
 
-    When the fallback fires, prints a loud warning so any diversity numbers
-    produced by the run are clearly flagged as invalid.
+    Unlike a strict failover ladder, this aggregates from both Wikipedia
+    and Web until at least `_MIN_USEFUL_CHUNKS` chunks have been collected
+    (or both sources are exhausted). Previously, a Wikipedia call that
+    returned 1 short chunk would short-circuit and prevent Web retrieval
+    from ever running — producing `corpus chunks: 1` for a 6-scout run.
+
+    When neither source produces enough, prints a loud warning and falls
+    back to the engineered placeholder corpus.
     """
 
     def __init__(self) -> None:
@@ -316,33 +376,49 @@ class CompositeRetriever(Retriever):
         self._web = WebRetriever()
 
     def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
-        # Try Wikipedia
+        wiki_chunks: list[CorpusChunk] = []
+        wiki_exc: Optional[Exception] = None
         try:
-            chunks = self._wiki.retrieve(query, target_chars)
+            wiki_chunks = self._wiki.retrieve(query, target_chars)
         except Exception as exc:
+            wiki_exc = exc
             print(f"[retrieval] wikipedia retriever crashed: "
                   f"{type(exc).__name__}: {exc}")
-            chunks = []
-        if chunks:
-            return chunks
 
-        # Try Web
-        try:
-            chunks = self._web.retrieve(query, target_chars)
-        except Exception as exc:
-            print(f"[retrieval] web retriever crashed: "
-                  f"{type(exc).__name__}: {exc}")
-            chunks = []
-        if chunks:
-            return chunks
+        web_chunks: list[CorpusChunk] = []
+        web_exc: Optional[Exception] = None
+        # Always run web too if wiki returned fewer than _MIN_USEFUL_CHUNKS.
+        # The old "wiki succeeded with N>=1 chunks → skip web" branch was the
+        # specific path that produced the 1-chunk-degenerate-run pathology.
+        if len(wiki_chunks) < _MIN_USEFUL_CHUNKS:
+            try:
+                web_chunks = self._web.retrieve(query, target_chars)
+            except Exception as exc:
+                web_exc = exc
+                print(f"[retrieval] web retriever crashed: "
+                      f"{type(exc).__name__}: {exc}")
+
+        combined = wiki_chunks + web_chunks
+        if combined:
+            print(f"[retrieval] sources combined: wiki={len(wiki_chunks)} "
+                  f"web={len(web_chunks)} total={len(combined)} "
+                  f"(target>={_MIN_USEFUL_CHUNKS})")
+            if len(combined) < _MIN_USEFUL_CHUNKS:
+                print(f"[retrieval] WARNING: only {len(combined)} chunks "
+                      f"retrieved; the partition will spread thin across scouts.")
+            return combined
 
         # Last resort: engineered placeholder corpus. Banner the fallback so
         # nothing downstream can mistake the run for an empirical one.
         print("=" * 72)
         print("[retrieval] WARNING / FALLBACK: both wikipedia and web retrievers returned 0 chunks.")
-        print("[retrieval]   Possible causes:")
-        print("[retrieval]     - `wikipedia` / `requests` / `beautifulsoup4` not installed")
-        print("[retrieval]       (install: pip install -r requirements-colab.txt)")
+        if wiki_exc:
+            print(f"[retrieval]   wikipedia error: {type(wiki_exc).__name__}: {wiki_exc}")
+        if web_exc:
+            print(f"[retrieval]   web error:       {type(web_exc).__name__}: {web_exc}")
+        print("[retrieval]   Common causes:")
+        print("[retrieval]     - missing deps: `pip install -r requirements-colab.txt`")
+        print("[retrieval]       (needs wikipedia, requests, beautifulsoup4, duckduckgo-search)")
         print("[retrieval]     - no network connectivity")
         print("[retrieval]     - DDG / Wikipedia rate-limited or blocked this IP")
         print("[retrieval]   Using the engineered placeholder corpus instead — diversity")
@@ -384,7 +460,7 @@ class CachedRetriever(Retriever):
         if cache_path.exists():
             try:
                 data = json.loads(cache_path.read_text(encoding="utf-8"))
-                return [
+                cached = [
                     CorpusChunk(
                         chunk_id=d["chunk_id"],
                         text=d["text"],
@@ -392,21 +468,35 @@ class CachedRetriever(Retriever):
                     )
                     for d in data
                 ]
+                # Reject thin caches (a previously-broken retrieval poisoned
+                # this key with 0–3 chunks; serving it forever defeats the
+                # point of running real retrieval). Re-fetch instead.
+                if len(cached) >= _MIN_USEFUL_CHUNKS:
+                    print(f"[retrieval] cache HIT: {len(cached)} chunks from {cache_path.name}")
+                    return cached
+                print(f"[retrieval] cache REJECTED (thin: {len(cached)} chunks < "
+                      f"{_MIN_USEFUL_CHUNKS}); re-fetching")
             except Exception:
                 pass  # corrupted cache; re-fetch
 
         chunks = self._inner.retrieve(query, target_chars)
 
-        try:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(
-                json.dumps([
-                    {"chunk_id": c.chunk_id, "text": c.text, "source_tag": c.source_tag}
-                    for c in chunks
-                ], ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass  # cache write failure is non-fatal
+        # Only persist substantial results — a 0–3 chunk write would pin
+        # the cache to a thin result forever.
+        if len(chunks) >= _MIN_USEFUL_CHUNKS:
+            try:
+                self._cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    json.dumps([
+                        {"chunk_id": c.chunk_id, "text": c.text, "source_tag": c.source_tag}
+                        for c in chunks
+                    ], ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass  # cache write failure is non-fatal
+        else:
+            print(f"[retrieval] cache SKIP (thin: {len(chunks)} chunks); "
+                  f"not persisting to {cache_path.name}")
 
         return chunks

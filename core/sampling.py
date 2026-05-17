@@ -12,7 +12,10 @@ from __future__ import annotations
 from typing import Callable
 
 from .signal_store import SignalStore, Signal
-from .signal_types import INITIAL, SUPPORT, VERIFICATION
+from .signal_types import (
+    INITIAL, SUPPORT, VERIFICATION,
+    CRITIQUE, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE, OBJECTION,
+)
 
 
 SamplingStrategy = Callable[[SignalStore, str, int], list[Signal]]
@@ -61,6 +64,43 @@ def under_supported_clusters(store: SignalStore, signal_type: str, n: int) -> li
 
     # Sort ascending — fewest supports first (gap-filling priority).
     initials_sorted = sorted(initials, key=support_count)
+    picked = initials_sorted[:n]
+    for s in picked:
+        s.visits += 1
+    return picked
+
+
+_EXAMINER_TYPES = frozenset({
+    CRITIQUE, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE, OBJECTION, VERIFICATION,
+})
+
+
+def least_examined(store: SignalStore, signal_type: str, n: int) -> list[Signal]:
+    """Sample INITIALs ordered by ascending count of CRITIQUE/OBJECTION/VERIFICATION children.
+
+    Distributes critic and validator coverage toward INITIALs that have
+    received the least adversarial or verification attention. Without this,
+    the run pre-mortem showed 47 INITIALs but only 1 with dissent and 5
+    with verification — coverage was Pareto-concentrated on a few signals.
+
+    For non-INITIAL targets, falls back to strength-weighted sampling.
+    """
+    if signal_type != INITIAL:
+        return store.sample_weighted(signal_type, n)
+
+    initials = store.by_type(INITIAL)
+    if not initials:
+        return []
+
+    def examiner_count(sig: Signal) -> int:
+        return sum(
+            1 for cid in store.by_parent(sig.id)
+            if (c := store.get(cid)) and c.type in _EXAMINER_TYPES
+        )
+
+    # Stable secondary sort by id keeps test/diagnostic output deterministic
+    # when many INITIALs tie at zero examiners (the common early-round case).
+    initials_sorted = sorted(initials, key=lambda s: (examiner_count(s), s.id))
     picked = initials_sorted[:n]
     for s in picked:
         s.visits += 1
@@ -130,12 +170,16 @@ DEVELOPER_STRATEGIES = FORAGER_STRATEGIES
 CRITIC_STRATEGIES: list[tuple[str, SamplingStrategy]] = [
     ("weighted_default",    weighted_default),     # critic 0: strong+exploration
     ("stratified_extremes", stratified_extremes),  # critic 1: spans weak+strong
-    ("under_visited_only",  under_visited_only),   # critic 2: surfaces neglected
+    ("least_examined",      least_examined),       # critic 2: targets neglected
+                                                   # INITIALs (replaced under_visited_only)
 ]
 
 VALIDATOR_STRATEGIES: list[tuple[str, SamplingStrategy]] = [
-    ("needs_verification",  needs_verification),   # B4: replaced weighted_default
-    ("stratified_extremes", stratified_extremes),
+    ("needs_verification",  needs_verification),
+    ("least_examined",      least_examined),       # replaced stratified_extremes:
+                                                   # the targeted neglect signal is
+                                                   # a better validator prior than
+                                                   # strength-weighted sampling.
 ]
 
 

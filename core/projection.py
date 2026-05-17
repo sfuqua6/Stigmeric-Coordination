@@ -72,6 +72,11 @@ class SynthesisProjection:
     contested: list[ClusterProjection] = field(default_factory=list)
     weakly_supported: list[ClusterProjection] = field(default_factory=list)
     rejected_by_field: list[ClusterProjection] = field(default_factory=list)
+    # Passes structural checks (not rejected, not weakly_supported, not contested)
+    # but does not clear the credibility gate (no verification, no field dissent,
+    # and only moderate support_diversity). Distinguished from weakly_supported
+    # so the renderer can describe why it was held back.
+    unverified: list[ClusterProjection] = field(default_factory=list)
     partition_coverage: dict = field(default_factory=dict)  # partition_tag -> count
     no_consensus: bool = False
 
@@ -129,6 +134,8 @@ def build_projection(
             proj.weakly_supported.append(cp)
         elif cp.status == "rejected_by_field":
             proj.rejected_by_field.append(cp)
+        elif cp.status == "unverified":
+            proj.unverified.append(cp)
         else:
             proj.weakly_supported.append(cp)  # fallback for unclassified
 
@@ -387,19 +394,27 @@ def _apply_survival_filter(cp: ClusterProjection, has_validators: bool) -> None:
     Evaluated in priority order:
 
     1. rejected_by_field  — dissent_pressure > 1.5
-    2. weakly_supported   — support_diversity < 2 (too few distinct strategies)
+    2. weakly_supported   — support_diversity < 3 (was 2; bumped because the
+                            old threshold let 41-cluster bloat through)
     3. contested          — 0.5 <= dissent_pressure <= 1.5
-    4. surviving          — everything else; cp.unverified=True when no validator hit it
-
-    Verification is a flag on surviving clusters, not a separate bucket.
-    A well-supported, low-dissent claim with no verification still survives
-    — it just carries the `unverified` flag so the renderer can annotate it.
+    4. credibility gate   — a cluster that passed (1)-(3) must additionally
+                            satisfy ONE of:
+                                verification_score >= 0.3
+                                len(dissent_set)   >= 1
+                                support_diversity  >= 4
+                            otherwise it's tagged `unverified` (a fourth
+                            bucket, distinct from weakly_supported so the
+                            renderer can explain the holdback).
+    5. surviving          — everything else; cp.unverified=True flag also
+                            set when validators ran but none hit this cluster
+                            (preserved for renderer's "(not externally
+                            verified)" annotation on Section 1 paragraphs).
     """
     if cp.dissent_pressure > 1.5:
         cp.status = "rejected_by_field"
         return
 
-    if cp.support_diversity < 2:
+    if cp.support_diversity < 3:
         cp.status = "weakly_supported"
         return
 
@@ -407,7 +422,18 @@ def _apply_survival_filter(cp: ClusterProjection, has_validators: bool) -> None:
         cp.status = "contested"
         return
 
-    # Passes all structural checks — survives. Mark unverified if validators
-    # were running but none reached this cluster.
+    # Credibility gate: structurally OK, but must have at least one of
+    # external verification, internal field pressure that didn't tip it,
+    # or unusually broad support.
+    has_verification = cp.verification_score >= 0.3
+    has_dissent = len(cp.dissent_set) >= 1
+    has_broad_support = cp.support_diversity >= 4
+    if not (has_verification or has_dissent or has_broad_support):
+        cp.status = "unverified"
+        return
+
+    # Passes all structural checks AND credibility gate — survives. Mark the
+    # legacy unverified flag when validators ran but none reached this cluster
+    # (so the renderer can annotate "(not externally verified)" in Section 1).
     cp.status = "surviving"
     cp.unverified = has_validators and not cp.verification_set

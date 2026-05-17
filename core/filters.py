@@ -89,6 +89,16 @@ _TEMPLATE_LEAK_PATTERNS = [
     re.compile(r"\bthis\s+initial\s+claim\b", re.IGNORECASE),
     re.compile(r"\bthis\s+is\s+my\s+initial\s+claim\b", re.IGNORECASE),
     re.compile(r"\bbased\s+on\s+the\s+evidence\s+assigned\b", re.IGNORECASE),
+    # Meta-acknowledgment of empty/sparse input — scouts admitting they have
+    # no evidence to ground a claim. These look like substantive prose but
+    # are actually structural complaints about the partition; rejecting them
+    # prevents the field from treating "I had nothing to work with" as a
+    # claim to argue about.
+    re.compile(r"\bgiven\s+no\s+specific\s+evidence\b", re.IGNORECASE),
+    re.compile(r"\bwithout\s+any\s+specific\s+evidence\b", re.IGNORECASE),
+    re.compile(r"\bthe\s+absence\s+of\s+empirical\s+proof\b", re.IGNORECASE),
+    re.compile(r"\bin\s+my\s+(?:corpus\s+)?partition\b", re.IGNORECASE),
+    re.compile(r"\bconsidering\s+the\s+absence\s+of\b", re.IGNORECASE),
 ]
 
 

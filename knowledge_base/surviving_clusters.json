@@ -22,7 +22,7 @@
     "status": "surviving",
     "first_seen": "2026-05-15T16:07:53.432291",
     "last_seen": "2026-05-16T18:08:22.075962",
-    "decay_strength": 0.95,
+    "decay_strength": 0.7737809374999999,
     "run_count": 2,
     "originating_run": {
       "timestamp": "2026-05-15T16:07:53.432291",
@@ -60,7 +60,7 @@
     "status": "surviving",
     "first_seen": "2026-05-15T16:10:14.498820",
     "last_seen": "2026-05-15T16:10:14.498820",
-    "decay_strength": 0.41812033521917696,
+    "decay_strength": 0.34056162628811465,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-15T16:10:14.498820",
@@ -97,7 +97,7 @@
     "status": "surviving",
     "first_seen": "2026-05-15T22:17:35.583133",
     "last_seen": "2026-05-15T22:17:35.583133",
-    "decay_strength": 0.5403600876626365,
+    "decay_strength": 0.44012666865176525,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-15T22:17:35.583133",
@@ -135,7 +135,7 @@
     "status": "surviving",
     "first_seen": "2026-05-16T13:04:54.065924",
     "last_seen": "2026-05-16T13:04:54.065924",
-    "decay_strength": 0.7737809374999999,
+    "decay_strength": 0.6302494097246091,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-16T13:04:54.065924",
@@ -173,7 +173,7 @@
     "status": "surviving",
     "first_seen": "2026-05-16T17:26:44.332434",
     "last_seen": "2026-05-16T17:26:44.332434",
-    "decay_strength": 0.8145062499999999,
+    "decay_strength": 0.6634204312890623,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-16T17:26:44.332434",
@@ -214,7 +214,7 @@
     "status": "surviving",
     "first_seen": "2026-05-16T17:28:18.741805",
     "last_seen": "2026-05-16T17:28:18.741805",
-    "decay_strength": 0.8573749999999999,
+    "decay_strength": 0.6983372960937497,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-16T17:28:18.741805",
@@ -225,6 +225,43 @@
       "task_type": "debate",
       "topic_hash": "ff2494c07f7be3af",
       "user_prompt_excerpt": "smoke metrics"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "8652386db9f9f7bb",
+    "representative_content": "The evidence in chunk 50124e suggests an initial pattern worth tracking. Reading partition 50124e, one observation stands out as a candidate claim. From this slice (50124e), a tentative hypothesis emerges.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00009"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00009",
+      "CRITIQUE_POSITIVE_00019",
+      "SUPPORT_00011"
+    ],
+    "partition_origins": [
+      "partition_3"
+    ],
+    "support_diversity": 2,
+    "dissent_pressure": 0.0,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-16T22:29:09.348956",
+    "status": "surviving",
+    "first_seen": "2026-05-16T22:29:09.348956",
+    "last_seen": "2026-05-16T22:29:09.348956",
+    "decay_strength": 0.9025,
+    "run_count": 1,
+    "originating_run": {
+      "timestamp": "2026-05-16T22:29:09.348956",
+      "task_type": "debate",
+      "user_prompt": "cascade test"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "08b6ff0b60816ca6",
+      "user_prompt_excerpt": "cascade test"
     },
     "contradicts": []
   }

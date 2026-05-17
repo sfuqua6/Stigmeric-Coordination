@@ -73,6 +73,17 @@ _DISSENT_CHARS = 400
 _SUMMARY_CHARS = 150   # for Section 3 "filtered" entries
 _EXTERNAL_CHARS = 400  # Wikipedia snippet injected into Section 1 calls
 
+# Hard cap on Section 1 paragraphs. Surviving clusters past this rank go
+# into Section 3 ("considered and filtered") instead of getting their own
+# LLM-rendered paragraph. Prevents 41-paragraph executive-summary bloat.
+_SECTION_1_RENDER_CAP = 5
+# Hard cap on Section 3 entries (after merging tail-of-surviving, unverified,
+# rejected_by_field, and weakly_supported). Was 5; raised because we now
+# route more buckets through this section.
+_SECTION_3_RENDER_CAP = 10
+# Threshold above which the run-end summary prints a faithfulness warning.
+_AUDIT_WARNING_THRESHOLD = 20
+
 # Composite cluster priority score used for rendering order.
 # Higher support_diversity and verification_score = more credible.
 # Higher dissent_pressure = more contested = lower priority for Section 1.
@@ -207,12 +218,17 @@ class Synthesizer:
         # ------------------------------------------------------------------
         # Section 1: Position synthesis — one LLM call per surviving cluster
         # Ranked by composite priority score (support_diversity *
-        # verification_score / dissent_pressure), highest first.
+        # verification_score / dissent_pressure), highest first. Capped at
+        # _SECTION_1_RENDER_CAP so the executive summary doesn't bloat when
+        # the projection happens to surface many clusters; the tail falls
+        # through to Section 3.
         # ------------------------------------------------------------------
-        if projection.surviving:
-            ranked = _rank_clusters(projection.surviving)
+        ranked_surviving = _rank_clusters(projection.surviving) if projection.surviving else []
+        rendered_surviving = ranked_surviving[:_SECTION_1_RENDER_CAP]
+        section1_tail = ranked_surviving[_SECTION_1_RENDER_CAP:]
+        if rendered_surviving:
             fragments: list[str] = []
-            for cp in ranked:
+            for cp in rendered_surviving:
                 fragment = await self._render_cluster_position(cp, store)
                 if fragment:
                     # Ensure paragraph ends with terminal punctuation.
@@ -258,21 +274,30 @@ class Synthesizer:
                 )
 
         # ------------------------------------------------------------------
-        # Section 3: Considered and filtered — deterministic, no LLM call
-        # Hard cap at 5 entries. Sort: rejected_by_field first (most diagnostic),
-        # then weakly_supported by descending verification_score.
+        # Section 3: Considered and filtered — deterministic, no LLM call.
+        # Now aggregates four buckets in priority order:
+        #   1. rejected_by_field      (most diagnostic — explicit field rejection)
+        #   2. unverified             (would have survived but lacked credibility)
+        #   3. tail-of-surviving      (rank > _SECTION_1_RENDER_CAP)
+        #   4. weakly_supported       (insufficient distinct supporters)
+        # Each sorted by descending verification_score within its bucket.
         # ------------------------------------------------------------------
         rej_sorted = sorted(
             projection.rejected_by_field,
-            key=lambda c: c.verification_score,
-            reverse=True,
+            key=lambda c: c.verification_score, reverse=True,
+        )
+        unver_sorted = sorted(
+            projection.unverified,
+            key=lambda c: c.verification_score, reverse=True,
         )
         weak_sorted = sorted(
             projection.weakly_supported,
-            key=lambda c: c.verification_score,
-            reverse=True,
+            key=lambda c: c.verification_score, reverse=True,
         )
-        filtered = (rej_sorted + weak_sorted)[:5]
+        # section1_tail is already ranked by priority.
+        filtered = (rej_sorted + unver_sorted + section1_tail + weak_sorted)[
+            :_SECTION_3_RENDER_CAP
+        ]
         if filtered:
             lines: list[str] = []
             for cp in filtered:
@@ -280,8 +305,15 @@ class Synthesizer:
                 content = _truncate(rep.content, _SUMMARY_CHARS) if rep else cp.representative_id
                 if cp.status == "rejected_by_field":
                     reason = f"rejected: dissent_pressure={cp.dissent_pressure:.2f} > 1.5"
+                elif cp.status == "unverified":
+                    reason = (f"held: no verification, no dissent, "
+                              f"support_diversity={cp.support_diversity} < 4")
+                elif cp.status == "surviving":
+                    reason = (f"tail (rank > {_SECTION_1_RENDER_CAP}): "
+                              f"support_diversity={cp.support_diversity}, "
+                              f"verification_score={cp.verification_score:.2f}")
                 else:
-                    reason = f"filtered: support_diversity={cp.support_diversity} < 2"
+                    reason = f"filtered: support_diversity={cp.support_diversity} < 3"
                 lines.append(f"- [{cp.representative_id}] {content}  ({reason})")
             sections.append(
                 "## 3. CONSIDERED AND FILTERED\n\n"
@@ -314,6 +346,21 @@ class Synthesizer:
                     f"[synthesizer] faithfulness audit: {len(audit_flags)} flag(s) "
                     f"(pass output_dir to write renderer_audit.json)"
                 )
+            # Loud end-of-run warning when the audit is heavily flagged. 20+
+            # is the empirical threshold past which a renderer pass is
+            # producing more noise than signal and the synthesis prose
+            # should not be trusted without manual review.
+            if len(audit_flags) >= _AUDIT_WARNING_THRESHOLD:
+                audit_path = (
+                    str(output_dir / "renderer_audit.json")
+                    if output_dir is not None else "(audit not written — no output_dir)"
+                )
+                print(
+                    f"[synthesizer] WARNING: {len(audit_flags)} faithfulness "
+                    f"flags (>= {_AUDIT_WARNING_THRESHOLD}). Synthesis prose "
+                    f"may diverge from cited signals; review "
+                    f"{audit_path} before citing this run."
+                )
         except Exception as exc:
             print(f"[synthesizer] faithfulness audit crashed: "
                   f"{type(exc).__name__}: {exc}")
@@ -329,37 +376,67 @@ class Synthesizer:
     async def _render_executive_summary(
         self, projection: SynthesisProjection, store: SignalStore
     ) -> str:
-        """2-3 sentence executive summary naming cluster counts and top claim."""
+        """Deterministic executive summary built directly from the projection.
+
+        Previously this was an LLM call that produced "Fourteen distinct
+        clusters" when there were 41, and routinely inverted the polarity
+        of contested clusters in prose. Counting and polarity belong in
+        Python: the projection has the numbers, so we render them straight.
+
+        Kept async to preserve the existing await at the call site, but no
+        LLM call is made — runtime is microseconds.
+        """
         n_surv = len(projection.surviving)
         n_cont = len(projection.contested)
-        top_cp = (_rank_clusters(projection.surviving)[0]
-                  if projection.surviving else None)
-        top_claim = ""
-        if top_cp:
-            rep = store.get(top_cp.representative_id)
-            if rep:
-                top_claim = _truncate(rep.content, 120)
+        n_unver = len(projection.unverified)
+        n_rej = len(projection.rejected_by_field)
+        n_weak = len(projection.weakly_supported)
+        total = n_surv + n_cont + n_unver + n_rej + n_weak
 
-        prompt = (
-            f"TASK: {self.task_prompt}\n\n"
-            f"Write 2-3 sentences summarising a swarm analysis result. "
-            f"State: {n_surv} claim cluster(s) survived field pressure, "
-            f"{n_cont} are contested. "
-            f"{'The strongest surviving claim is: ' + top_claim if top_claim else ''} "
-            f"Be concrete and direct. Do not hedge with 'it appears' or 'seems'.\n\n"
-            f"EXECUTIVE SUMMARY:"
-        )
-        try:
-            raw = await self.llm.generate(
-                prompt, role=self.ROLE,
-                max_tokens=150, temperature=_RENDERER_TEMPERATURE,
+        breakdown_parts: list[str] = []
+        breakdown_parts.append(f"{n_surv} survived field pressure")
+        breakdown_parts.append(f"{n_cont} contested")
+        if n_unver:
+            breakdown_parts.append(f"{n_unver} held as unverified")
+        if n_rej:
+            breakdown_parts.append(f"{n_rej} rejected")
+        if n_weak:
+            breakdown_parts.append(f"{n_weak} weakly supported")
+        breakdown = ", ".join(breakdown_parts)
+
+        lines = [
+            "## EXECUTIVE SUMMARY",
+            "",
+            f"Of {total} claim cluster(s) projected from the signal field: {breakdown}.",
+        ]
+
+        if projection.surviving:
+            ranked = _rank_clusters(projection.surviving)
+            top = ranked[0]
+            rep = store.get(top.representative_id)
+            if rep:
+                excerpt = _truncate(rep.content, 160)
+                lines.append(
+                    f"Strongest surviving cluster [{top.representative_id}] "
+                    f"(support_diversity={top.support_diversity}, "
+                    f"verification_score={top.verification_score:.2f}, "
+                    f"dissent_pressure={top.dissent_pressure:.2f}): {excerpt}"
+                )
+
+        if projection.contested:
+            top_cont = max(
+                projection.contested,
+                key=lambda c: c.dissent_pressure,
             )
-            summary = strip_reasoning(raw.strip())
-            if summary and summary[-1] not in ".!?":
-                summary += "."
-            return summary
-        except Exception:
-            return ""
+            rep_c = store.get(top_cont.representative_id)
+            if rep_c:
+                excerpt = _truncate(rep_c.content, 160)
+                lines.append(
+                    f"Most contested cluster [{top_cont.representative_id}] "
+                    f"(dissent_pressure={top_cont.dissent_pressure:.2f}): {excerpt}"
+                )
+
+        return "\n".join(lines)
 
     # -----------------------------------------------------------------------
     # Per-cluster render helpers

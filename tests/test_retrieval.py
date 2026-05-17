@@ -144,18 +144,48 @@ class TestCompositeRetriever(unittest.TestCase):
         self.assertIn("placeholder corpus", output)
 
     def test_uses_wikipedia_when_available(self):
-        """If Wikipedia returns chunks, Web and placeholder are not called."""
+        """If Wikipedia returns enough chunks, Web is not called.
+
+        "Enough" means >= _MIN_USEFUL_CHUNKS — see the in-code rationale.
+        A 1-chunk Wikipedia result used to short-circuit and produce the
+        `corpus chunks: 1` pathology; the new path keeps querying Web in
+        that case.
+        """
+        from core.retrieval import _MIN_USEFUL_CHUNKS
         comp = CompositeRetriever()
         comp._wiki = MagicMock(spec=WikipediaRetriever)
-        comp._wiki.retrieve.return_value = [
-            CorpusChunk(chunk_id="w1", text="Wikipedia text.", source_tag="Wikipedia article")
+        wiki_chunks = [
+            CorpusChunk(chunk_id=f"w{i}", text=f"Wikipedia text {i}.",
+                        source_tag="Wikipedia article")
+            for i in range(_MIN_USEFUL_CHUNKS)
         ]
+        comp._wiki.retrieve.return_value = wiki_chunks
         comp._web = MagicMock(spec=WebRetriever)
 
         chunks = comp.retrieve("test query")
-        self.assertEqual(len(chunks), 1)
+        self.assertEqual(len(chunks), _MIN_USEFUL_CHUNKS)
         self.assertEqual(chunks[0].source_tag, "Wikipedia article")
         comp._web.retrieve.assert_not_called()
+
+    def test_keeps_querying_web_when_wiki_thin(self):
+        """If Wikipedia returns < _MIN_USEFUL_CHUNKS, Web is still called and
+        chunks are combined. Regression guard for the 1-chunk pathology."""
+        from core.retrieval import _MIN_USEFUL_CHUNKS
+        comp = CompositeRetriever()
+        comp._wiki = MagicMock(spec=WikipediaRetriever)
+        comp._wiki.retrieve.return_value = [
+            CorpusChunk(chunk_id="w1", text="Lone Wikipedia text.",
+                        source_tag="Wikipedia article")
+        ]
+        comp._web = MagicMock(spec=WebRetriever)
+        comp._web.retrieve.return_value = [
+            CorpusChunk(chunk_id=f"web{i}", text=f"Web text {i}.",
+                        source_tag=f"http://example.com/{i}")
+            for i in range(_MIN_USEFUL_CHUNKS)
+        ]
+        chunks = comp.retrieve("test query")
+        comp._web.retrieve.assert_called_once()
+        self.assertEqual(len(chunks), 1 + _MIN_USEFUL_CHUNKS)
 
     def test_falls_through_to_web_when_wiki_fails(self):
         """If Wikipedia returns nothing, Web is tried next."""
@@ -180,27 +210,33 @@ class TestCachedRetriever(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
+    def _fat_chunks(self, n: int) -> list[CorpusChunk]:
+        """Return enough chunks to clear _MIN_USEFUL_CHUNKS (so the cache persists)."""
+        from core.retrieval import _MIN_USEFUL_CHUNKS
+        return [
+            CorpusChunk(chunk_id=f"c{i}", text=f"Cached text {i}.", source_tag="src")
+            for i in range(max(n, _MIN_USEFUL_CHUNKS))
+        ]
+
     def test_caches_result(self):
         inner = MagicMock(spec=WikipediaRetriever)
-        inner.retrieve.return_value = [
-            CorpusChunk(chunk_id="c1", text="Cached text.", source_tag="src")
-        ]
+        inner.retrieve.return_value = self._fat_chunks(4)
         cached = CachedRetriever(inner, cache_dir=self.tmpdir)
 
         # First call: inner is called
         chunks1 = cached.retrieve("my query")
-        self.assertEqual(len(chunks1), 1)
+        self.assertGreater(len(chunks1), 0)
         self.assertEqual(inner.retrieve.call_count, 1)
 
         # Second call: uses cache, inner NOT called again
         chunks2 = cached.retrieve("my query")
         self.assertEqual(inner.retrieve.call_count, 1)
-        self.assertEqual(chunks2[0].text, "Cached text.")
+        self.assertEqual(chunks2[0].text, "Cached text 0.")
 
     def test_cache_key_is_sha1_of_query(self):
         key = hashlib.sha1("my query".encode("utf-8")).hexdigest()
         inner = MagicMock(spec=WikipediaRetriever)
-        inner.retrieve.return_value = []
+        inner.retrieve.return_value = self._fat_chunks(4)
         cached = CachedRetriever(inner, cache_dir=self.tmpdir)
         cached.retrieve("my query")
         cache_file = Path(self.tmpdir) / f"{key}.json"
@@ -208,12 +244,33 @@ class TestCachedRetriever(unittest.TestCase):
 
     def test_different_queries_use_different_cache_files(self):
         inner = MagicMock(spec=WikipediaRetriever)
-        inner.retrieve.return_value = []
+        inner.retrieve.return_value = self._fat_chunks(4)
         cached = CachedRetriever(inner, cache_dir=self.tmpdir)
         cached.retrieve("query A")
         cached.retrieve("query B")
         files = list(Path(self.tmpdir).glob("*.json"))
         self.assertEqual(len(files), 2)
+
+    def test_thin_results_are_not_cached(self):
+        """Regression guard: a retrieval that returns < _MIN_USEFUL_CHUNKS
+        must NOT poison the cache. Previously, a one-chunk Wikipedia hit
+        would write a 1-chunk cache file that served the same broken
+        result on every subsequent run."""
+        from core.retrieval import _MIN_USEFUL_CHUNKS
+        inner = MagicMock(spec=WikipediaRetriever)
+        # One chunk — well below the threshold.
+        inner.retrieve.return_value = [
+            CorpusChunk(chunk_id="thin", text="Lonely chunk.", source_tag="src")
+        ]
+        cached = CachedRetriever(inner, cache_dir=self.tmpdir)
+
+        cached.retrieve("my query")
+        cached.retrieve("my query")
+        # Inner called both times — no cache hit because no cache write.
+        self.assertEqual(inner.retrieve.call_count, 2)
+        files = list(Path(self.tmpdir).glob("*.json"))
+        self.assertEqual(len(files), 0,
+                         f"thin (<{_MIN_USEFUL_CHUNKS}) results must not be cached")
 
 
 if __name__ == "__main__":

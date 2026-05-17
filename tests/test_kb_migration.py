@@ -50,13 +50,16 @@ class TestKBJunkFilter(unittest.TestCase):
                        metadata={"scout_agent_id": "scout_R1_0"})
         if iid is None:
             self.skipTest("deposit rejected (store dedup)")
-        # Add two distinct forager supports to cross support_diversity >= 2
-        _deposit(store, SUPPORT, "Evidence A supports the claim about climate.",
-                 depositor="forager", parent_id=iid,
-                 metadata={"depositor_agent_id": "forager_R1_0_stratified_extremes"})
-        _deposit(store, SUPPORT, "Evidence B corroborates the climate claim.",
-                 depositor="forager", parent_id=iid,
-                 metadata={"depositor_agent_id": "forager_R1_1_medium_only"})
+        # Four distinct forager supports: clears support_diversity >= 3
+        # AND clears the credibility gate via support_diversity >= 4
+        # (no verification, no dissent in this setup).
+        for strategy in (
+            "stratified_extremes", "medium_only",
+            "under_supported_clusters", "weighted_default",
+        ):
+            _deposit(store, SUPPORT, f"Evidence supports the claim ({strategy}).",
+                     depositor="forager", parent_id=iid,
+                     metadata={"depositor_agent_id": f"forager_R1_0_{strategy}"})
         proj = build_projection(store, has_validators=False)
         return store, proj
 
@@ -104,12 +107,16 @@ class TestKBRoundTrip(unittest.TestCase):
                        metadata={"scout_agent_id": "scout_R1_0"})
         if iid is None:
             self.skipTest("deposit rejected")
-        _deposit(store, SUPPORT, "NASA data confirms temperature anomalies.",
-                 depositor="forager", parent_id=iid,
-                 metadata={"depositor_agent_id": "forager_R1_0_stratified_extremes"})
-        _deposit(store, SUPPORT, "NOAA records show similar trends globally.",
-                 depositor="forager", parent_id=iid,
-                 metadata={"depositor_agent_id": "forager_R1_1_medium_only"})
+        # Four distinct forager strategies: clears support_diversity >= 3
+        # AND the credibility gate (support_diversity >= 4) since there's
+        # no verification and no dissent.
+        for strategy in (
+            "stratified_extremes", "medium_only",
+            "under_supported_clusters", "weighted_default",
+        ):
+            _deposit(store, SUPPORT, f"Confirming evidence ({strategy}).",
+                     depositor="forager", parent_id=iid,
+                     metadata={"depositor_agent_id": f"forager_R1_0_{strategy}"})
         proj = build_projection(store, has_validators=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:

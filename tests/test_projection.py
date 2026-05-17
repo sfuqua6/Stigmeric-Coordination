@@ -77,7 +77,10 @@ class TestProjectionMetrics(unittest.TestCase):
         )
         self.assertIsNotNone(self.init_id)
 
-        # Two SUPPORT signals from different strategies (→ support_diversity = 2)
+        # Three SUPPORT signals from different strategies (→ support_diversity = 3).
+        # Three is the minimum to clear the new weakly_supported threshold; the
+        # low-strength CRITIQUE below contributes to dissent_set which also
+        # clears the credibility gate.
         self.sup1 = _deposit(
             self.store, SUPPORT, "Atmospheric CO2 levels have risen 50% since industrialisation.",
             strength=0.7, depositor="forager", parent_id=self.init_id,
@@ -88,8 +91,14 @@ class TestProjectionMetrics(unittest.TestCase):
             strength=0.65, depositor="forager", parent_id=self.init_id,
             metadata={"depositor_agent_id": "forager_R1_1_medium_only"},
         )
+        self.sup3 = _deposit(
+            self.store, SUPPORT, "Ice cores show CO2 driving paleoclimate transitions.",
+            strength=0.6, depositor="forager", parent_id=self.init_id,
+            metadata={"depositor_agent_id": "forager_R1_2_under_supported_clusters"},
+        )
 
-        # One CRITIQUE (low dissent pressure)
+        # One CRITIQUE (low dissent pressure, but dissent_set>=1 clears
+        # the credibility gate).
         self.crit_id = _deposit(
             self.store, CRITIQUE, "The causal link is well-established but not universally accepted.",
             strength=0.3, depositor="critic", parent_id=self.init_id,
@@ -102,7 +111,7 @@ class TestProjectionMetrics(unittest.TestCase):
                         proj.weakly_supported + proj.rejected_by_field)
         self.assertEqual(len(all_clusters), 1)
         cp = all_clusters[0]
-        self.assertEqual(cp.support_diversity, 2)
+        self.assertEqual(cp.support_diversity, 3)
 
     def test_dissent_pressure_below_threshold(self):
         proj = build_projection(self.store, has_validators=False)
@@ -188,13 +197,17 @@ class TestSurvivalFilter(unittest.TestCase):
         init_id = _deposit(store, INITIAL, "Solar panels are cost-competitive.", 0.6, "scout",
                            metadata={"scout_agent_id": "scout_R1_1",
                                      "depositor_agent_id": "scout_R1_1"})
+        # Three distinct support strategies clear support_diversity >= 3.
         _deposit(store, SUPPORT, "LCOE has fallen 90% since 2010.", 0.7, "forager",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_0_stratified_extremes"})
         _deposit(store, SUPPORT, "Grid parity achieved in many markets.", 0.65, "forager",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_1_medium_only"})
-        # dissent_pressure ≈ 0.5 / (0.7+0.65) ≈ 0.74 → contested
+        _deposit(store, SUPPORT, "Utility-scale PPAs now undercut new gas in major markets.",
+                 0.6, "forager", parent_id=init_id,
+                 metadata={"depositor_agent_id": "forager_R1_2_under_supported_clusters"})
+        # dissent_pressure ≈ 1.0 / (0.7+0.65+0.6) ≈ 0.53 → still contested
         _deposit(store, CRITIQUE, "Intermittency costs are not captured in LCOE.", 0.5, "critic",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "critic_R1_0_weighted_default"})
@@ -233,17 +246,22 @@ class TestPriorRejectionPenalty(unittest.TestCase):
         init_id = _deposit(store, INITIAL, "Vaccines cause autism.", 0.6, "scout",
                            metadata={"scout_agent_id": "scout_R1_0",
                                      "depositor_agent_id": "scout_R1_0"})
+        # Three distinct support strategies clear support_diversity >= 3 so
+        # the cluster reaches the contested branch (rather than weakly_supported).
         _deposit(store, SUPPORT, "Some parents claim correlation.", 0.4, "forager",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_0_stratified_extremes"})
         _deposit(store, SUPPORT, "Old study suggested link.", 0.35, "forager",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_1_medium_only"})
-        _deposit(store, CRITIQUE, "Study was retracted, no link found.", 0.5, "critic",
+        _deposit(store, SUPPORT, "Anecdotal reports circulate online.", 0.35, "forager",
+                 parent_id=init_id,
+                 metadata={"depositor_agent_id": "forager_R1_2_under_supported_clusters"})
+        _deposit(store, CRITIQUE, "Study was retracted, no link found.", 0.7, "critic",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "critic_R1_0_weighted_default"})
 
-        # Without prior rejection: borderline dissent_pressure ≈ 0.5/0.75 ≈ 0.67 → contested
+        # Without prior rejection: dissent_pressure ≈ 0.7/(0.4+0.35+0.35) = 0.64 → contested
         proj_no_kb = build_projection(store, has_validators=False)
         self.assertEqual(proj_no_kb.contested[0].dissent_pressure,
                          proj_no_kb.contested[0].dissent_pressure)  # just assert runs
@@ -271,12 +289,17 @@ class TestVerificationScore(unittest.TestCase):
         init_id = _deposit(store, INITIAL, "Renewable energy is expanding.", 0.6, "scout",
                            metadata={"scout_agent_id": "scout_R1_0",
                                      "depositor_agent_id": "scout_R1_0"})
+        # Three distinct support strategies clear support_diversity >= 3;
+        # the VERIFICATION below also clears the credibility gate.
         _deposit(store, SUPPORT, "Solar capacity doubled last year.", 0.7, "forager",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_0_stratified_extremes"})
         _deposit(store, SUPPORT, "Wind power now 20% of grid in some countries.", 0.65, "forager",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_1_medium_only"})
+        _deposit(store, SUPPORT, "Battery storage now economic for daily firming.", 0.6, "forager",
+                 parent_id=init_id,
+                 metadata={"depositor_agent_id": "forager_R1_2_under_supported_clusters"})
         _deposit(store, VERIFICATION, "Wikipedia confirms renewable capacity growth.", 0.8,
                  "validator", parent_id=init_id,
                  metadata={"depositor_agent_id": "validator_R1_0_weighted_default"})

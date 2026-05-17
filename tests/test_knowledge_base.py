@@ -41,7 +41,13 @@ def _deposit(store, stype, content, strength, depositor, parent_id=None, metadat
 
 
 def _build_simple_projection(has_validators=False):
-    """Return (store, projection) with one surviving cluster."""
+    """Return (store, projection) with one surviving cluster.
+
+    Four distinct forager strategies are required so the cluster clears
+    both the support_diversity >= 3 weakly_supported threshold AND the
+    credibility gate (support_diversity >= 4 when there's no verification
+    and no dissent).
+    """
     store = _make_store()
     init_id = _deposit(
         store, INITIAL,
@@ -49,14 +55,19 @@ def _build_simple_projection(has_validators=False):
         0.7, "scout",
         metadata={"scout_agent_id": "scout_R1_0", "depositor_agent_id": "scout_R1_0"},
     )
-    _deposit(store, SUPPORT,
-             "Solar capacity has grown 300% in a decade, displacing coal generation.",
-             0.75, "forager", parent_id=init_id,
-             metadata={"depositor_agent_id": "forager_R1_0_stratified_extremes"})
-    _deposit(store, SUPPORT,
-             "Wind power now covers 20% of European electricity demand annually.",
-             0.7, "forager", parent_id=init_id,
-             metadata={"depositor_agent_id": "forager_R1_1_medium_only"})
+    forager_supports = [
+        ("Solar capacity has grown 300% in a decade, displacing coal generation.",
+         "stratified_extremes"),
+        ("Wind power now covers 20% of European electricity demand annually.",
+         "medium_only"),
+        ("Battery storage cost has fallen 90% since 2010, unlocking firming capacity.",
+         "under_supported_clusters"),
+        ("Renewable PPAs have outcompeted new fossil generation in major markets.",
+         "weighted_default"),
+    ]
+    for content, strategy in forager_supports:
+        _deposit(store, SUPPORT, content, 0.7, "forager", parent_id=init_id,
+                 metadata={"depositor_agent_id": f"forager_R1_0_{strategy}"})
     proj = build_projection(store, has_validators=has_validators)
     return store, proj
 

@@ -66,27 +66,41 @@ class VLLMBackend:
                  max_num_seqs: int = 4,
                  max_model_len: int = 1024,
                  enforce_eager: bool = True,
-                 kv_cache_dtype: str = "fp8_e5m2",
+                 kv_cache_dtype: Optional[str] = None,
                  enable_chunked_prefill: bool = False,
-                 trust_remote_code: bool = True):
+                 quantization: Optional[str] = None,
+                 trust_remote_code: bool = True,
+                 **extra_engine_args):
         if not _VLLM_AVAILABLE:
             raise RuntimeError(
                 "vllm is not installed. `pip install vllm` to use VLLMBackend."
             )
         print(f"[llm-vllm] loading {model_name} "
               f"(dtype={dtype}, max_num_seqs={max_num_seqs}, "
-              f"max_model_len={max_model_len})")
-        engine_args = AsyncEngineArgs(
+              f"max_model_len={max_model_len}, "
+              f"quant={quantization or 'none'}, "
+              f"kv_cache={kv_cache_dtype or 'auto'})")
+        engine_kwargs = dict(
             model=model_name,
             dtype=dtype,
             gpu_memory_utilization=gpu_memory_utilization,
             max_num_seqs=max_num_seqs,
             max_model_len=max_model_len,
             enforce_eager=enforce_eager,
-            kv_cache_dtype=kv_cache_dtype,
             enable_chunked_prefill=enable_chunked_prefill,
             trust_remote_code=trust_remote_code,
         )
+        # Only include kv_cache_dtype / quantization if explicitly set —
+        # passing None or an unsupported value through to AsyncEngineArgs
+        # can fail outright on older vllm versions (e.g. fp8_e5m2 on Turing).
+        if kv_cache_dtype:
+            engine_kwargs["kv_cache_dtype"] = kv_cache_dtype
+        if quantization:
+            engine_kwargs["quantization"] = quantization
+        # Forward any other knobs the caller passed (e.g. tensor_parallel_size).
+        for k, v in extra_engine_args.items():
+            engine_kwargs[k] = v
+        engine_args = AsyncEngineArgs(**engine_kwargs)
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)
         # Load tokenizer separately. vLLM's engine.get_tokenizer() is
         # awaitable in recent versions; the HF AutoTokenizer is version-stable

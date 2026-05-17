@@ -36,7 +36,27 @@ if "content/drive" in os.environ.get("HF_HOME", "").lower():
 # Note: vLLM uses gpu_memory_utilization parameter instead, not this budget.
 # For HF 4-bit, a conservative budget ensures device_map uses CPU offload for activations.
 # Override with SWARM_GPU_MEM env var, e.g. "5500MiB" for tighter Colab constraints.
-_GPU_MEM_BUDGET = os.environ.get("SWARM_GPU_MEM") or "5000MiB"
+#
+# Tier-aware default: laptop (6 GB VRAM) caps at 5000 MiB to leave headroom.
+# Colab T4 (16 GB) and bigger get a budget that actually fits Qwen-7B at 4-bit
+# (~4.5 GB weights + ~3 GB activations + KV cache). Without this, RealLLM as
+# the HF-fallback after a vLLM cascade failure would still under-utilize the
+# Colab GPU and crawl through CPU offload.
+def _default_gpu_budget() -> str:
+    try:
+        from .config import _TIER
+    except Exception:
+        _TIER = None
+    return {
+        "t4":      "13GiB",
+        "l4":      "20GiB",
+        "a100_40": "36GiB",
+        "a100_80": "76GiB",
+        "unknown": "13GiB",
+    }.get(_TIER, "5000MiB")
+
+
+_GPU_MEM_BUDGET = os.environ.get("SWARM_GPU_MEM") or _default_gpu_budget()
 _CPU_MEM_BUDGET = os.environ.get("SWARM_CPU_MEM") or "30GiB"
 
 # Tokenizer truncation. Lower = smaller KV cache during generation = more
@@ -51,6 +71,156 @@ def _gguf_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# vLLM load cascade (Colab-friendly forced-to-work fallback ladder)
+# ---------------------------------------------------------------------------
+# Colab T4 (16 GB VRAM) is right at the edge for Qwen-7B-Instruct at fp16:
+# weights are ~14 GB and vLLM needs headroom for KV cache + activations +
+# the profile_run on init. Many failure modes look like:
+#   - CUDA OOM during model.from_pretrained or profile_run
+#   - kv_cache_dtype=fp8_e5m2 unsupported on this CUDA/torch combo
+#   - vllm API mismatch (max_model_len argument names change across versions)
+#   - HF Hub download rate-limited mid-load
+#
+# Strategy: try a sequence of progressively more conservative configs.
+# First-attempt is the user's configured (potentially aggressive) settings;
+# if that fails, drop to AWQ 4-bit (fits T4 with room for real concurrency);
+# then 3B fp16 (fits anywhere); then bail to HF transformers + bnb 4-bit.
+
+
+def _log_vram_state(label: str = "") -> None:
+    """Print free / total VRAM so cascade failures are diagnosable."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            print(f"[llm-cascade] {label}: no CUDA device")
+            return
+        free, total = torch.cuda.mem_get_info()
+        name = torch.cuda.get_device_name(0)
+        print(f"[llm-cascade] {label}: {free/1e9:.2f}/{total/1e9:.2f} GB free "
+              f"on {name}")
+    except Exception as exc:
+        print(f"[llm-cascade] {label}: VRAM probe failed ({type(exc).__name__})")
+
+
+def _clear_cuda_cache() -> None:
+    """Free anything vLLM left behind between cascade attempts."""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _vllm_version() -> str:
+    try:
+        import vllm
+        return getattr(vllm, "__version__", "unknown")
+    except Exception:
+        return "not-installed"
+
+
+def _build_cascade(base_model: str, base_dtype: str,
+                    base_concurrency: int, tier) -> list:
+    """Return list of (label, model_name, kwargs) to try in order."""
+    attempts: list = []
+
+    # Attempt 1: configured (user-tuned settings, possibly aggressive T4 ones).
+    primary_kwargs = {
+        "dtype": base_dtype,
+        "max_num_seqs": max(32, base_concurrency),
+    }
+    if tier == "t4":
+        primary_kwargs.update({
+            "gpu_memory_utilization": 0.91,
+            "max_num_seqs": 2,
+            "max_model_len": 768,
+            "enforce_eager": True,
+            "kv_cache_dtype": "fp8_e5m2",
+            "enable_chunked_prefill": False,
+        })
+    attempts.append(("configured", base_model, primary_kwargs))
+
+    # Attempt 2: AWQ 4-bit variant of the configured model. Fits 16 GB T4
+    # with room to spare; max_num_seqs can rise back to ~8.
+    if "AWQ" not in base_model.upper() and "GPTQ" not in base_model.upper():
+        awq_model = base_model.rstrip("/")
+        # Heuristic: append -AWQ if the base is a *-Instruct model.
+        # Users can override SWARM_AWQ_MODEL to point elsewhere.
+        custom_awq = os.environ.get("SWARM_AWQ_MODEL")
+        if custom_awq:
+            awq_model = custom_awq
+        elif awq_model.endswith("-Instruct"):
+            awq_model = awq_model + "-AWQ"
+        else:
+            awq_model = awq_model + "-AWQ"
+        awq_kwargs = {
+            "dtype": "float16",  # AWQ models always pair with fp16 inference
+            "quantization": "awq",
+            "max_num_seqs": 8,
+            "max_model_len": 2048,
+            "gpu_memory_utilization": 0.88,
+            "enforce_eager": True,
+        }
+        attempts.append(("awq-4bit", awq_model, awq_kwargs))
+
+    # Attempt 3: smaller fp16 model. Qwen2.5-3B-Instruct is ~6 GB fp16 —
+    # fits any GPU including T4 with full max_num_seqs.
+    if "3B" not in base_model and "1.5B" not in base_model:
+        small_kwargs = {
+            "dtype": base_dtype,
+            "max_num_seqs": 16,
+            "max_model_len": 2048,
+            "gpu_memory_utilization": 0.85,
+            "enforce_eager": True,
+        }
+        attempts.append(("smaller-3B", "Qwen/Qwen2.5-3B-Instruct", small_kwargs))
+
+    return attempts
+
+
+def _try_vllm_cascade(base_model: str, base_dtype: str,
+                       base_concurrency: int, tier):
+    """Walk the cascade until one model loads. Returns None if all fail."""
+    from .llm_vllm import VLLMBackend
+    print(f"[llm-cascade] starting (vllm version: {_vllm_version()}, "
+          f"tier: {tier}, base_model: {base_model})")
+    _log_vram_state("before cascade")
+
+    attempts = _build_cascade(base_model, base_dtype, base_concurrency, tier)
+    last_exc: Optional[Exception] = None  # noqa: F821
+    for i, (label, model_name, kwargs) in enumerate(attempts, 1):
+        print(f"[llm-cascade] [{i}/{len(attempts)}] attempt {label!r} "
+              f"model={model_name}")
+        for k, v in kwargs.items():
+            print(f"[llm-cascade]   {k} = {v}")
+        try:
+            llm = VLLMBackend(model_name=model_name, **kwargs)
+            print(f"[llm-cascade] SUCCESS at attempt {i}/{len(attempts)} ({label})")
+            return llm
+        except Exception as exc:
+            last_exc = exc
+            short = str(exc)[:240].replace("\n", " ")
+            print(f"[llm-cascade] FAILED {label}: {type(exc).__name__}: {short}")
+            _clear_cuda_cache()
+            _log_vram_state(f"after {label} cleanup")
+
+    print(f"[llm-cascade] all {len(attempts)} attempts failed; "
+          f"last error: {type(last_exc).__name__}: {last_exc}" if last_exc
+          else f"[llm-cascade] all {len(attempts)} attempts failed.")
+    return None
+
+
+# Late import to avoid circulars in tests; real code paths import lazily.
+from typing import Optional  # noqa: E402
 
 
 def make_llm(force_mock: bool = False):
@@ -85,30 +255,34 @@ def make_llm(force_mock: bool = False):
         explicit_backend == "vllm"
         or (explicit_backend == "" and (colab_flag or _detected_tier is not None))
     )
+    # Diagnostic banner — makes it obvious in Colab logs what ladder is
+    # about to run and what env vars control it.
+    print("=" * 72)
+    print(f"[llm] make_llm() routing:")
+    print(f"[llm]   MODEL_NAME       = {MODEL_NAME}")
+    print(f"[llm]   _TIER            = {_detected_tier}")
+    print(f"[llm]   SWARM_BACKEND    = {explicit_backend or '(unset)'}")
+    print(f"[llm]   COLAB env        = {os.environ.get('COLAB', '(unset)')}")
+    print(f"[llm]   want_vllm        = {want_vllm}")
+    print(f"[llm]   load order       = "
+          f"{'vllm-cascade -> hf-cascade -> mock' if want_vllm else 'gguf -> hf-cascade -> mock'}")
+    print("=" * 72)
     if want_vllm:
         try:
             from .llm_vllm import VLLMBackend, _VLLM_AVAILABLE
             if _VLLM_AVAILABLE:
                 from .config import VLLM_DTYPE, LLM_CONCURRENCY, _TIER as tier_detected
-                # Aggressive T4 settings (Option B: fit 7B with KV cache constraints)
-                vllm_kwargs = {
-                    "model_name": MODEL_NAME,
-                    "dtype": VLLM_DTYPE,
-                    "max_num_seqs": max(32, LLM_CONCURRENCY),
-                }
-                if tier_detected == "t4":
-                    vllm_kwargs.update({
-                        "gpu_memory_utilization": 0.91,
-                        "max_num_seqs": 2,  # Reduced further for profile_run stability
-                        "max_model_len": 768,  # Reduced for tighter KV cache
-                        "enforce_eager": True,
-                        "kv_cache_dtype": "fp8_e5m2",
-                        "enable_chunked_prefill": False,
-                    })
-                return VLLMBackend(**vllm_kwargs)
-            print("[llm] vllm not importable; falling back to GGUF/HF path")
+                cascaded = _try_vllm_cascade(
+                    MODEL_NAME, VLLM_DTYPE, LLM_CONCURRENCY, tier_detected,
+                )
+                if cascaded is not None:
+                    return cascaded
+                print("[llm] vLLM cascade exhausted all candidates; falling "
+                      "back to HF transformers path.")
+            else:
+                print("[llm] vllm not importable; falling back to GGUF/HF path")
         except Exception as exc:
-            print(f"[llm] vLLM backend init failed "
+            print(f"[llm] vLLM cascade unexpected failure "
                   f"({type(exc).__name__}: {exc}); falling back to GGUF/HF.")
         if explicit_backend == "vllm":
             # User explicitly asked for vllm and it failed; don't silently
@@ -133,11 +307,38 @@ def make_llm(force_mock: bool = False):
             print(f"[llm] GGUF backend unavailable ({type(exc).__name__}: {exc}); falling back to HF.")
             # fall through to HF attempt
 
-    try:
-        return RealLLM()
-    except Exception as exc:
-        print(f"[llm] Real model unavailable ({type(exc).__name__}: {exc}); falling back to MockLLM.")
-        return MockLLM()
+    # HF transformers + bnb 4-bit cascade. First try the configured MODEL_NAME;
+    # if it fails (typically: OOM or version mismatch), drop to a smaller
+    # model that always fits on a 16 GB GPU.
+    hf_attempts = [MODEL_NAME]
+    if "3B" not in MODEL_NAME and "1.5B" not in MODEL_NAME:
+        hf_attempts.append("Qwen/Qwen2.5-3B-Instruct")
+    if "1.5B" not in MODEL_NAME:
+        hf_attempts.append("Qwen/Qwen2.5-1.5B-Instruct")
+
+    last_hf_exc = None
+    for i, hf_model in enumerate(hf_attempts, 1):
+        try:
+            print(f"[llm-hf] [{i}/{len(hf_attempts)}] trying {hf_model}")
+            return RealLLM(model_name=hf_model)
+        except TypeError:
+            # Older RealLLM signature without model_name kw — only the first
+            # attempt (configured model) works in that path.
+            try:
+                return RealLLM()
+            except Exception as exc:
+                last_hf_exc = exc
+                print(f"[llm-hf] {hf_model} failed: {type(exc).__name__}: {exc}")
+                _clear_cuda_cache()
+        except Exception as exc:
+            last_hf_exc = exc
+            print(f"[llm-hf] {hf_model} failed: {type(exc).__name__}: {exc}")
+            _clear_cuda_cache()
+
+    print(f"[llm] all HF attempts failed (last: {type(last_hf_exc).__name__}: "
+          f"{last_hf_exc}); falling back to MockLLM. The pipeline will "
+          f"complete but outputs are not empirical — they prove plumbing only.")
+    return MockLLM()
 
 
 class MockLLM:
@@ -203,9 +404,13 @@ class RealLLM:
     name = MODEL_NAME
     _uses_internal_batching = False  # legacy semaphore is the gate
 
-    def __init__(self):
+    def __init__(self, model_name: Optional[str] = None):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+        # Allow the HF cascade to step down to a smaller model on OOM.
+        resolved_model = model_name or MODEL_NAME
+        self.name = resolved_model
 
         cuda_ok = torch.cuda.is_available()
         cache_dir = (
@@ -213,7 +418,7 @@ class RealLLM:
             or os.environ.get("TRANSFORMERS_CACHE")
             or os.path.expanduser("~/.cache/huggingface")
         )
-        print(f"[llm] Loading {MODEL_NAME} (4-bit NF4)...")
+        print(f"[llm] Loading {resolved_model} (4-bit NF4)...")
         print(f"[llm]   cache:        {cache_dir}")
         print(f"[llm]   cuda:         {cuda_ok}")
         if cuda_ok:
@@ -239,7 +444,7 @@ class RealLLM:
         if cuda_ok:
             max_memory = {0: _GPU_MEM_BUDGET, "cpu": _CPU_MEM_BUDGET}
 
-        self._tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        self._tokenizer = AutoTokenizer.from_pretrained(resolved_model)
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
@@ -252,7 +457,7 @@ class RealLLM:
         if max_memory is not None:
             kwargs["max_memory"] = max_memory
 
-        self._model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, **kwargs)
+        self._model = AutoModelForCausalLM.from_pretrained(resolved_model, **kwargs)
         self._model.eval()
 
         # KEY FIX 3: route inputs to wherever the embedding layer actually

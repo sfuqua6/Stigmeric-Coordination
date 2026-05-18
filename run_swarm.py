@@ -319,18 +319,19 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
     n_haters = NUM_HATERS if "hater" in active_roles else 0
     n_validators = NUM_VALIDATORS if "validator" in active_roles else 0
 
-    # Knowledge base (optional — skip with --ignore-kb / reset with --reset-kb)
+    # Knowledge base. Default: OFF (--use-kb opts in; --reset-kb wipes prior entries).
     from core.knowledge_base import _topic_hash as _kb_topic_hash
     current_topic_hash = _kb_topic_hash(user_prompt)
     kb = KnowledgeBase()
     if reset_kb:
         _reset_kb(kb.kb_dir)
-    if not ignore_kb:
+    if ignore_kb:
+        print("[kb] disabled (--use-kb to enable)")
+    else:
         kb.load()
-        if not kb.is_empty():
-            print(f"[pipeline] knowledge base loaded: "
-                  f"{len(kb.prior_consensus(current_topic_hash))} prior survivors (topic-filtered), "
-                  f"{len(kb.prior_rejections(current_topic_hash))} prior rejections (topic-filtered)")
+        n_priors = (len(kb.prior_consensus(current_topic_hash))
+                    + len(kb.prior_rejections(current_topic_hash)))
+        print(f"[kb] loaded {n_priors} priors — set --no-kb to disable")
 
     # Corpus retrieval (§1): real retriever by default, placeholder opt-in via --corpus=placeholder
     if task_type == "coding":
@@ -447,7 +448,15 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 ScoutClass(
                     agent_id=f"scout_R{round_num}_{i}",
                     llm=llm,
-                    config=ScoutConfig(task_prompt=task_prompt, partition=partitions[i]),
+                    config=ScoutConfig(
+                        task_prompt=task_prompt,
+                        partition=partitions[i],
+                        # Phase 2C: agentic search by default; --corpus=placeholder
+                        # disables it so the regression path still exercises the
+                        # contiguous-partition diversity engine.
+                        use_search=(corpus_mode != "placeholder"),
+                        user_prompt=user_prompt,
+                    ),
                 )
                 for i in range(NUM_SCOUTS)
             ]
@@ -726,6 +735,16 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         from core.projection import build_projection as _bp
         _final_proj = _bp(store, has_validators=(n_validators > 0))
         ver_scores = [cp.verification_score for cp in _final_proj.surviving + _final_proj.contested]
+        # Phase 3C: max SUPPORT chain depth across all clusters. Visible
+        # measure of how deeply the swarm developed any single claim.
+        support_depth_max = max(
+            (cp.support_depth for cp in (
+                _final_proj.surviving + _final_proj.contested
+                + _final_proj.weakly_supported + _final_proj.rejected_by_field
+                + _final_proj.unverified
+            )),
+            default=0,
+        )
         wall_clock_s = round(time.time() - pipeline_start, 1)
         total_tokens_generated = _LLM_INFLIGHT_METRICS.get("total_tokens_generated", 0)
         peak_concurrency = _LLM_INFLIGHT_METRICS.get("peak", 0)
@@ -751,6 +770,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
             },
             "max_verification_score": round(max(ver_scores), 4) if ver_scores else 0.0,
             "avg_verification_score": round(sum(ver_scores) / max(1, len(ver_scores)), 4) if ver_scores else 0.0,
+            "support_depth_max": int(support_depth_max),
             "audit_flags": audit_flags,
             "kb_diff": kb_diff,
         }
@@ -899,8 +919,13 @@ async def run_phase_isolated(
     from core.knowledge_base import _topic_hash as _kb_topic_hash
     current_topic_hash = _kb_topic_hash(user_prompt)
     kb = KnowledgeBase()
-    if not ignore_kb:
+    if ignore_kb:
+        print("[kb] disabled (--use-kb to enable)")
+    else:
         kb.load()
+        n_priors = (len(kb.prior_consensus(current_topic_hash))
+                    + len(kb.prior_rejections(current_topic_hash)))
+        print(f"[kb] loaded {n_priors} priors — set --no-kb to disable")
 
     # ------ LLM (router for heterogeneous; single model otherwise) -----------
     if config.USE_HETEROGENEOUS:
@@ -960,7 +985,15 @@ async def run_phase_isolated(
         else:
             scouts = [ScoutClass(
                         agent_id=f"scout_R{round_num}_{i}", llm=llm,
-                        config=ScoutConfig(task_prompt=task_prompt, partition=partitions[i]),
+                        config=ScoutConfig(
+                        task_prompt=task_prompt,
+                        partition=partitions[i],
+                        # Phase 2C: agentic search by default; --corpus=placeholder
+                        # disables it so the regression path still exercises the
+                        # contiguous-partition diversity engine.
+                        use_search=(corpus_mode != "placeholder"),
+                        user_prompt=user_prompt,
+                    ),
                       ) for i in range(NUM_SCOUTS)]
         stats = await _run_agents(scouts)
         entry = _round_entry(round_num)
@@ -1163,12 +1196,16 @@ async def run_phase_isolated(
 
 def main():
     args = sys.argv[1:]
-    ignore_kb = "--ignore-kb" in args
+    # Default flipped: KB is OFF unless --use-kb is passed. --ignore-kb is
+    # preserved as a no-op alias for backwards compat with old scripts.
+    use_kb = "--use-kb" in args
+    ignore_kb = not use_kb
     reset_kb  = "--reset-kb"  in args
     show_partition_overlap = "--show-partition-overlap" in args
     heterogeneous = "--heterogeneous" in args
     args = [a for a in args if a not in (
-        "--ignore-kb", "--reset-kb", "--show-partition-overlap", "--heterogeneous",
+        "--use-kb", "--ignore-kb", "--reset-kb",
+        "--show-partition-overlap", "--heterogeneous",
     )]
     if heterogeneous:
         # Tier-gated. T4 cannot run heterogeneous: VRAM (16 GB) only fits one

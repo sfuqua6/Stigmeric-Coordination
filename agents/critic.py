@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 
-from agents.base import BaseAgent
+from agents.base import BaseAgent, type_parent_instruction
 from core.signal_store import SignalStore, Signal
 from core.signal_types import INITIAL, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE
 from core.config import MAX_TOKENS_CRITIC
@@ -92,7 +92,8 @@ class Critic(BaseAgent):
             f"(positive critique); < 0.5 means it has significant weaknesses "
             f"(negative critique). Format your response exactly as:\n\n"
             f"CRITIQUE: <your critique>\n"
-            f"SCORE: <number between 0 and 1>"
+            f"SCORE: <number between 0 and 1>\n\n"
+            f"{type_parent_instruction()}"
         )
 
     def parse(self, raw: str) -> tuple[str, float]:
@@ -115,7 +116,10 @@ class Critic(BaseAgent):
     async def run(self, store: SignalStore, iterations: int):
         """Override run to use the valence-determined OUTPUT_TYPE per deposit."""
         from core.diversity import AgentContextRecord
-        from agents.base import AgentRunStats, strip_reasoning
+        from agents.base import (
+            AgentRunStats, strip_reasoning,
+            parse_type_proposal, parse_parent_proposal, _strip_type_parent_lines,
+        )
         from core.filters import is_junk_output
 
         stats = AgentRunStats(context_record=AgentContextRecord(
@@ -151,15 +155,40 @@ class Critic(BaseAgent):
                     break
                 continue
 
-            # Use the valence-determined deposit type from parse()
+            # Phase 3A/3B: dynamic TYPE / PARENT — overrides valence-based
+            # detection. Fall back to score-derived self._last_deposit_type
+            # and the strongest-sample parent when not parseable.
+            dyn_type = parse_type_proposal(raw)
+            dyn_parent = parse_parent_proposal(raw, store)
+            effective_type = dyn_type if dyn_type is not None else self._last_deposit_type
+            if dyn_parent == "__NONE__":
+                effective_parent = None
+            elif dyn_parent is not None:
+                effective_parent = dyn_parent
+            else:
+                effective_parent = self.parent_id_for_deposit(samples)
+            content = _strip_type_parent_lines(content)
+            if not content:
+                continue
+
+            deposit_meta = {
+                "depositor_agent_id": self.agent_id,
+                "score": round(strength, 4),
+            }
+            if dyn_type is not None:
+                deposit_meta["proposed_type"] = dyn_type
+            if dyn_parent is not None:
+                deposit_meta["proposed_parent"] = (
+                    None if dyn_parent == "__NONE__" else dyn_parent
+                )
+
             sid = store.deposit(
-                signal_type=self._last_deposit_type,
+                signal_type=effective_type,
                 content=content,
                 strength=strength,
                 depositor=self.ROLE,
-                parent_id=self.parent_id_for_deposit(samples),
-                metadata={"depositor_agent_id": self.agent_id,
-                          "score": round(strength, 4)},
+                parent_id=effective_parent,
+                metadata=deposit_meta,
             )
             if sid is None:
                 stats.rejected_dup += 1

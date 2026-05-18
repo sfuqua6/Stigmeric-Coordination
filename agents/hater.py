@@ -23,7 +23,7 @@ top-K behaviour with a warning.
 
 from __future__ import annotations
 
-from agents.base import BaseAgent
+from agents.base import BaseAgent, type_parent_instruction
 from core.signal_store import SignalStore, Signal
 from core.signal_types import INITIAL, OBJECTION
 from core.config import MAX_TOKENS_HATER
@@ -102,6 +102,7 @@ class Hater(BaseAgent):
             f"assumption do these signals make that might be wrong? "
             f"What kind of evidence would they all collectively miss? "
             f"One or two sentences.\n\n"
+            f"{type_parent_instruction()}\n"
             f"OBJECTION:"
         )
 

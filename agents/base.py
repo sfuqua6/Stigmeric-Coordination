@@ -27,17 +27,93 @@ Subclasses implement:
 
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass, field
 from typing import Optional
 
 from core.signal_store import Signal, SignalStore
 from core.diversity import AgentContextRecord
 from core.filters import is_junk_output
+from core.signal_types import (
+    INITIAL, SUPPORT, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE, OBJECTION,
+)
+
+# Phase 3A: dynamic signal-type proposal. Agents can override the class
+# OUTPUT_TYPE by emitting `TYPE: <X>` in their response. Only these five
+# content types are propose-able; VERIFICATION and SEARCH remain fixed to
+# their producing roles (validator and scout/forager search hooks).
+_DYNAMIC_TYPES = {
+    INITIAL, SUPPORT, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE, OBJECTION,
+}
+_TYPE_LINE_RE = _re.compile(
+    r"^\s*TYPE\s*[:=]\s*(\w+)", _re.IGNORECASE | _re.MULTILINE,
+)
+_PARENT_LINE_RE = _re.compile(
+    r"^\s*PARENT\s*[:=]\s*([A-Za-z0-9_\-]+)", _re.IGNORECASE | _re.MULTILINE,
+)
+
+
+def parse_type_proposal(text: str) -> Optional[str]:
+    """Return the proposed signal type if the model emitted a parseable
+    TYPE line and it's in the allowed set, else None.
+    """
+    if not text:
+        return None
+    m = _TYPE_LINE_RE.search(text)
+    if not m:
+        return None
+    candidate = m.group(1).upper()
+    return candidate if candidate in _DYNAMIC_TYPES else None
+
+
+def parse_parent_proposal(text: str, store: "SignalStore") -> Optional[str]:
+    """Return the proposed parent signal ID if the model emitted a parseable
+    PARENT line referring to an existing signal, else None.
+
+    Returns the literal string "__NONE__" sentinel when the model explicitly
+    asked for no parent (PARENT: none); callers convert this to None.
+    """
+    if not text:
+        return None
+    m = _PARENT_LINE_RE.search(text)
+    if not m:
+        return None
+    candidate = m.group(1)
+    if candidate.lower() == "none":
+        return "__NONE__"
+    if store is not None and store.get(candidate) is not None:
+        return candidate
+    return None
+
+
+_TYPE_PARENT_INSTRUCTION = (
+    "Before your response, on two separate lines, emit:\n"
+    "  TYPE: <SUPPORT|INITIAL|OBJECTION|CRITIQUE_NEGATIVE|CRITIQUE_POSITIVE>\n"
+    "  PARENT: <signal_id from above|none>\n"
+    "TYPE is the kind of contribution this is (SUPPORT to develop a claim, "
+    "OBJECTION/CRITIQUE_NEGATIVE to push back, CRITIQUE_POSITIVE to endorse, "
+    "INITIAL to seed a fresh claim). PARENT chains your deposit to a specific "
+    "signal in the store; use 'none' only if seeding a new INITIAL.\n"
+)
+
+
+def type_parent_instruction() -> str:
+    return _TYPE_PARENT_INSTRUCTION
+
+
+_TYPE_PARENT_STRIP_RE = _re.compile(
+    r"^\s*(?:TYPE|PARENT)\s*[:=].*$", _re.IGNORECASE | _re.MULTILINE,
+)
+
+
+def _strip_type_parent_lines(text: str) -> str:
+    if not text:
+        return text
+    return _TYPE_PARENT_STRIP_RE.sub("", text).strip()
 
 # ---------------------------------------------------------------------------
 # Reasoning-block stripping (P0.2 / R3 / M3)
 # ---------------------------------------------------------------------------
-import re as _re
 
 # Catches leading scratchpad sentences emitted by reasoning-tuned models:
 #   DeepSeek-R1-Distill: "Alright, so I need to...", "Okay, so...", "Hmm, ..."
@@ -221,13 +297,38 @@ class BaseAgent:
                     break
                 continue
 
+            # Phase 3A/3B: dynamic TYPE / PARENT proposal. Parse from the raw
+            # response (before line stripping), apply if valid, fall back to
+            # class defaults. The TYPE/PARENT lines are then stripped from the
+            # deposited content so the signal store only carries the claim.
+            dyn_type = parse_type_proposal(raw)
+            dyn_parent = parse_parent_proposal(raw, store)
+            effective_type = dyn_type if dyn_type is not None else self.OUTPUT_TYPE
+            if dyn_parent == "__NONE__":
+                effective_parent = None
+            elif dyn_parent is not None:
+                effective_parent = dyn_parent
+            else:
+                effective_parent = self.parent_id_for_deposit(samples)
+            content = _strip_type_parent_lines(content)
+            if not content:
+                continue
+
+            deposit_meta = {"depositor_agent_id": self.agent_id}
+            if dyn_type is not None:
+                deposit_meta["proposed_type"] = dyn_type
+            if dyn_parent is not None:
+                deposit_meta["proposed_parent"] = (
+                    None if dyn_parent == "__NONE__" else dyn_parent
+                )
+
             sid = store.deposit(
-                signal_type=self.OUTPUT_TYPE,
+                signal_type=effective_type,
                 content=content,
                 strength=strength,
                 depositor=self.ROLE,
-                parent_id=self.parent_id_for_deposit(samples),
-                metadata={"depositor_agent_id": self.agent_id},
+                parent_id=effective_parent,
+                metadata=deposit_meta,
             )
             if sid is None:
                 stats.rejected_dup += 1

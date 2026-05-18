@@ -47,7 +47,11 @@ from .config import (
 # clusters; a looser threshold yields 4–5 broad ones), 0.72 on Colab where
 # fp16 Qwen-Instruct produces sufficiently distinct claims.
 _CLUSTER_SIM_THRESHOLD = CLUSTER_SIM_THRESHOLD
-_KB_MATCH_THRESHOLD = 0.75      # similarity above which a prior KB entry is applied
+# Phase 5: tightened from 0.75 → 0.85. The old threshold matched semantically
+# related but distinct clusters across runs, dragging dissent_pressure into
+# topics the prior KB didn't actually address. At 0.85 only near-duplicate
+# representative claims trigger KB carry-over.
+_KB_MATCH_THRESHOLD = 0.85      # similarity above which a prior KB entry is applied
 _KB_REJECTION_PENALTY = 0.5     # added to dissent_pressure for prior-rejected clusters
 _EPS = 1e-9
 
@@ -67,6 +71,10 @@ class ClusterProjection:
     dissent_pressure: float    # sum(dissent_str) / max(eps, sum(support_str))
     verification_score: float  # mean VERIFICATION strength on lineage
     partition_origins: list[str]  # partition tags of originating scouts
+    # Phase 3C: max SUPPORT->SUPPORT chain depth in this cluster. Captures
+    # how deeply agents have iteratively developed a claim via PARENT
+    # proposals (depth 1 = flat forest of direct SUPPORT children only).
+    support_depth: int = 1
     status: str = "unclassified"  # set by _apply_survival_filter
     unverified: bool = False      # True when surviving but no validator reached it
 
@@ -158,15 +166,27 @@ def build_projection(
 # ---------------------------------------------------------------------------
 
 def _compute_initial_metrics(sig, store: SignalStore) -> dict:
-    """Collect all descendants of an INITIAL signal and compute metrics."""
+    """Collect all descendants of an INITIAL signal and compute metrics.
+
+    Phase 3C: also computes `support_depth` — the maximum SUPPORT-only chain
+    length under this INITIAL. Depth 1 means at least one direct SUPPORT
+    child; depth 2 means at least one SUPPORT under a SUPPORT; etc. The
+    PARENT-proposal mechanism turns this from a flat forest into chains.
+    """
     support_ids = []
     dissent_ids = []
     ver_ids = []
+    # support_depth via BFS: track depth-of-each-node from the INITIAL.
+    # Only follow SUPPORT links so chains through critiques don't inflate
+    # the metric.
+    support_depth_max = 0
 
     visited: set[str] = set()
-    queue = list(store.by_parent(sig.id))
+    # (child_id, parent_depth) — parent_depth is the running SUPPORT-chain
+    # length at the parent. Root parent is the INITIAL with depth 0.
+    queue: list[tuple[str, int]] = [(cid, 0) for cid in store.by_parent(sig.id)]
     while queue:
-        child_id = queue.pop()
+        child_id, parent_depth = queue.pop()
         if child_id in visited:
             continue
         visited.add(child_id)
@@ -174,15 +194,19 @@ def _compute_initial_metrics(sig, store: SignalStore) -> dict:
         if child is None:
             continue
         if child.type == SUPPORT or child.type == CRITIQUE_POSITIVE:
-            # CRITIQUE_POSITIVE goes to support_set: a positive evaluation
-            # adds corroborative weight, not adversarial pressure.
             support_ids.append(child_id)
+            new_depth = parent_depth + 1 if child.type == SUPPORT else parent_depth
+            support_depth_max = max(support_depth_max, new_depth)
         elif child.type in (CRITIQUE_NEGATIVE, CRITIQUE, OBJECTION):
-            # CRITIQUE is the legacy alias for CRITIQUE_NEGATIVE.
             dissent_ids.append(child_id)
+            new_depth = parent_depth
         elif child.type == VERIFICATION:
             ver_ids.append(child_id)
-        queue.extend(store.by_parent(child_id))
+            new_depth = parent_depth
+        else:
+            new_depth = parent_depth
+        for grandchild in store.by_parent(child_id):
+            queue.append((grandchild, new_depth))
 
     # support_diversity: distinct strategy names parsed from depositor_agent_ids
     strategy_names: set[str] = set()
@@ -216,6 +240,7 @@ def _compute_initial_metrics(sig, store: SignalStore) -> dict:
         "dissent_pressure": dissent_pressure,
         "ver_score": ver_score,
         "partition_tag": partition_tag,
+        "support_depth": max(1, support_depth_max),
     }
 
 
@@ -336,6 +361,12 @@ def _aggregate_cluster(
         ver_scores.append(vs)
     verification_score = sum(ver_scores) / max(1, len(ver_scores))
 
+    # Phase 3C: cluster-level support_depth = max chain depth across members.
+    support_depth = max(
+        (initial_metrics.get(mid, {}).get("support_depth", 1) for mid in member_ids),
+        default=1,
+    )
+
     return ClusterProjection(
         representative_id=rep_id,
         member_ids=member_ids,
@@ -346,6 +377,7 @@ def _aggregate_cluster(
         dissent_pressure=dissent_pressure,
         verification_score=verification_score,
         partition_origins=all_partitions,
+        support_depth=support_depth,
     )
 
 

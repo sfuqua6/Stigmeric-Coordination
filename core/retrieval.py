@@ -18,7 +18,7 @@ Classes
                                   (requires COHERE_API_KEY for query embedding)
     WikipediaRetriever          — uses `wikipedia` package; noun-phrase keyphrases
     WebRetriever                — DuckDuckGo (package preferred) + page scrape
-    CompositeRetriever          — Cohere → Wikipedia → Web → placeholder fallback
+             — Cohere → Wikipedia → Web → placeholder fallback
     CachedRetriever             — on-disk SHA1-keyed cache wrapping any retriever
 
 All retrievers return list[CorpusChunk] from core.intake.

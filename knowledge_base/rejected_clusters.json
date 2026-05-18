@@ -22,9 +22,9 @@
     "run_timestamp": "2026-05-15T16:00:22.505292",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:00:22.505292",
-    "last_seen": "2026-05-17T09:21:26.709863",
+    "last_seen": "2026-05-17T19:12:59.322250",
     "decay_strength": 1.0,
-    "run_count": 17,
+    "run_count": 21,
     "originating_run": {
       "timestamp": "2026-05-15T16:00:22.505292",
       "task_type": "debate",
@@ -60,9 +60,9 @@
     "run_timestamp": "2026-05-15T16:00:22.505292",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:00:22.505292",
-    "last_seen": "2026-05-17T09:19:04.797460",
-    "decay_strength": 0.95,
-    "run_count": 7,
+    "last_seen": "2026-05-17T13:10:39.906996",
+    "decay_strength": 0.7350918906249998,
+    "run_count": 8,
     "originating_run": {
       "timestamp": "2026-05-15T16:00:22.505292",
       "task_type": "debate",
@@ -103,9 +103,9 @@
     "run_timestamp": "2026-05-15T16:02:21.049641",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:02:21.049641",
-    "last_seen": "2026-05-16T22:29:09.348956",
-    "decay_strength": 0.9025,
-    "run_count": 12,
+    "last_seen": "2026-05-17T19:01:42.933577",
+    "decay_strength": 0.8145062499999999,
+    "run_count": 13,
     "originating_run": {
       "timestamp": "2026-05-15T16:02:21.049641",
       "task_type": "debate",
@@ -140,9 +140,9 @@
     "run_timestamp": "2026-05-15T16:02:21.049641",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:02:21.049641",
-    "last_seen": "2026-05-16T18:08:22.075962",
-    "decay_strength": 0.7737809374999999,
-    "run_count": 7,
+    "last_seen": "2026-05-17T19:12:47.694578",
+    "decay_strength": 0.95,
+    "run_count": 11,
     "originating_run": {
       "timestamp": "2026-05-15T16:02:21.049641",
       "task_type": "debate",
@@ -176,9 +176,9 @@
     "run_timestamp": "2026-05-15T16:02:49.046880",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:02:49.046880",
-    "last_seen": "2026-05-17T09:21:26.709863",
+    "last_seen": "2026-05-17T19:12:59.322250",
     "decay_strength": 1.0,
-    "run_count": 7,
+    "run_count": 13,
     "originating_run": {
       "timestamp": "2026-05-15T16:02:49.046880",
       "task_type": "debate",
@@ -218,7 +218,7 @@
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:05:11.762830",
     "last_seen": "2026-05-16T12:50:45.842266",
-    "decay_strength": 0.5987369392383786,
+    "decay_strength": 0.35848592240854177,
     "run_count": 3,
     "originating_run": {
       "timestamp": "2026-05-15T16:05:11.762830",
@@ -253,9 +253,9 @@
     "run_timestamp": "2026-05-15T16:05:11.762830",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:05:11.762830",
-    "last_seen": "2026-05-17T09:21:26.709863",
-    "decay_strength": 1.0,
-    "run_count": 13,
+    "last_seen": "2026-05-17T19:12:47.694578",
+    "decay_strength": 0.95,
+    "run_count": 19,
     "originating_run": {
       "timestamp": "2026-05-15T16:05:11.762830",
       "task_type": "debate",
@@ -290,9 +290,9 @@
     "run_timestamp": "2026-05-15T16:41:09.773567",
     "status": "rejected_by_field",
     "first_seen": "2026-05-15T16:41:09.773567",
-    "last_seen": "2026-05-16T12:38:05.524330",
-    "decay_strength": 0.5133420832795047,
-    "run_count": 3,
+    "last_seen": "2026-05-17T13:11:36.292301",
+    "decay_strength": 0.7737809374999999,
+    "run_count": 4,
     "originating_run": {
       "timestamp": "2026-05-15T16:41:09.773567",
       "task_type": "debate",
@@ -307,42 +307,80 @@
   },
   {
     "schema_version": 2,
-    "cluster_hash": "c77ea828c4c52237",
-    "representative_content": "The evidence in chunk 3901ef suggests an initial pattern worth tracking. From this slice (3901ef), a tentative hypothesis emerges. Reading partition 3901ef, one observation stands out as a candidate claim.",
+    "cluster_hash": "6aa9931bca8e076f",
+    "representative_content": "The evidence in chunk 850021 suggests an initial pattern worth tracking. From this slice (850021), a tentative hypothesis emerges. Reading partition 850021, one observation stands out as a candidate claim.",
     "representative_embedding": null,
     "member_signal_ids": [
-      "INITIAL_00005"
+      "INITIAL_00001"
     ],
     "lineage_signal_ids": [
-      "INITIAL_00005",
-      "OBJECTION_00033",
-      "CRITIQUE_NEGATIVE_00021",
-      "OBJECTION_00014",
-      "OBJECTION_00013",
-      "OBJECTION_00027",
-      "OBJECTION_00026"
+      "INITIAL_00001",
+      "CRITIQUE_POSITIVE_00014",
+      "OBJECTION_00028",
+      "OBJECTION_00021",
+      "OBJECTION_00022",
+      "OBJECTION_00035",
+      "OBJECTION_00034",
+      "OBJECTION_00029"
     ],
     "partition_origins": [
-      "partition_2"
+      "partition_1"
     ],
-    "support_diversity": 0,
-    "dissent_pressure": 3456862631.3816,
+    "support_diversity": 1,
+    "dissent_pressure": 7.3848,
     "verification_score": 0.0,
-    "run_timestamp": "2026-05-15T22:19:09.675851",
+    "run_timestamp": "2026-05-17T12:55:36.024868",
     "status": "rejected_by_field",
-    "first_seen": "2026-05-15T22:19:09.675851",
-    "last_seen": "2026-05-15T22:19:09.675851",
-    "decay_strength": 0.46329123015975293,
-    "run_count": 1,
+    "first_seen": "2026-05-17T12:55:36.024868",
+    "last_seen": "2026-05-17T19:12:47.694578",
+    "decay_strength": 0.95,
+    "run_count": 2,
     "originating_run": {
-      "timestamp": "2026-05-15T22:19:09.675851",
+      "timestamp": "2026-05-17T12:55:36.024868",
       "task_type": "debate",
-      "user_prompt": "smoke"
+      "user_prompt": "Test thesis"
     },
     "task_context": {
       "task_type": "debate",
-      "topic_hash": "5cb1e6240fb46e67",
-      "user_prompt_excerpt": "smoke"
+      "topic_hash": "859f9fa9b09d9361",
+      "user_prompt_excerpt": "Test thesis"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "cf8f06220d292f5d",
+    "representative_content": "From this slice (8806e4), a tentative hypothesis emerges. The evidence in chunk 8806e4 suggests an initial pattern worth tracking. Reading partition 8806e4, one observation stands out as a candidate claim.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00000"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00000",
+      "CRITIQUE_NEGATIVE_00022",
+      "CRITIQUE_NEGATIVE_00023"
+    ],
+    "partition_origins": [
+      "partition_0"
+    ],
+    "support_diversity": 0,
+    "dissent_pressure": 761924905.309,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-17T12:59:02.870118",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-17T12:59:02.870118",
+    "last_seen": "2026-05-17T12:59:02.870118",
+    "decay_strength": 0.6983372960937497,
+    "run_count": 1,
+    "originating_run": {
+      "timestamp": "2026-05-17T12:59:02.870118",
+      "task_type": "debate",
+      "user_prompt": "Test thesis for the smoke run"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "52ccb369125e44f3",
+      "user_prompt_excerpt": "Test thesis for the smoke run"
     },
     "contradicts": []
   }

@@ -22,85 +22,10 @@
     "status": "surviving",
     "first_seen": "2026-05-15T16:07:53.432291",
     "last_seen": "2026-05-16T18:08:22.075962",
-    "decay_strength": 0.7737809374999999,
+    "decay_strength": 0.46329123015975293,
     "run_count": 2,
     "originating_run": {
       "timestamp": "2026-05-15T16:07:53.432291",
-      "task_type": "debate",
-      "user_prompt": "Test thesis"
-    },
-    "task_context": {
-      "task_type": "debate",
-      "topic_hash": "859f9fa9b09d9361",
-      "user_prompt_excerpt": "Test thesis"
-    },
-    "contradicts": []
-  },
-  {
-    "schema_version": 2,
-    "cluster_hash": "6aa9931bca8e076f",
-    "representative_content": "The evidence in chunk 850021 suggests an initial pattern worth tracking. From this slice (850021), a tentative hypothesis emerges. Reading partition 850021, one observation stands out as a candidate claim.",
-    "representative_embedding": null,
-    "member_signal_ids": [
-      "INITIAL_00001"
-    ],
-    "lineage_signal_ids": [
-      "INITIAL_00001",
-      "CRITIQUE_POSITIVE_00021",
-      "SUPPORT_00010",
-      "VERIFICATION_00008"
-    ],
-    "partition_origins": [
-      "partition_1"
-    ],
-    "support_diversity": 2,
-    "dissent_pressure": 0.0,
-    "verification_score": 0.2988,
-    "run_timestamp": "2026-05-15T16:10:14.498820",
-    "status": "surviving",
-    "first_seen": "2026-05-15T16:10:14.498820",
-    "last_seen": "2026-05-15T16:10:14.498820",
-    "decay_strength": 0.34056162628811465,
-    "run_count": 1,
-    "originating_run": {
-      "timestamp": "2026-05-15T16:10:14.498820",
-      "task_type": "debate",
-      "user_prompt": "Test thesis"
-    },
-    "task_context": {
-      "task_type": "debate",
-      "topic_hash": "859f9fa9b09d9361",
-      "user_prompt_excerpt": "Test thesis"
-    },
-    "contradicts": []
-  },
-  {
-    "schema_version": 2,
-    "cluster_hash": "2bf42dde395585ec",
-    "representative_content": "The evidence in chunk 173429 suggests an initial pattern worth tracking. Reading partition 173429, one observation stands out as a candidate claim. From this slice (173429), a tentative hypothesis emerges.",
-    "representative_embedding": null,
-    "member_signal_ids": [
-      "INITIAL_00004"
-    ],
-    "lineage_signal_ids": [
-      "INITIAL_00004",
-      "CRITIQUE_POSITIVE_00012",
-      "SUPPORT_00011"
-    ],
-    "partition_origins": [
-      "partition_3"
-    ],
-    "support_diversity": 2,
-    "dissent_pressure": 0.0,
-    "verification_score": 0.0,
-    "run_timestamp": "2026-05-15T22:17:35.583133",
-    "status": "surviving",
-    "first_seen": "2026-05-15T22:17:35.583133",
-    "last_seen": "2026-05-15T22:17:35.583133",
-    "decay_strength": 0.44012666865176525,
-    "run_count": 1,
-    "originating_run": {
-      "timestamp": "2026-05-15T22:17:35.583133",
       "task_type": "debate",
       "user_prompt": "Test thesis"
     },
@@ -135,7 +60,7 @@
     "status": "surviving",
     "first_seen": "2026-05-16T13:04:54.065924",
     "last_seen": "2026-05-16T13:04:54.065924",
-    "decay_strength": 0.6302494097246091,
+    "decay_strength": 0.37735360253530714,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-16T13:04:54.065924",
@@ -173,7 +98,7 @@
     "status": "surviving",
     "first_seen": "2026-05-16T17:26:44.332434",
     "last_seen": "2026-05-16T17:26:44.332434",
-    "decay_strength": 0.6634204312890623,
+    "decay_strength": 0.3972143184582181,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-16T17:26:44.332434",
@@ -214,7 +139,7 @@
     "status": "surviving",
     "first_seen": "2026-05-16T17:28:18.741805",
     "last_seen": "2026-05-16T17:28:18.741805",
-    "decay_strength": 0.6983372960937497,
+    "decay_strength": 0.41812033521917696,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-16T17:28:18.741805",
@@ -251,7 +176,7 @@
     "status": "surviving",
     "first_seen": "2026-05-16T22:29:09.348956",
     "last_seen": "2026-05-16T22:29:09.348956",
-    "decay_strength": 0.9025,
+    "decay_strength": 0.5403600876626365,
     "run_count": 1,
     "originating_run": {
       "timestamp": "2026-05-16T22:29:09.348956",

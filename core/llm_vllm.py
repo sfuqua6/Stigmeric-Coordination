@@ -21,6 +21,14 @@ import asyncio
 import os
 from typing import Optional
 
+# Force Triton-based sampler + attention BEFORE vLLM imports so the engine
+# picks them up at init. Blackwell sm_120 needs CUDA 12.9 for FlashInfer;
+# Triton works on any sm75+ and is what Colab actually has at the moment
+# the user sees this code run. Setdefault so an explicit override from the
+# caller still wins.
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
+
 try:
     from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams  # type: ignore
     _VLLM_AVAILABLE = True

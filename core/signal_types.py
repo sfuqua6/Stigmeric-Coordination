@@ -36,12 +36,17 @@ CRITIQUE_POSITIVE = "CRITIQUE_POSITIVE"
 CRITIQUE_NEGATIVE = "CRITIQUE_NEGATIVE"
 OBJECTION = "OBJECTION"
 VERIFICATION = "VERIFICATION"
+# SEARCH (Phase 2B): stigmergic trace of an agentic query. Content is
+# "QUERY: <q>" plus the top-3 source titles/URLs from the search backend.
+# Other agents see this and avoid duplicating the query. Not counted in
+# support_set or dissent_set; the projection treats it as metadata.
+SEARCH = "SEARCH"
 
 # Backward compatibility alias: old code deposited CRITIQUE; treat as negative.
 CRITIQUE = CRITIQUE_NEGATIVE
 
 CONTENT_TYPES = (INITIAL, SUPPORT, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE, OBJECTION)
-ALL_TYPES = CONTENT_TYPES + (VERIFICATION,)
+ALL_TYPES = CONTENT_TYPES + (VERIFICATION, SEARCH)
 
 # Only negative-valence types hold steady against decay (they represent
 # genuine disagreement that should persist until actively rebutted).

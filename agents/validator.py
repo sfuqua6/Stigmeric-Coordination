@@ -181,24 +181,24 @@ def _extract_keyphrase(text: str, max_words: int = 5) -> str:
 
 
 def _wiki_lookup(query: str) -> str:
-    """Best-effort Wikipedia lookup with graceful degradation.
+    """External-snippet lookup via the agentic search_tool.
 
-    Returns a short snippet if available, or an explanatory placeholder
-    otherwise. Never raises; verification proceeds even when offline.
+    Phase 2D: replaces the hard-coded Wikipedia path with the Tavily/DDG/Cohere
+    cascade. The function name is preserved for callers; semantics are now
+    "best 1-2 retrieved snippets, concatenated into ~600 chars." Returns a
+    placeholder when every backend fails so validation proceeds offline.
     """
     try:
-        import wikipedia  # type: ignore
-        try:
-            summary = wikipedia.summary(query, sentences=2, auto_suggest=True, redirect=True)
-            return summary[:600]
-        except Exception:
-            try:
-                hits = wikipedia.search(query, results=1)
-                if hits:
-                    summary = wikipedia.summary(hits[0], sentences=2)
-                    return summary[:600]
-            except Exception:
-                pass
-        return f"(no Wikipedia article found for query: {query!r})"
-    except ImportError:
-        return f"(wikipedia package not installed; query was: {query!r})"
+        from core.search_tool import search as _search
+    except Exception:
+        return f"(search tool unavailable; query was: {query!r})"
+    chunks = _search(query, max_results=2)
+    if not chunks:
+        return f"(no external snippet found for query: {query!r})"
+    pieces = []
+    for c in chunks[:2]:
+        tag = c.source_tag[:120]
+        body = c.text[:400]
+        pieces.append(f"[{tag}]\n{body}")
+    out = "\n\n".join(pieces)
+    return out[:600]

@@ -26,12 +26,12 @@ other agents' content), which is safe under the no-leak rule.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from agents.base import BaseAgent, AgentRunStats, strip_reasoning
 from core.signal_store import SignalStore, Signal
-from core.signal_types import INITIAL
+from core.signal_types import INITIAL, SEARCH
 from core.intake import ScoutPartition
 from core.config import MAX_TOKENS_SCOUT, SCOUT_MAX_DEPOSITS_PER_ROUND, SCOUT_RESEED_CHARS
 from core.diversity import AgentContextRecord
@@ -42,6 +42,14 @@ from core.filters import is_junk_output
 class ScoutConfig:
     task_prompt: str
     partition: ScoutPartition
+    # Phase 2C: when True (default), scouts issue agentic queries via
+    # core/search_tool.py and deposit a SEARCH signal per iteration. Set to
+    # False (--corpus=placeholder regression mode) to fall back to the
+    # contiguous-partition path.
+    use_search: bool = True
+    # The user prompt that scouts query around. Falls back to task_prompt
+    # when not supplied.
+    user_prompt: str = ""
 
 
 class Scout(BaseAgent):
@@ -62,33 +70,69 @@ class Scout(BaseAgent):
         stats = AgentRunStats(context_record=AgentContextRecord(
             agent_id=self.agent_id, role=self.ROLE,
         ))
-        # Scouts' "context" is their corpus partition, recorded once for the
-        # round. Per-iteration variation comes from temperature + chunk rotation.
+        # Scouts' "context" is their corpus partition (when partitioned) or
+        # their query history (when agentic search is on).
         stats.context_record.add_chunks(self.config.partition.chunk_ids)
         n_chunks = max(1, len(self.config.partition.chunks))
 
-        # Tracks content excerpts from own successful deposits this round, used
-        # to build the re-seed hint for the next iteration.
         own_deposit_excerpts: list[str] = []
         consecutive_dups = 0
 
+        # Per-scout query history (so re-seed can avoid repeating queries).
+        prior_queries: list[str] = []
+        # Last retrieved chunks for the current iteration's INITIAL prompt.
+        last_retrieved: list = []
+
         for iter_idx in range(iterations):
-            # Saturation cap: stop when we've hit SCOUT_MAX_DEPOSITS_PER_ROUND.
-            # The outer ceiling (ITERATIONS_PER_ROUND) still applies.
             if len(own_deposit_excerpts) >= SCOUT_MAX_DEPOSITS_PER_ROUND:
                 break
 
             stats.iterations += 1
             chunk_offset = iter_idx % n_chunks
 
-            # Re-seed: give this iteration a nudge away from the most recent
-            # deposit. Own content only — no other agents' work is injected.
+            # Phase 2C: agentic search path — generate a query, retrieve,
+            # deposit a SEARCH signal, then condition the INITIAL on retrieved
+            # chunks. Fall through to the partition path on failure or when
+            # use_search is False.
+            retrieved = []
+            if self.config.use_search:
+                query = self._compose_query(iter_idx, prior_queries)
+                if query:
+                    try:
+                        from core.search_tool import search as _search, summarize_for_signal
+                        retrieved = _search(query, max_results=5)
+                    except Exception as exc:
+                        print(f"[scout {self.agent_id}] search failed: "
+                              f"{type(exc).__name__}: {exc}")
+                        retrieved = []
+                    if retrieved:
+                        # Deposit SEARCH signal so other scouts/foragers see
+                        # what's been queried.
+                        search_content = summarize_for_signal(query, retrieved)
+                        store.deposit(
+                            signal_type=SEARCH,
+                            content=search_content,
+                            strength=0.4,
+                            depositor=self.ROLE,
+                            parent_id=None,
+                            metadata={
+                                "scout_agent_id": self.agent_id,
+                                "depositor_agent_id": self.agent_id,
+                                "query": query,
+                                "n_results": len(retrieved),
+                            },
+                        )
+                        prior_queries.append(query)
+                        last_retrieved = retrieved
+
             prior_own = (
                 own_deposit_excerpts[-1][:SCOUT_RESEED_CHARS]
                 if own_deposit_excerpts else None
             )
             prompt = self.build_prompt(
-                samples=[], chunk_offset=chunk_offset, prior_own_content=prior_own
+                samples=[], chunk_offset=chunk_offset,
+                prior_own_content=prior_own,
+                retrieved_chunks=last_retrieved,
             )
             self._assert_no_leak(prompt, samples=[])
 
@@ -102,7 +146,6 @@ class Scout(BaseAgent):
             if not content:
                 continue
 
-            # Junk filter: block first-person scratchpad before deposit.
             if is_junk_output(content):
                 consecutive_dups += 1
                 stats.rejected_dup += 1
@@ -110,6 +153,12 @@ class Scout(BaseAgent):
                     break
                 continue
 
+            # Track retrieved source URLs as chunk_ids for this deposit (in
+            # search mode there is no partition; provenance is the URL set).
+            source_chunk_ids = (
+                [c.chunk_id for c in last_retrieved]
+                if last_retrieved else self.config.partition.chunk_ids
+            )
             sid = store.deposit(
                 signal_type=self.OUTPUT_TYPE,
                 content=content,
@@ -119,7 +168,8 @@ class Scout(BaseAgent):
                 metadata={
                     "scout_agent_id": self.agent_id,
                     "depositor_agent_id": self.agent_id,
-                    "chunk_ids": self.config.partition.chunk_ids,
+                    "chunk_ids": source_chunk_ids,
+                    "query": prior_queries[-1] if prior_queries else "",
                 },
             )
             if sid is None:
@@ -134,6 +184,40 @@ class Scout(BaseAgent):
 
         return stats
 
+    # ---- query composition ---------------------------------------------------
+
+    def _compose_query(self, iter_idx: int, prior_queries: list[str]) -> str:
+        """Build a query phrasing for this scout iteration.
+
+        Each scout starts from the user prompt and rotates through a small
+        set of phrasings to bias toward different framings. The agent_id
+        carries the round number and scout index so the phrasings vary by
+        position naturally.
+        """
+        base = (self.config.user_prompt or self.config.task_prompt).strip()
+        if not base:
+            return ""
+        # Lightweight phrasing rotation keyed on (scout_index, iter_idx).
+        # Keep this deterministic so re-runs cache-hit.
+        phrasings = [
+            base,
+            f"{base} evidence",
+            f"{base} arguments",
+            f"{base} criticism",
+            f"{base} consequences",
+            f"counterarguments to {base}",
+            f"recent research on {base}",
+            f"case studies of {base}",
+        ]
+        # Try to pick one that hasn't been queried yet by THIS scout.
+        already = set(prior_queries)
+        seed = iter_idx
+        for offset in range(len(phrasings)):
+            q = phrasings[(seed + offset) % len(phrasings)]
+            if q not in already:
+                return q
+        return phrasings[seed % len(phrasings)]
+
     # ---- prompt ----------------------------------------------------------
 
     def sample(self, store: SignalStore) -> list[Signal]:
@@ -142,10 +226,32 @@ class Scout(BaseAgent):
     def build_prompt(self, samples: list[Signal], *,
                      store_count: int = 0, own_ids: tuple = (),
                      chunk_offset: int = 0,
-                     prior_own_content: Optional[str] = None) -> str:
-        partition_text = self.config.partition.render(offset=chunk_offset)
-        if not partition_text:
-            partition_text = "(no corpus partition assigned to this scout)"
+                     prior_own_content: Optional[str] = None,
+                     retrieved_chunks: Optional[list] = None) -> str:
+        # Phase 2C: if scouts ran agentic search, condition on retrieved
+        # chunks rather than the contiguous partition. Falls back to the
+        # partition path when search returned nothing or is disabled.
+        if retrieved_chunks:
+            evidence_blocks = []
+            for c in retrieved_chunks[:5]:
+                tag = c.source_tag[:160]
+                body = c.text[:800]
+                evidence_blocks.append(f"[{tag}]\n{body}")
+            evidence_text = "\n\n".join(evidence_blocks)
+            evidence_intro = (
+                "You issued an agentic search query and received the following "
+                "evidence. Other scouts have issued different queries and you "
+                "cannot see what they retrieved."
+            )
+        else:
+            evidence_text = self.config.partition.render(offset=chunk_offset)
+            if not evidence_text:
+                evidence_text = "(no corpus partition assigned to this scout)"
+            evidence_intro = (
+                "You have been assigned the following evidence partition. "
+                "Other scouts have been assigned different partitions and "
+                "you cannot see theirs."
+            )
 
         reseed_hint = ""
         if prior_own_content:
@@ -157,14 +263,12 @@ class Scout(BaseAgent):
 
         return (
             f"TASK: {self.config.task_prompt}\n\n"
-            f"You have been assigned the following evidence partition. "
-            f"Other scouts have been assigned different partitions and "
-            f"you cannot see theirs.\n\n"
-            f"---EVIDENCE---\n{partition_text}\n---END EVIDENCE---\n"
+            f"{evidence_intro}\n\n"
+            f"---EVIDENCE---\n{evidence_text}\n---END EVIDENCE---\n"
             f"{reseed_hint}\n"
             f"Produce ONE concise initial claim or observation grounded "
-            f"in this partition. Do not summarize the entire partition; "
-            f"surface a single specific point worth depositing as a "
-            f"first-order signal. One or two sentences only.\n\n"
+            f"in this evidence. Do not summarize everything; surface a "
+            f"single specific point worth depositing as a first-order "
+            f"signal. One or two sentences only.\n\n"
             f"CLAIM:"
         )

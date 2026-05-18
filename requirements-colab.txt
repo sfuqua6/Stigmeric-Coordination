@@ -12,6 +12,11 @@
 vllm
 sentence-transformers
 
+# bnb 4-bit for the HF fallback path in core/llm.py (when the vLLM cascade
+# exhausts all attempts and RealLLM takes over). 0.46.1 is the first
+# release with the Blackwell sm_120 kernels, so pin >= that.
+bitsandbytes>=0.46.1
+
 # Primary retrieval: Cohere pre-computed embeddings + FAISS
 # Requires COHERE_API_KEY env var at runtime (free key at cohere.com).
 cohere

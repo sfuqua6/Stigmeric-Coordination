@@ -132,10 +132,16 @@ def _tavily_search(query: str, max_results: int) -> list[CorpusChunk]:
 
 
 def _ddg_search(query: str, max_results: int) -> list[CorpusChunk]:
+    # `ddgs` is the maintained successor of `duckduckgo-search`. Try the new
+    # package first, then fall back to the legacy name for environments that
+    # haven't reinstalled yet. Same DDGS class shape.
     try:
-        from duckduckgo_search import DDGS  # type: ignore
+        from ddgs import DDGS  # type: ignore
     except ImportError:
-        return []
+        try:
+            from duckduckgo_search import DDGS  # type: ignore
+        except ImportError:
+            return []
     out: list[CorpusChunk] = []
     try:
         with DDGS(timeout=10) as ddgs:
@@ -160,6 +166,11 @@ def _ddg_search(query: str, max_results: int) -> list[CorpusChunk]:
 
 
 def _cohere_search(query: str, max_results: int) -> list[CorpusChunk]:
+    # Cohere wiki-simple is opt-in only: it triggers a ~1 GB download on first
+    # use and re-introduces the topic-skew the agentic search is meant to
+    # escape. Enable explicitly with SWARM_SEARCH_USE_COHERE=1.
+    if os.environ.get("SWARM_SEARCH_USE_COHERE", "").strip() in ("", "0", "false", "False"):
+        return []
     try:
         from .corpus_store_cohere import get_store
     except ImportError:
@@ -169,11 +180,7 @@ def _cohere_search(query: str, max_results: int) -> list[CorpusChunk]:
         chunks = store.search(query, n_chunks=max_results)
     except Exception:
         return []
-    out: list[CorpusChunk] = []
-    for c in chunks[:max_results]:
-        # Cohere chunks already have chunk_id/text/source_tag; pass through.
-        out.append(c)
-    return out
+    return list(chunks[:max_results])
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +222,21 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS) -> list[CorpusCh
     query = query.strip()
     if not query:
         return []
+
+    # MOCK_LLM short-circuit: yield deterministic placeholder chunks so
+    # smoke tests don't pay 1 GB cohere-store downloads or hit live DDG
+    # rate-limits. Pure plumbing path.
+    if os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False"):
+        digest = hashlib.sha1(query.encode("utf-8")).hexdigest()[:8]
+        return [
+            CorpusChunk(
+                chunk_id=f"mock_{i}_{digest}",
+                text=(f"Mock evidence chunk {i} for query {query!r}. "
+                      f"This is placeholder content for offline plumbing tests."),
+                source_tag=f"mock://search/{digest}/{i}",
+            )
+            for i in range(min(max_results, 3))
+        ]
 
     cached = _load_cache(query)
     if cached is not None:

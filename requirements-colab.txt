@@ -24,8 +24,10 @@ datasets
 faiss-cpu
 
 # Fallback retrieval: Wikipedia HTTP + DuckDuckGo
+# `ddgs` is the maintained rename of `duckduckgo-search`; the old package
+# stopped getting fixes and started returning 0-result lists on the live API.
 wikipedia
-duckduckgo-search
+ddgs
 requests
 beautifulsoup4
 

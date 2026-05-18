@@ -18,6 +18,7 @@ GGUF/HF if vllm isn't importable.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import os
 from typing import Optional
 
@@ -41,6 +42,28 @@ except Exception:
     AsyncEngineArgs = None  # type: ignore
     SamplingParams = None  # type: ignore
     _VLLM_AVAILABLE = False
+
+
+def _safe_shutdown(engine) -> None:
+    """Best-effort vLLM engine shutdown for atexit. Quiets NCCL/ZMQ noise.
+
+    vLLM exposes shutdown() in recent versions; older ones expose stop_remote()
+    or just the engine_core. Tolerate every shape, swallow exceptions — the
+    interpreter is exiting anyway.
+    """
+    for attr in ("shutdown", "stop_remote_worker_execution_loop"):
+        fn = getattr(engine, attr, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+    try:
+        import torch.distributed as dist  # type: ignore
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
+    except Exception:
+        pass
 
 
 # Set HF cache to local SSD if on Colab (critical for ~10× performance improvement).
@@ -142,6 +165,12 @@ class VLLMBackend:
               f"max_model_len={max_model_len} enforce_eager={enforce_eager}")
         print(f"[llm-vllm] loaded ok. internal batching cap: {max_num_seqs}")
 
+        # Phase 0: clean shutdown. vLLM's AsyncLLMEngine doesn't tear down
+        # cleanly on interpreter exit — NCCL workers and ZMQ sockets log a
+        # stack of warnings the user can't act on. Register an atexit that
+        # calls engine.shutdown() and tears down the distributed group.
+        atexit.register(_safe_shutdown, self._engine)
+
     def _apply_chat_template(self, prompt: str, role: str) -> str:
         """Wrap the agent's prompt as a single user-message turn.
 
@@ -196,3 +225,23 @@ class VLLMBackend:
             return ""
         text = final_output.outputs[0].text
         return text.strip() if isinstance(text, str) else ""
+
+    async def warmup(self, n: int = 5) -> None:
+        """Phase 0: fire `n` throwaway prompts to compile Triton JIT kernels.
+
+        The first real iteration would otherwise stall ~30s on the
+        slot-mapping kernel compile, blocking the convergence loop's quick
+        startup feedback. After warmup the engine is hot.
+        """
+        if n <= 0:
+            return
+        try:
+            print(f"[llm-vllm] JIT warmup: {n} throwaway prompts")
+            for i in range(n):
+                await self.generate(
+                    f"warmup {i}: respond with 'ok'.",
+                    role="agent", max_tokens=8, temperature=0.1,
+                )
+            print("[llm-vllm] JIT warmup complete")
+        except Exception as exc:
+            print(f"[llm-vllm] warmup skipped ({type(exc).__name__}: {exc})")

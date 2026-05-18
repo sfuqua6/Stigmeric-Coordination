@@ -354,9 +354,12 @@ class WebRetriever(Retriever):
 
     def _search(self, query: str, deadline: float) -> tuple[list[str], str, Optional[Exception]]:
         """Return (links, via, exc). `via` is 'ddg-package' or 'html-scrape'."""
-        # Path A: duckduckgo_search package (preferred — maintained against DDG)
+        # Path A: ddgs package (preferred — maintained successor of duckduckgo-search)
         try:
-            from duckduckgo_search import DDGS  # type: ignore
+            try:
+                from ddgs import DDGS  # type: ignore
+            except ImportError:
+                from duckduckgo_search import DDGS  # type: ignore
             try:
                 links: list[str] = []
                 with DDGS(timeout=int(max(3, deadline - time.time()))) as ddgs:

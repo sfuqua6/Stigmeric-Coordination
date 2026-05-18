@@ -38,11 +38,10 @@ _TIER = _detect_colab_tier()
 _MODEL_BY_TIER = {
     "t4":      "Qwen/Qwen2.5-7B-Instruct",
     "l4":      "Qwen/Qwen2.5-14B-Instruct",
-    # A100 uses 14B fp16: 28 GB weights leaves ~52 GB for KV cache vs. 32B's
-    # 11 GB. KV pressure on 32B was forcing max_model_len=1024 and truncating
-    # generations mid-sentence — capacity was being wasted.
-    "a100_40": "Qwen/Qwen2.5-14B-Instruct",
-    "a100_80": "Qwen/Qwen2.5-14B-Instruct",
+    # A100 runs 32B fp16. max_model_len=4096 (Phase 1B) + enforce_eager=False
+    # let the 32B path fit on a100_80 without per-call truncation.
+    "a100_40": "Qwen/Qwen2.5-32B-Instruct",
+    "a100_80": "Qwen/Qwen2.5-32B-Instruct",
     "unknown": "Qwen/Qwen2.5-7B-Instruct",
 }
 

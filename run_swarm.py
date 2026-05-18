@@ -841,6 +841,9 @@ async def run_continuous_pipeline(
         print("[kb] disabled (--use-kb to enable)")
     else:
         kb.load()
+        n_priors = (len(kb.prior_consensus(current_topic_hash))
+                    + len(kb.prior_rejections(current_topic_hash)))
+        print(f"[kb] loaded {n_priors} priors — set --no-kb to disable")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     validator_raw_path = output_dir / "validator_raw.log"

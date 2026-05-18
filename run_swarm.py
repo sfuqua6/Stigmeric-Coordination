@@ -96,6 +96,8 @@ from agents.hater import Hater
 from agents.validator import Validator
 from agents.synthesizer import Synthesizer
 from core.role_registry import get_role_classes
+from core.worker_pool import run_pool, decay_loop
+from core.convergence import ConvergenceDetector
 
 
 # ---------------------------------------------------------------------------
@@ -796,6 +798,297 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
 
 
 # ---------------------------------------------------------------------------
+# Continuous (action-pool) pipeline — Phase 1 of the emergent-swarm rewrite
+# ---------------------------------------------------------------------------
+
+_CONTINUOUS_DEFAULT_WORKERS = 24
+
+
+async def run_continuous_pipeline(
+    task_type: str, user_prompt: str, output_dir: Path,
+    ignore_kb: bool = True,
+    reset_kb: bool = False,
+    n_workers: int = _CONTINUOUS_DEFAULT_WORKERS,
+    cloud_provider: str = "none",
+) -> dict:
+    """Continuous worker pool replacing the round/phase scheduler.
+
+    Workers pick actions per iteration against the live store; the
+    ConvergenceDetector decides when to halt. No fixed NUM_ROUNDS,
+    no Phase A / Phase B serialization.
+    """
+    pipeline_start = time.time()
+    task_prompt = build_task_prompt(task_type, user_prompt)
+
+    llm = make_llm()
+    # Phase 0: JIT warmup so the slot-mapping kernel doesn't stall the
+    # first real iteration. Only meaningful on vLLM; MockLLM/HF skip.
+    if hasattr(llm, "warmup"):
+        try:
+            await llm.warmup(n=5)
+        except Exception as exc:
+            print(f"[pipeline] warmup raised {type(exc).__name__}: {exc}")
+
+    store = SignalStore()
+
+    # KB — default off, opt-in via --use-kb (handled in main()).
+    from core.knowledge_base import _topic_hash as _kb_topic_hash
+    current_topic_hash = _kb_topic_hash(user_prompt)
+    kb = KnowledgeBase()
+    if reset_kb:
+        _reset_kb(kb.kb_dir)
+    if ignore_kb:
+        print("[kb] disabled (--use-kb to enable)")
+    else:
+        kb.load()
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    validator_raw_path = output_dir / "validator_raw.log"
+    validator_raw_path.write_text("", encoding="utf-8")  # truncate prior log
+    from core.worker_pool import set_validator_raw_log
+    set_validator_raw_log(validator_raw_path)
+
+    # vLLM internal batcher means we want n_workers >= max_num_seqs. For
+    # MockLLM / HF, the asyncio.Semaphore inside the LLM throttles real
+    # concurrency to 1 — workers still queue cleanly.
+    print(f"\n[pipeline] continuous pool — task={task_type!r} prompt={user_prompt!r}")
+    print(f"[pipeline] llm backend: {llm.name}")
+    print(f"[pipeline] n_workers={n_workers}")
+
+    detector = ConvergenceDetector(store)
+    stop_event = asyncio.Event()
+
+    pool_task = asyncio.create_task(run_pool(
+        store, llm, task_prompt, user_prompt, stop_event,
+        n_workers=n_workers,
+    ))
+    decay_task = asyncio.create_task(decay_loop(store, stop_event, interval_s=30.0))
+
+    # Orchestrator tick loop — every 2s, snapshot state, log, check halt.
+    while not stop_event.is_set():
+        await asyncio.sleep(2.0)
+        elapsed = time.time() - pipeline_start
+        # Iterate counter is owned by the pool; peek via Task's pool_state.
+        # We read it from the pool's state by polling its private accessor —
+        # run_pool stores PoolState in a local. Read from store snapshot
+        # via projection instead; iteration count surfaces via shares window.
+        # Use a global tap: stash iteration_counter on the loop via pool_task.
+        # Cleaner: ConvergenceDetector takes iteration & elapsed from us.
+        # We pull iteration from PoolState via attribute on pool_task.
+        ps = _peek_pool_state(pool_task)
+        iter_n = ps.iteration_counter if ps else 0
+        detector.tick(iter_n, elapsed)
+        _log_progress(iter_n, elapsed, detector, ps, store)
+        if detector.satisfied(iter_n, elapsed):
+            break
+
+    stop_event.set()
+    # Give worker_loop one yield to notice the event, then wait.
+    try:
+        await asyncio.wait_for(pool_task, timeout=15.0)
+    except asyncio.TimeoutError:
+        pool_task.cancel()
+        try:
+            await pool_task
+        except Exception:
+            pass
+    try:
+        await asyncio.wait_for(decay_task, timeout=5.0)
+    except asyncio.TimeoutError:
+        decay_task.cancel()
+        try:
+            await decay_task
+        except Exception:
+            pass
+
+    ps = _peek_pool_state(pool_task)
+    total_iterations = ps.iteration_counter if ps else 0
+    final_elapsed = time.time() - pipeline_start
+    final_shares = ps.shares() if ps else {}
+
+    print(f"\n[pipeline] pool halted: reason={detector.state.reason!r} "
+          f"iterations={total_iterations} elapsed={final_elapsed:.1f}s")
+
+    # Persist signals before synthesis.
+    signal_dump = [
+        {
+            "id": s.id, "type": s.type, "strength": round(s.strength, 4),
+            "depositor": s.depositor, "parent_id": s.parent_id,
+            "visits": s.visits,
+            "metadata": s.metadata,
+            "content": s.content,
+        }
+        for s in store.all()
+    ]
+    (output_dir / "signals.json").write_text(
+        json.dumps(signal_dump, indent=2), encoding="utf-8"
+    )
+
+    (output_dir / "run_meta.json").write_text(json.dumps({
+        "task_type": task_type,
+        "user_prompt": user_prompt,
+        "llm_backend": llm.name,
+        "is_mock": USE_MOCK_LLM,
+        "timestamp": os.environ.get("SWARM_RUN_TIMESTAMP", datetime.now().isoformat()),
+        "colab_tier": config._TIER,
+        "model_name": config.MODEL_NAME,
+        "execution_mode": "continuous_pool",
+        "n_workers": n_workers,
+        # Single-model run; keep the heterogeneous-routing manifest shape
+        # so downstream tooling that diffs runs across modes doesn't have to
+        # branch.
+        "model_assignment": {"all": llm.name},
+    }, indent=2), encoding="utf-8")
+
+    # Synthesis
+    run_meta_dict = {
+        "task_type": task_type,
+        "user_prompt": user_prompt,
+        "timestamp": datetime.now().isoformat(),
+    }
+    SynthesizerClass = get_role_classes(task_type).get("synthesizer", Synthesizer)
+    try:
+        synth = SynthesizerClass(llm, task_prompt)
+        final_answer, citations, lineage_dot = await synth.synthesize(
+            store,
+            has_validators=True,
+            prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
+            prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
+            output_dir=output_dir,
+        )
+    except Exception as exc:
+        print(f"[pipeline] synthesis failed ({type(exc).__name__}: {exc})")
+        final_answer = f"(synthesis failed: {type(exc).__name__}: {exc})"
+        citations = {}
+        lineage_dot = ""
+
+    (output_dir / "answer.txt").write_text(final_answer, encoding="utf-8")
+    if citations:
+        (output_dir / "citations.json").write_text(
+            json.dumps(citations, indent=2), encoding="utf-8"
+        )
+    if lineage_dot:
+        (output_dir / "lineage.dot").write_text(lineage_dot, encoding="utf-8")
+
+    # KB save (best effort)
+    kb_diff: dict = {"new": 0, "matched": 0, "archived": 0}
+    if not ignore_kb:
+        try:
+            from core.projection import build_projection
+            final_projection = build_projection(store, has_validators=True)
+            diff = kb.save(final_projection, store, run_meta_dict, output_dir=output_dir)
+            kb_diff = {
+                "new": len(diff.get("new_entries", [])),
+                "matched": len(diff.get("matched_entries", [])),
+                "archived": len(diff.get("decayed_to_archive", [])),
+            }
+        except Exception as exc:
+            print(f"[pipeline] kb save failed ({type(exc).__name__}: {exc})")
+
+    # Audit flags
+    try:
+        audit_data = json.loads((output_dir / "renderer_audit.json").read_text(encoding="utf-8"))
+        audit_flags = audit_data.get("total_flags", 0)
+    except Exception:
+        audit_flags = 0
+
+    # summary.json
+    try:
+        from core.projection import build_projection as _bp
+        _final_proj = _bp(store, has_validators=True)
+        ver_scores = [cp.verification_score for cp in _final_proj.surviving + _final_proj.contested]
+        support_depth_max = max(
+            (cp.support_depth for cp in (
+                _final_proj.surviving + _final_proj.contested
+                + _final_proj.weakly_supported + _final_proj.rejected_by_field
+                + _final_proj.unverified
+            )),
+            default=0,
+        )
+        summary = {
+            "task_type": task_type,
+            "user_prompt": user_prompt,
+            "execution_mode": "continuous_pool",
+            "total_iterations": int(total_iterations),
+            "wall_clock_s": round(final_elapsed, 1),
+            "quality_met": bool(detector.state.quality_met),
+            "convergence_reason": detector.state.reason or "unknown",
+            "action_shares": {k: round(v, 4) for k, v in final_shares.items()},
+            "n_clusters": {
+                "surviving": len(_final_proj.surviving),
+                "contested": len(_final_proj.contested),
+                "weakly_supported": len(_final_proj.weakly_supported),
+                "rejected_by_field": len(_final_proj.rejected_by_field),
+            },
+            "max_verification_score": round(max(ver_scores), 4) if ver_scores else 0.0,
+            "avg_verification_score": round(sum(ver_scores) / max(1, len(ver_scores)), 4) if ver_scores else 0.0,
+            "support_depth_max": int(support_depth_max),
+            "audit_flags": audit_flags,
+            "kb_diff": kb_diff,
+        }
+    except Exception as exc:
+        summary = {"error": str(exc)}
+
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print("\n[pipeline] summary.json:")
+    print(json.dumps(summary, indent=2))
+    print("=" * 60)
+    print("FINAL ANSWER")
+    print("=" * 60)
+    print(final_answer)
+    print("=" * 60)
+    return {"answer": final_answer, "iterations": total_iterations}
+
+
+def _peek_pool_state(pool_task):
+    """Return the PoolState attached to a run_pool task, if available.
+
+    run_pool sets task._pool_state by assignment immediately after creating
+    PoolState. We can't reach it via the task object directly without
+    that, so check the task's frame for the local.
+    """
+    if pool_task.done():
+        try:
+            return pool_task.result()
+        except Exception:
+            return None
+    # Fish out the running coroutine's locals; cheap and read-only.
+    coro = pool_task.get_coro()
+    frame = getattr(coro, "cr_frame", None)
+    if frame is not None:
+        return frame.f_locals.get("pool_state")
+    return None
+
+
+def _log_progress(iter_n: int, elapsed: float, detector,
+                  pool_state, store) -> None:
+    """Per-tick progress line. Scaffold 6H format."""
+    shares = pool_state.shares() if pool_state else {}
+    shares_str = " ".join(
+        f"{name[:4].upper()} {int(round(shares.get(name, 0.0) * 100))}%"
+        for name in ("SCOUT", "DEVELOP", "CRITIQUE", "OBJECT", "VALIDATE",
+                     "CHAIN", "REFINE")
+    )
+    proj = None
+    try:
+        from core.projection import build_projection
+        proj = build_projection(store, has_validators=True)
+    except Exception:
+        pass
+    surv = len(proj.surviving) if proj else 0
+    weak = len(proj.weakly_supported) if proj else 0
+    cold = (pool_state is not None and not pool_state.cold_start_done)
+    print(
+        f"[swarm t={elapsed:.0f}s iter={iter_n}] "
+        f"clusters: {surv} surviving, {weak} weakly\n"
+        f"  shares: {shares_str}\n"
+        f"  cold_start={cold} quality_met={detector.state.quality_met} "
+        f"since_new_surv={detector.state.iterations_since_quality if detector.state.quality_met else detector.state.iterations_since_new_surviving} "
+        f"reason={detector.state.reason or '-'}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase-isolated entry point
 # ---------------------------------------------------------------------------
 
@@ -1203,10 +1496,24 @@ def main():
     reset_kb  = "--reset-kb"  in args
     show_partition_overlap = "--show-partition-overlap" in args
     heterogeneous = "--heterogeneous" in args
+    # Continuous worker pool is the default execution mode (Phase 1 of the
+    # emergent-swarm rewrite). Opt back to the round/phase scheduler with
+    # --legacy-rounds for A/B comparison or to repro old artifacts.
+    legacy_rounds = "--legacy-rounds" in args
     args = [a for a in args if a not in (
         "--use-kb", "--ignore-kb", "--reset-kb",
-        "--show-partition-overlap", "--heterogeneous",
+        "--show-partition-overlap", "--heterogeneous", "--legacy-rounds",
     )]
+    # --workers=N for the continuous pool size
+    workers = _CONTINUOUS_DEFAULT_WORKERS
+    worker_flags = [a for a in args if a.startswith("--workers=")]
+    if worker_flags:
+        try:
+            workers = int(worker_flags[-1].split("=", 1)[1])
+        except ValueError:
+            print(f"[pipeline] --workers expects an integer; got {worker_flags[-1]!r}")
+            sys.exit(1)
+    args = [a for a in args if not a.startswith("--workers=")]
     if heterogeneous:
         # Tier-gated. T4 cannot run heterogeneous: VRAM (16 GB) only fits one
         # 7B AWQ with usable KV cache. Per-role GGUF specialists were never the
@@ -1366,13 +1673,23 @@ def main():
 
     if run_mode == "baseline":
         _run_baseline(task_type, user_prompt, output_dir, corpus_mode=corpus_mode)
-    else:
+    elif legacy_rounds:
+        print("[pipeline] --legacy-rounds: using round/phase scheduler "
+              "(continuous pool is the default).")
         asyncio.run(run_pipeline(
             task_type, user_prompt, output_dir,
             ignore_kb=ignore_kb,
             reset_kb=reset_kb,
             corpus_mode=corpus_mode,
             show_partition_overlap=show_partition_overlap,
+            cloud_provider=cloud_provider,
+        ))
+    else:
+        asyncio.run(run_continuous_pipeline(
+            task_type, user_prompt, output_dir,
+            ignore_kb=ignore_kb,
+            reset_kb=reset_kb,
+            n_workers=workers,
             cloud_provider=cloud_provider,
         ))
 

@@ -275,6 +275,23 @@ CLUSTER_SIM_THRESHOLD = 0.72 if _TIER is not None else 0.55
 SURVIVAL_MIN_SUPPORT_DIVERSITY = 3
 SURVIVAL_REJECT_DISSENT_PRESSURE = 1.5
 SURVIVAL_CONTEST_MIN = 0.5
+
+# Per-task survival profile. For factual tasks (coding has unit-test ground
+# truth) the credibility gate requires external verification or dissent or
+# broad support. For non-factual tasks (debate, analysis, problem_solving,
+# creative) external sources don't corroborate philosophical or interpretive
+# claims — survival is instead achievable through internal coherence:
+# support_depth >= credibility_chain_depth counts as a credibility signal,
+# and the verification requirement is dropped entirely.
+SURVIVAL_TASK_PROFILES = {
+    "coding":          {"requires_verification": True,  "credibility_chain_depth": 999},
+    "debate":          {"requires_verification": False, "credibility_chain_depth": 3},
+    "analysis":        {"requires_verification": False, "credibility_chain_depth": 3},
+    "problem_solving": {"requires_verification": False, "credibility_chain_depth": 3},
+    "creative":        {"requires_verification": False, "credibility_chain_depth": 2},
+}
+# Default profile for unknown task types: behave like analysis.
+SURVIVAL_DEFAULT_PROFILE = {"requires_verification": False, "credibility_chain_depth": 3}
 SURVIVAL_CONTEST_MAX = 1.5
 SURVIVAL_VERIFY_MIN = 0.3
 SURVIVAL_DISSENT_MIN = 1

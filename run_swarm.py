@@ -858,12 +858,13 @@ async def run_continuous_pipeline(
     print(f"[pipeline] llm backend: {llm.name}")
     print(f"[pipeline] n_workers={n_workers}")
 
-    detector = ConvergenceDetector(store)
+    detector = ConvergenceDetector(store, task_type=task_type)
     stop_event = asyncio.Event()
 
     pool_task = asyncio.create_task(run_pool(
         store, llm, task_prompt, user_prompt, stop_event,
         n_workers=n_workers,
+        task_type=task_type,
     ))
     decay_task = asyncio.create_task(decay_loop(store, stop_event, interval_s=30.0))
 
@@ -881,7 +882,7 @@ async def run_continuous_pipeline(
         ps = _peek_pool_state(pool_task)
         iter_n = ps.iteration_counter if ps else 0
         detector.tick(iter_n, elapsed)
-        _log_progress(iter_n, elapsed, detector, ps, store)
+        _log_progress(iter_n, elapsed, detector, ps, store, task_type=task_type)
         if detector.satisfied(iter_n, elapsed):
             break
 
@@ -978,7 +979,8 @@ async def run_continuous_pipeline(
     if not ignore_kb:
         try:
             from core.projection import build_projection
-            final_projection = build_projection(store, has_validators=True)
+            final_projection = build_projection(store, has_validators=True,
+                                                 task_type=task_type)
             diff = kb.save(final_projection, store, run_meta_dict, output_dir=output_dir)
             kb_diff = {
                 "new": len(diff.get("new_entries", [])),
@@ -998,7 +1000,7 @@ async def run_continuous_pipeline(
     # summary.json
     try:
         from core.projection import build_projection as _bp
-        _final_proj = _bp(store, has_validators=True)
+        _final_proj = _bp(store, has_validators=True, task_type=task_type)
         ver_scores = [cp.verification_score for cp in _final_proj.surviving + _final_proj.contested]
         support_depth_max = max(
             (cp.support_depth for cp in (
@@ -1064,7 +1066,7 @@ def _peek_pool_state(pool_task):
 
 
 def _log_progress(iter_n: int, elapsed: float, detector,
-                  pool_state, store) -> None:
+                  pool_state, store, task_type: Optional[str] = None) -> None:
     """Per-tick progress line. Scaffold 6H format."""
     shares = pool_state.shares() if pool_state else {}
     shares_str = " ".join(
@@ -1075,7 +1077,7 @@ def _log_progress(iter_n: int, elapsed: float, detector,
     proj = None
     try:
         from core.projection import build_projection
-        proj = build_projection(store, has_validators=True)
+        proj = build_projection(store, has_validators=True, task_type=task_type)
     except Exception:
         pass
     surv = len(proj.surviving) if proj else 0

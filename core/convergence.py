@@ -29,6 +29,7 @@ from typing import Optional
 from .signal_store import SignalStore
 from .signal_types import INITIAL, VERIFICATION
 from .projection import build_projection
+from .config import SURVIVAL_TASK_PROFILES, SURVIVAL_DEFAULT_PROFILE
 
 
 # Hard floors — never halt before these are met (any halt path).
@@ -81,13 +82,25 @@ class ConvergenceDetector:
                  min_time_s: float = MIN_TIME_S,
                  min_initials_for_halt: int = MIN_INITIALS_FOR_HALT,
                  max_iterations: int = MAX_ITERATIONS,
-                 max_time_s: float = MAX_TIME_S):
+                 max_time_s: float = MAX_TIME_S,
+                 task_type: Optional[str] = None):
         self.store = store
         self.min_iterations = min_iterations
         self.min_time_s = min_time_s
         self.min_initials_for_halt = min_initials_for_halt
         self.max_iterations = max_iterations
         self.max_time_s = max_time_s
+        self.task_type = task_type
+        # Task profile picks the quality-gate variant. When task_type is
+        # None we fall back to the strict factual gate (two independent
+        # validators) so existing callers don't change behavior.
+        if task_type is None:
+            self.task_profile = {"requires_verification": True,
+                                  "credibility_chain_depth": 999}
+        else:
+            self.task_profile = SURVIVAL_TASK_PROFILES.get(
+                task_type, SURVIVAL_DEFAULT_PROFILE,
+            )
         self.state = DetectorState()
 
     # ------------------------------------------------------------------
@@ -96,7 +109,8 @@ class ConvergenceDetector:
 
     def tick(self, iteration_counter: int, elapsed_s: float) -> None:
         """Update state from the live signal store. Cheap to call."""
-        proj = build_projection(self.store, has_validators=True)
+        proj = build_projection(self.store, has_validators=True,
+                                 task_type=self.task_type)
         n_surviving = len(proj.surviving)
         max_strength = self.store.stats().get("max_strength", 0.0) or 0.0
         self.state.strength_history.append(max_strength)
@@ -122,20 +136,39 @@ class ConvergenceDetector:
             self.state.iterations_since_quality = 0
 
     def _evaluate_quality(self, proj) -> bool:
-        """At least one cluster passes the (strict) quality gate."""
+        """At least one cluster passes the quality gate.
+
+        Factual task profile (requires_verification=True):
+            support_diversity >= 4, dissent_pressure < 0.5, and TWO
+            independent validator deposits with strength >= 0.7.
+
+        Non-factual task profile (requires_verification=False):
+            support_diversity >= 4, dissent_pressure < 0.5, and
+            support_depth >= credibility_chain_depth (default 3).
+            External verification is honoured if present but not required —
+            web sources can't corroborate philosophical or interpretive
+            claims cleanly, so demanding it gates everything out.
+        """
+        requires_ver = self.task_profile.get("requires_verification", True)
+        chain_floor = int(self.task_profile.get("credibility_chain_depth", 999))
         for cp in proj.surviving:
             if cp.support_diversity < QUALITY_SUPPORT_DIV:
                 continue
             if cp.dissent_pressure >= QUALITY_DISSENT_PRESSURE_MAX:
                 continue
-            # Count independent validator deposits with score >= threshold.
+            if not requires_ver:
+                # Internal-coherence gate: chain depth is the quality signal.
+                if cp.support_depth >= chain_floor:
+                    return True
+                continue
+            # Factual gate: count independent validator deposits with score
+            # >= threshold. Independence = distinct depositor_agent_id.
             ver_signals = [
                 self.store.get(vid) for vid in cp.verification_set
             ]
             ver_signals = [v for v in ver_signals if v is not None]
             strong = [v for v in ver_signals
                       if v.strength >= QUALITY_VER_SCORE_MIN]
-            # Independence: distinct depositor_agent_id strings.
             distinct_validators = {
                 v.metadata.get("depositor_agent_id", "")
                 for v in strong

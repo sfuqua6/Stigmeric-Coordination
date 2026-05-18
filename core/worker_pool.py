@@ -117,6 +117,15 @@ _RECENT_TARGET_PENALTY = 0.5
 # Per-worker cooldown: forbid the immediately-preceding target.
 _WORKER_COOLDOWN_DEPTH = 3
 
+# Search budget across the pool. Each SCOUT/DEVELOP/VALIDATE that would
+# call the live backend instead checks this counter first; if the per-
+# 5-second window has been exhausted, the worker tries to reuse a cached
+# query via find_cached_query (often available) and otherwise skips the
+# search for this iteration. Stops the per-iter SCOUT storm from pushing
+# DDG response times to 4-5s.
+SEARCH_BUDGET_PER_WINDOW = 6
+SEARCH_WINDOW_S = 5.0
+
 
 # ---------------------------------------------------------------------------
 # Pool-level shared state
@@ -140,7 +149,23 @@ class PoolState:
     # this before issuing a new query so we don't spend rate-limit budget
     # re-fetching the same thing.
     served_queries: dict = field(default_factory=dict)
+    # Rolling search budget. Each entry is the unix timestamp of a live
+    # backend call; entries older than SEARCH_WINDOW_S are pruned at
+    # check time. Caps DDG hits so response times stay sub-second.
+    search_timestamps: deque = field(default_factory=lambda: deque(maxlen=64))
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def try_reserve_search(self) -> bool:
+        """Return True iff a live search call fits in the current window."""
+        now = time.time()
+        cutoff = now - SEARCH_WINDOW_S
+        # Prune expired entries.
+        while self.search_timestamps and self.search_timestamps[0] < cutoff:
+            self.search_timestamps.popleft()
+        if len(self.search_timestamps) >= SEARCH_BUDGET_PER_WINDOW:
+            return False
+        self.search_timestamps.append(now)
+        return True
 
     def record_action(self, action: str, target_id: Optional[str]) -> int:
         """Append a successful action to the running log. iteration_counter
@@ -302,12 +327,16 @@ class Worker:
     """Generic, role-agnostic. Picks an action each iteration."""
 
     def __init__(self, worker_id: int, llm, task_prompt: str,
-                 user_prompt: str, rng_seed: Optional[int] = None):
+                 user_prompt: str, rng_seed: Optional[int] = None,
+                 task_type: Optional[str] = None):
         self.worker_id = worker_id
         self.agent_id = f"worker_{worker_id:03d}"
         self.llm = llm
         self.task_prompt = task_prompt
         self.user_prompt = user_prompt
+        # Task type drives query-stance selection and survival profile
+        # (None = analysis defaults).
+        self.task_type = task_type
         self.recent_actions: deque = deque(maxlen=8)
         self.recent_targets: deque = deque(maxlen=_WORKER_COOLDOWN_DEPTH)
         self._rng = random.Random(rng_seed if rng_seed is not None else worker_id)
@@ -467,6 +496,7 @@ class Worker:
                     self.user_prompt, store, pool_state.served_queries,
                     self.worker_id, len(self._query_history),
                     self._query_history,
+                    task_type=self.task_type,
                 )
                 cached_q = find_cached_query(query, pool_state.served_queries) if query else None
                 if cached_q is not None and cached_q != query:
@@ -474,7 +504,17 @@ class Worker:
                     # fetched substantially the same thing. The cached
                     # result is in the search_tool's on-disk cache; reuse it.
                     query = cached_q
-                retrieved = _search(query, max_results=5) if query else []
+                if not query:
+                    retrieved = []
+                elif cached_q is not None:
+                    # Cached hit — no budget needed; search_tool's on-disk
+                    # cache returns instantly.
+                    retrieved = _search(query, max_results=5)
+                elif pool_state.try_reserve_search():
+                    retrieved = _search(query, max_results=5)
+                else:
+                    # Budget exhausted; skip the live call this iteration.
+                    retrieved = []
             except Exception as exc:
                 print(f"[scout {self.agent_id}] query plan failed: "
                       f"{type(exc).__name__}: {exc}")
@@ -519,12 +559,17 @@ class Worker:
                 try:
                     from core.search_tool import search as _search, summarize_for_signal
                     from core.query_planner import plan_develop_query, find_cached_query
-                    query = plan_develop_query(target.content, pool_state.served_queries)
+                    query = plan_develop_query(target.content, pool_state.served_queries,
+                                                task_type=self.task_type)
                     if query:
                         cached_q = find_cached_query(query, pool_state.served_queries)
                         if cached_q is not None and cached_q != query:
                             query = cached_q
-                        retrieved = _search(query, max_results=3)
+                            retrieved = _search(query, max_results=3)
+                        elif pool_state.try_reserve_search():
+                            retrieved = _search(query, max_results=3)
+                        else:
+                            retrieved = []
                         if retrieved:
                             store.deposit(
                                 signal_type=SEARCH,
@@ -583,7 +628,13 @@ class Worker:
                     cached_q = find_cached_query(query, pool_state.served_queries)
                     if cached_q is not None and cached_q != query:
                         query = cached_q
-                hits = _search(query, max_results=2) if query else []
+                        hits = _search(query, max_results=2)
+                    elif pool_state.try_reserve_search():
+                        hits = _search(query, max_results=2)
+                    else:
+                        hits = []
+                else:
+                    hits = []
                 if hits:
                     prev = pool_state.served_queries.get(query, 0)
                     pool_state.served_queries[query] = max(prev, len(hits))
@@ -692,7 +743,8 @@ async def worker_loop(worker: Worker, store: SignalStore,
 
 async def run_pool(store: SignalStore, llm, task_prompt: str,
                    user_prompt: str, stop_event: asyncio.Event,
-                   n_workers: int = 24) -> PoolState:
+                   n_workers: int = 24,
+                   task_type: Optional[str] = None) -> PoolState:
     """Spin up `n_workers` and run until `stop_event` fires.
 
     Returns the PoolState (action log, iteration count, etc.) for the
@@ -700,7 +752,7 @@ async def run_pool(store: SignalStore, llm, task_prompt: str,
     """
     pool_state = PoolState()
     workers = [
-        Worker(i, llm, task_prompt, user_prompt, rng_seed=i)
+        Worker(i, llm, task_prompt, user_prompt, rng_seed=i, task_type=task_type)
         for i in range(n_workers)
     ]
     tasks = [

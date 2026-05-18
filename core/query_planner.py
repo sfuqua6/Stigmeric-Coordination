@@ -1,37 +1,46 @@
-"""Query planning — emergent refinement, not fixed rotation.
+"""Query planning — natural-language, task-aware, deduplicated.
 
-The original `_compose_scout_query` rotated through 8 fixed phrasings keyed
-on worker_id+iter. With 24 workers across 1500+ iterations that produced
-the "queries are nearly identical across 130+ iterations" pathology from
-the Apollo-run post-mortem: minor rephrasing of the same claim, no
-meaningful coverage of the topic space.
+Post-mortem of "Does free will exist?" produced query examples like:
 
-This module produces queries that *adapt* to what's already in the store:
+  "existence free remains contentious issue supported concepts moral evidence"
+  "counterevidence to existence free remains contentious issue ..."
+  "concept free highly debated Does free will exist?"
 
-  - The user prompt is the base.
-  - Existing high-strength INITIAL signals contribute keyphrases that
-    steer subsequent scouts toward unexplored angles raised by their
-    predecessors (no-leak: we only read Signal.content, never reasoning).
-  - Stance modifiers ("evidence for", "limitations of", ...) widen the
-    framing space.
-  - Queries that have already returned >= MIN_GOOD_RESULTS for an exact
-    or near-exact match are dropped — we already have those chunks
-    cached and re-querying spends rate-limit budget on duplicates.
+These all stem from the same root mistake: stripping stop-words to produce
+"keyphrases", then concatenating them with the base prompt in both orderings,
+then layering stance modifiers ("counterevidence to ...") on top of an already-
+stripped fragment. The result is ungrammatical keyword soup that performs poorly
+on DuckDuckGo and burns search budget on near-duplicates.
 
-The planner is pure (no I/O) and deterministic given the same inputs;
-workers feed it (store, pool_state, worker_id, iter, history) and it
-returns the next query string.
+This rewrite enforces four rules:
+
+  1. Queries are natural English. We do not strip stop-words from query
+     strings. Keyphrase extraction is preserved only for *INTERNAL* matching
+     against served-queries history; query strings themselves stay sentence-y.
+
+  2. Topic anchors are pulled as short *sentence fragments* from existing
+     INITIAL content (no stop-word stripping). These are used as standalone
+     candidates, never blended with the base in both orderings.
+
+  3. Stance modifiers are task-aware. Debate tasks see "arguments for/against",
+     "philosophical positions on ..."; analysis tasks see "X explained",
+     "X causes"; coding tasks see "X implementation". The old generic list
+     ("economic analysis", "successes and failures") only fits some tasks.
+
+  4. Deduplication is cross-worker. PoolState.served_queries tracks
+     query -> n_results across the whole pool; find_cached_query() returns
+     the served query a new candidate should reuse instead of refetching.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
-from collections import Counter
 from difflib import SequenceMatcher
 from typing import Optional
 
 from .signal_store import SignalStore
-from .signal_types import INITIAL, SUPPORT
+from .signal_types import INITIAL
 from .filters import strip_non_latin
 
 
@@ -40,106 +49,206 @@ from .filters import strip_non_latin
 MIN_GOOD_RESULTS = 3
 # Two queries with SequenceMatcher ratio >= this are duplicates for dedup.
 DUP_RATIO = 0.85
-# Top-k highest-strength INITIALs from which keyphrases are extracted.
-KEYPHRASE_INITIAL_TOP_K = 5
+# Top-k highest-strength INITIALs from which sentence fragments are extracted.
+TOP_K_FOR_FRAGMENTS = 5
+# Maximum words to keep when extracting a natural-language fragment.
+FRAGMENT_MAX_WORDS = 10
+
+# Per-iteration cap on search budget. The pool gates SCOUT/DEVELOP via this
+# (see Worker._gather_target) so DDG rate-limits don't push response times
+# past 4-5 s.
+DEFAULT_SEARCH_BUDGET_PER_TICK = 4
 
 
+# Topic-aware stance modifiers. Keys match TASK_PROMPTS in run_swarm.py.
+_STANCE_BY_TASK: dict[str, list[str]] = {
+    "debate": [
+        "{q}",
+        "arguments for {q}",
+        "arguments against {q}",
+        "philosophical positions on {q}",
+        "common objections to {q}",
+        "scholarly debate on {q}",
+        "competing theories on {q}",
+        "what experts say about {q}",
+    ],
+    "analysis": [
+        "{q}",
+        "{q} explained",
+        "{q} causes",
+        "{q} effects",
+        "{q} mechanisms",
+        "research on {q}",
+        "case studies of {q}",
+        "{q} history",
+    ],
+    "problem_solving": [
+        "{q}",
+        "solutions to {q}",
+        "case studies of {q}",
+        "{q} best practices",
+        "{q} pilot programs",
+        "policy options for {q}",
+        "comparative approaches to {q}",
+        "expert recommendations for {q}",
+    ],
+    "creative": [
+        "{q}",
+        "{q} themes",
+        "{q} symbolism",
+        "{q} in literature",
+        "examples of {q}",
+        "famous works about {q}",
+    ],
+    "coding": [
+        "{q}",
+        "{q} implementation",
+        "{q} algorithm",
+        "{q} edge cases",
+        "{q} python example",
+        "{q} best practices",
+    ],
+}
+_STANCE_DEFAULT = _STANCE_BY_TASK["analysis"]
+
+
+# Stop-words used ONLY for the internal dup-check fingerprint, NEVER for
+# building query strings. Compare-only — never returned to the caller.
 _STOP = frozenset({
     "the", "a", "an", "is", "are", "was", "were", "to", "of", "in",
-    "and", "or", "but", "for", "on", "at", "by", "with", "as",
-    "that", "this", "these", "those", "it", "its", "be", "been",
-    "not", "no", "can", "will", "would", "should", "may", "might",
-    "have", "has", "had", "do", "does", "did", "if", "then", "than",
-    "we", "i", "you", "he", "she", "they", "our", "my", "your",
-    "very", "more", "most", "also", "how", "what", "when", "why",
-    "which", "who", "all", "any", "each", "from", "some", "many",
-    "such", "while", "because", "however", "though",
+    "and", "or", "but", "for", "on", "at", "by", "with", "as", "that",
+    "this", "these", "those", "it", "its", "be", "been", "not", "no",
+    "can", "will", "would", "should", "may", "might", "have", "has",
+    "had", "do", "does", "did", "if", "then", "than", "we", "i", "you",
+    "he", "she", "they", "our", "my", "your", "very", "more", "most",
+    "also", "how", "what", "when", "why", "which", "who", "all", "any",
+    "each", "from", "some", "many", "such", "while", "because",
+    "however", "though", "about", "into", "over",
 })
 
 
-# Stance modifiers — produce framing variation around any base query.
-# Half are neutral, half adversarial — gives haters / critics something
-# to chew on later in the lineage.
-_STANCE_MODIFIERS = [
-    "{q}",
-    "{q} evidence",
-    "{q} history",
-    "{q} consequences",
-    "{q} examples",
-    "{q} case studies",
-    "{q} criticism",
-    "{q} limitations",
-    "{q} alternatives",
-    "counterarguments to {q}",
-    "evidence against {q}",
-    "recent research on {q}",
-    "expert disagreement on {q}",
-    "{q} successes and failures",
-    "{q} unintended consequences",
-    "{q} economic analysis",
-    "{q} ethical analysis",
-    "{q} comparative cases",
-]
+def _fingerprint(text: str) -> str:
+    """Stop-word-stripped, lowercased token fingerprint for dup-detection only.
 
-
-def _extract_keyphrases(text: str, max_phrases: int = 3,
-                         max_words: int = 4) -> list[str]:
-    """Pull short content keyphrases from a string.
-
-    Returns up to `max_phrases` phrases of `max_words` non-stop words each.
-    Deterministic, cheap, no NLP deps.
+    Two queries with the same fingerprint are duplicates regardless of
+    word order or punctuation. This is what we compare against
+    served_queries; it is NEVER the query string we emit.
     """
     if not text:
-        return []
-    # Strip CJK so a contaminated INITIAL doesn't pollute future queries.
-    text = strip_non_latin(text)
+        return ""
     words = [w.strip(".,;:?!\"'()[]{}").lower() for w in text.split()]
     keep = [w for w in words if w and w not in _STOP and len(w) > 2]
-    if not keep:
-        return []
-    phrases: list[str] = []
-    for i in range(0, len(keep), max_words):
-        phrase = " ".join(keep[i:i + max_words])
-        if phrase:
-            phrases.append(phrase)
-        if len(phrases) >= max_phrases:
-            break
-    return phrases
+    return " ".join(sorted(keep))
+
+
+def _extract_sentence_fragment(text: str, max_words: int = FRAGMENT_MAX_WORDS) -> str:
+    """Pull a natural-language fragment from text, preserving stop-words.
+
+    Takes the first clause up to `max_words` long. Strips CJK so a
+    contaminated INITIAL can't poison future queries.
+    """
+    if not text:
+        return ""
+    text = strip_non_latin(text).strip()
+    if not text:
+        return ""
+    # Split on sentence-final punctuation and clause boundaries.
+    pieces = re.split(r"[.!?;:]\s+|,\s+(?=which|that|because|so|but|and\s+)", text)
+    first = pieces[0].strip()
+    words = first.split()
+    if len(words) <= max_words:
+        fragment = first
+    else:
+        fragment = " ".join(words[:max_words])
+    # Lowercase the first character so it reads as a search query, not a sentence.
+    # Preserve proper-noun-looking words (capitalised mid-fragment) untouched.
+    if fragment and fragment[0].isupper():
+        fragment = fragment[0].lower() + fragment[1:]
+    return fragment.strip()
 
 
 def _is_dup_of_existing(candidate: str, served: dict[str, int]) -> bool:
-    """True if `candidate` is similar to a query that's already well-served."""
+    """True if `candidate` overlaps a well-served prior query."""
+    if not candidate:
+        return True
+    cand_fp = _fingerprint(candidate)
     cand_lower = candidate.lower()
     for served_q, n_results in served.items():
         if n_results < MIN_GOOD_RESULTS:
             continue
         if cand_lower == served_q.lower():
             return True
-        ratio = SequenceMatcher(None, cand_lower, served_q.lower()).ratio()
-        if ratio >= DUP_RATIO:
+        if cand_fp and cand_fp == _fingerprint(served_q):
+            return True
+        if SequenceMatcher(None, cand_lower, served_q.lower()).ratio() >= DUP_RATIO:
             return True
     return False
 
 
 def find_cached_query(candidate: str, served: dict[str, int]) -> Optional[str]:
-    """Return the served query whose result we should reuse, or None.
+    """Return the served query the caller should reuse instead of refetching.
 
-    Worker callers use this BEFORE search() to skip a network round-trip
-    when another worker has already fetched substantially the same thing.
+    Used by Worker._gather_target BEFORE search() to skip the network call
+    when another worker already fetched substantially the same thing.
     """
+    if not candidate:
+        return None
+    cand_fp = _fingerprint(candidate)
     cand_lower = candidate.lower()
     best_ratio = 0.0
-    best_q = None
+    best_q: Optional[str] = None
     for served_q, n_results in served.items():
         if n_results < MIN_GOOD_RESULTS:
             continue
+        # Exact / fingerprint match is automatic.
+        if cand_lower == served_q.lower():
+            return served_q
+        if cand_fp and cand_fp == _fingerprint(served_q):
+            return served_q
         r = SequenceMatcher(None, cand_lower, served_q.lower()).ratio()
         if r > best_ratio:
             best_ratio = r
             best_q = served_q
-    if best_q is not None and best_ratio >= DUP_RATIO:
-        return best_q
-    return None
+    return best_q if best_q is not None and best_ratio >= DUP_RATIO else None
+
+
+def _seed(*parts) -> int:
+    """SHA1-derived integer seed; avoids modulo collapse across small periods."""
+    raw = "|".join(str(p) for p in parts).encode("utf-8")
+    return int.from_bytes(hashlib.sha1(raw).digest()[:4], "big")
+
+
+def _build_candidates(base: str, task_type: Optional[str],
+                       fragments: list[str]) -> list[str]:
+    """Compose stance-modified base queries followed by topic-anchor fragments.
+
+    Returns the candidate pool in priority order:
+      1. The base prompt itself.
+      2. Stance-modified variants of the base (task-aware).
+      3. Sentence-fragment topic anchors (each one used as a *standalone*
+         search query — no concatenation with the base, no reverse-order).
+    """
+    modifiers = _STANCE_BY_TASK.get(task_type or "", _STANCE_DEFAULT)
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(q: str) -> None:
+        if not q:
+            return
+        q = re.sub(r"\s+", " ", q).strip()
+        if not q or q in seen:
+            return
+        seen.add(q)
+        candidates.append(q)
+
+    for tmpl in modifiers:
+        _add(tmpl.format(q=base))
+    for frag in fragments:
+        # Fragments only ever appear standalone — never blended with the base.
+        # That was the source of "concept free highly debated Does free will exist?"
+        # in production.
+        _add(frag)
+    return candidates
 
 
 def plan_scout_query(
@@ -149,85 +258,78 @@ def plan_scout_query(
     worker_id: int,
     iter_idx: int,
     own_history: list[str],
+    task_type: Optional[str] = None,
 ) -> str:
-    """Pick the next scout query.
+    """Pick the next scout query — natural English, task-aware, deduplicated.
 
-    Pulls keyphrases from the strongest existing INITIALs (no-leak:
-    content only, never reasoning) and combines them with stance
-    modifiers. Skips queries that overlap with already-well-served ones.
-    Falls through to base phrasings if nothing else fits.
+    The returned query is plain English fit for DuckDuckGo. Internal
+    fingerprint matching catches "X causes Y" vs "what causes Y" duplicates;
+    SequenceMatcher catches surface paraphrases; both are checked against
+    served_queries with >= MIN_GOOD_RESULTS hits.
     """
     base = strip_non_latin(user_prompt or "").strip()
     if not base:
         return ""
 
-    # Gather candidates: stance-modified base, then keyphrase-blended.
+    # Topic anchors from existing high-strength INITIALs (natural language,
+    # no stop-word stripping). Only sampled when the swarm has produced
+    # signals worth exploring — empty store means stance-only.
     initials = sorted(store.by_type(INITIAL), key=lambda s: s.strength,
-                      reverse=True)[:KEYPHRASE_INITIAL_TOP_K]
-    keyphrases = []
+                      reverse=True)[:TOP_K_FOR_FRAGMENTS]
+    fragments: list[str] = []
     for sig in initials:
-        keyphrases.extend(_extract_keyphrases(sig.content, max_phrases=2,
-                                              max_words=4))
-    # Deterministic deduplication preserving order.
-    seen: set[str] = set()
-    keyphrases = [k for k in keyphrases if not (k in seen or seen.add(k))]
+        frag = _extract_sentence_fragment(sig.content)
+        if frag and len(frag.split()) >= 3:
+            fragments.append(frag)
 
-    candidates: list[str] = []
-    # First: stance-modified base.
-    for tmpl in _STANCE_MODIFIERS:
-        candidates.append(tmpl.format(q=base))
-    # Second: keyphrase-blended (one keyphrase per query, paired with base).
-    for kp in keyphrases[:6]:
-        candidates.append(f"{base} {kp}")
-        candidates.append(f"{kp} {base}")
-    # Third: pure keyphrase queries — explore the angle on its own.
-    candidates.extend(keyphrases[:4])
+    candidates = _build_candidates(base, task_type, fragments)
+    if not candidates:
+        return base
 
-    own_set = set(own_history)
-    # Hash the (worker_id, iter_idx) tuple via SHA1 so adjacent workers
-    # don't collapse to the same index mod len(candidates). The previous
-    # linear formula (worker_id*17 + iter_idx) had a periodicity bug:
-    # any pair (w, i) and (w + len/17, i) hashed identically.
-    import hashlib
-    seed_bytes = hashlib.sha1(
-        f"{worker_id}:{iter_idx}:{base}".encode("utf-8")
-    ).digest()
-    seed = int.from_bytes(seed_bytes[:4], "big") % max(1, len(candidates))
+    own_set = {q.lower() for q in own_history}
+    seed = _seed(worker_id, iter_idx, base, task_type or "") % len(candidates)
     for offset in range(len(candidates)):
         q = candidates[(seed + offset) % len(candidates)]
-        if q in own_set:
+        if q.lower() in own_set:
             continue
         if _is_dup_of_existing(q, served_queries):
             continue
         return q
-    # Fall through: cycle through base + stance even when nothing's fresh.
     return candidates[seed]
 
 
-def plan_develop_query(target_content: str, served_queries: dict[str, int]) -> str:
-    """Query for the DEVELOP sparse-cluster search trigger.
+def plan_develop_query(target_content: str, served_queries: dict[str, int],
+                       task_type: Optional[str] = None) -> str:
+    """Build a DEVELOP search query from an INITIAL's content.
 
-    Builds a keyphrase-based query from the target INITIAL's content and
-    rejects if it duplicates a well-served one (caller falls back to no
-    search in that case).
+    Uses a natural-language sentence fragment from the target — never
+    stripped keywords — and applies one neutral stance modifier suited
+    to the task type. Falls back to "" (skip search) when every variant
+    is already served.
     """
-    target_content = strip_non_latin(target_content or "")
-    phrases = _extract_keyphrases(target_content, max_phrases=1, max_words=8)
-    if not phrases:
+    fragment = _extract_sentence_fragment(target_content or "", max_words=12)
+    if not fragment or len(fragment.split()) < 3:
         return ""
-    base_query = f"{phrases[0]} evidence"
-    if _is_dup_of_existing(base_query, served_queries):
-        # Try a stance variant before giving up.
-        for stance in ("limitations of", "counterevidence to", "case studies of"):
-            alt = f"{stance} {phrases[0]}"
-            if not _is_dup_of_existing(alt, served_queries):
-                return alt
-        return ""
-    return base_query
+    # Task-aware extension: factual tasks want corroborating evidence;
+    # debate tasks want supporting arguments. Always one variant only.
+    stance_options = {
+        "debate":          ["arguments supporting", "evidence for", "rationale for"],
+        "analysis":        ["evidence for", "research on", "data on"],
+        "problem_solving": ["case studies of", "examples of", "evidence for"],
+        "creative":        ["examples of", "themes around"],
+        "coding":          ["implementations of", "examples of"],
+    }
+    stances = stance_options.get(task_type or "", ["evidence for", "research on"])
+    base_q = f"{stances[0]} {fragment}"
+    if not _is_dup_of_existing(base_q, served_queries):
+        return base_q
+    for stance in stances[1:]:
+        alt = f"{stance} {fragment}"
+        if not _is_dup_of_existing(alt, served_queries):
+            return alt
+    return ""
 
 
 def plan_validate_query(target_content: str) -> str:
-    """Query for the VALIDATE action — short, factual."""
-    target_content = strip_non_latin(target_content or "")
-    phrases = _extract_keyphrases(target_content, max_phrases=1, max_words=8)
-    return phrases[0] if phrases else ""
+    """Query for the VALIDATE action — short, factual, natural language."""
+    return _extract_sentence_fragment(target_content or "", max_words=10)

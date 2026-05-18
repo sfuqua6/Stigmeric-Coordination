@@ -39,6 +39,7 @@ from .config import (
     SURVIVAL_MIN_SUPPORT_DIVERSITY, SURVIVAL_REJECT_DISSENT_PRESSURE,
     SURVIVAL_CONTEST_MIN, SURVIVAL_CONTEST_MAX,
     SURVIVAL_VERIFY_MIN, SURVIVAL_BROAD_SUPPORT,
+    SURVIVAL_TASK_PROFILES, SURVIVAL_DEFAULT_PROFILE,
 )
 
 # Module-private alias preserved for back-compat with existing code paths
@@ -103,6 +104,7 @@ def build_projection(
     has_validators: bool = True,
     prior_rejections: Optional[list[dict]] = None,
     prior_consensus: Optional[list[dict]] = None,
+    task_type: Optional[str] = None,
 ) -> SynthesisProjection:
     """Build the Layer 1 projection from the live signal store.
 
@@ -133,9 +135,22 @@ def build_projection(
     if prior_rejections or prior_consensus:
         _apply_kb(cluster_projections, store, prior_rejections, prior_consensus)
 
-    # Apply survival filter
+    # Apply survival filter. The task profile decides whether external
+    # verification is required for credibility: factual tasks demand it,
+    # non-factual tasks (debate / analysis / etc.) accept chain depth +
+    # broad support as internal-coherence credibility instead.
+    #
+    # When task_type is None, fall through to the legacy factual gate so
+    # existing callers (tests, KB import paths) don't change behavior.
+    if task_type is None:
+        task_profile = None  # preserves the pre-task-profile gate
+    else:
+        task_profile = SURVIVAL_TASK_PROFILES.get(
+            task_type, SURVIVAL_DEFAULT_PROFILE,
+        )
     for cp in cluster_projections:
-        _apply_survival_filter(cp, has_validators=has_validators)
+        _apply_survival_filter(cp, has_validators=has_validators,
+                                task_profile=task_profile)
 
     proj = SynthesisProjection()
     for cp in cluster_projections:
@@ -425,25 +440,31 @@ def _apply_kb(
 # Survival filter
 # ---------------------------------------------------------------------------
 
-def _apply_survival_filter(cp: ClusterProjection, has_validators: bool) -> None:
+def _apply_survival_filter(cp: ClusterProjection, has_validators: bool,
+                           task_profile: Optional[dict] = None) -> None:
     """Classify a cluster by mutating cp.status (and cp.unverified) in-place.
 
-    Thresholds come from config (SURVIVAL_*); the notebook can override
-    them via SWARM_SURVIVAL_* env vars. Defaults shown in parentheses.
-
-    Evaluated in priority order:
+    Thresholds come from config (SURVIVAL_*); task_profile selects the
+    credibility-gate variant. Evaluated in priority order:
 
     1. rejected_by_field  — dissent_pressure > SURVIVAL_REJECT_DISSENT_PRESSURE (1.5)
     2. weakly_supported   — support_diversity < SURVIVAL_MIN_SUPPORT_DIVERSITY (3)
     3. contested          — SURVIVAL_CONTEST_MIN (0.5) <= dissent_pressure
                             <= SURVIVAL_CONTEST_MAX (1.5)
-    4. credibility gate   — passed (1)-(3) but must additionally satisfy ANY of:
+    4. credibility gate   — passed (1)-(3) but must satisfy ANY of:
+                              FACTUAL profile (requires_verification=True):
                                 verification_score >= SURVIVAL_VERIFY_MIN (0.3)
                                 len(dissent_set)   >= 1
                                 support_diversity  >= SURVIVAL_BROAD_SUPPORT (4)
+                              NON-FACTUAL profile (requires_verification=False):
+                                support_depth     >= credibility_chain_depth (3)
+                                len(dissent_set)  >= 1
+                                support_diversity >= SURVIVAL_BROAD_SUPPORT (4)
+                                verification_score>= SURVIVAL_VERIFY_MIN (still
+                                  honoured if a source happened to corroborate)
                             otherwise tagged `unverified` (fourth bucket).
-    5. surviving          — everything else; cp.unverified=True flag also
-                            set when validators ran but none hit this cluster.
+    5. surviving          — everything else; cp.unverified=True flag set when
+                            factual profile + no verification.
     """
     if cp.dissent_pressure > SURVIVAL_REJECT_DISSENT_PRESSURE:
         cp.status = "rejected_by_field"
@@ -457,14 +478,35 @@ def _apply_survival_filter(cp: ClusterProjection, has_validators: bool) -> None:
         cp.status = "contested"
         return
 
+    # When task_profile is None we replicate the legacy factual gate
+    # (verify OR dissent OR broad-support) and the legacy unverified flag.
+    if task_profile is None:
+        requires_ver = True
+        chain_floor = 999
+    else:
+        requires_ver = task_profile.get("requires_verification", True)
+        chain_floor = int(task_profile.get("credibility_chain_depth", 999))
+
     # Credibility gate
     has_verification = cp.verification_score >= SURVIVAL_VERIFY_MIN
     has_dissent = len(cp.dissent_set) >= 1
     has_broad_support = cp.support_diversity >= SURVIVAL_BROAD_SUPPORT
-    if not (has_verification or has_dissent or has_broad_support):
-        cp.status = "unverified"
-        return
+    has_chain_depth = cp.support_depth >= chain_floor
 
-    # Survives. Legacy unverified flag preserves the Section 1 annotation.
+    if requires_ver:
+        if not (has_verification or has_dissent or has_broad_support):
+            cp.status = "unverified"
+            return
+    else:
+        # Non-factual: chain depth counts as internal-coherence credibility.
+        if not (has_verification or has_dissent or has_broad_support
+                or has_chain_depth):
+            cp.status = "unverified"
+            return
+
+    # Survives. The legacy unverified flag (Section 1 annotation) only fires
+    # for factual tasks where verification was expected but didn't arrive —
+    # for non-factual tasks the absence of validation is the point, not a flaw.
     cp.status = "surviving"
-    cp.unverified = has_validators and not cp.verification_set
+    cp.unverified = (requires_ver and has_validators
+                     and not cp.verification_set)

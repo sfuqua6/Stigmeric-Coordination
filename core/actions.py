@@ -120,7 +120,13 @@ ACTION_PRECONDITIONS: dict[str, Callable[[FieldState], bool]] = {
     CRITIQUE: lambda f: f.n_initials >= 2,
     OBJECT:   lambda f: f.n_initials >= 3,
     VALIDATE: lambda f: f.n_clusters_with_support_div_ge_2 >= 1,
-    REFINE:   lambda f: f.n_surviving_unverified >= 1,
+    # REFINE previously gated on n_surviving_unverified, which FieldState.
+    # from_store never populates — that path was always 0, so REFINE never
+    # fired. Pivot to: there's a cluster worth polishing (i.e., one with
+    # >= 2 SUPPORT children), AND we have at least one INITIAL to refine
+    # on top of. The action's prompt steers the LLM toward sharpening a
+    # specific testable element of the claim.
+    REFINE:   lambda f: f.n_clusters_with_support_div_ge_2 >= 1,
 }
 
 

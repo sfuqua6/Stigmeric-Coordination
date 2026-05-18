@@ -21,13 +21,17 @@ import asyncio
 import os
 from typing import Optional
 
-# Force Triton-based sampler + attention BEFORE vLLM imports so the engine
-# picks them up at init. Blackwell sm_120 needs CUDA 12.9 for FlashInfer;
-# Triton works on any sm75+ and is what Colab actually has at the moment
-# the user sees this code run. Setdefault so an explicit override from the
-# caller still wins.
-os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
-os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
+# Blackwell-only env vars. On Blackwell sm_120 FlashInfer needs CUDA 12.9, so
+# we force the Triton sampler + attention path there. A100 (sm_80) runs the
+# default FlashInfer build cleanly and benefits from it — applying the Triton
+# overrides indiscriminately costs ~15% throughput on Ampere. Gate by tier.
+try:
+    from .config import _TIER as _CONFIG_TIER
+except Exception:
+    _CONFIG_TIER = None
+if _CONFIG_TIER == "blackwell":
+    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
 
 try:
     from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams  # type: ignore
@@ -132,6 +136,10 @@ class VLLMBackend:
         self._max_num_seqs = max_num_seqs
         self._request_counter = 0
         self.name = f"vLLM:{model_name}"
+        # Acceptance-criterion banner: makes the live config trivially greppable
+        # in Colab logs ("did the A100 path really raise max_model_len?").
+        print(f"[llm] backend: vLLM:{model_name} "
+              f"max_model_len={max_model_len} enforce_eager={enforce_eager}")
         print(f"[llm-vllm] loaded ok. internal batching cap: {max_num_seqs}")
 
     def _apply_chat_template(self, prompt: str, role: str) -> str:

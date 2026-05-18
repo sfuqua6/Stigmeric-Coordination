@@ -104,8 +104,11 @@ class TestModelAndDtypeMappings(unittest.TestCase):
         from core.config import _MODEL_BY_TIER
         self.assertEqual(_MODEL_BY_TIER["t4"],      "Qwen/Qwen2.5-7B-Instruct")
         self.assertEqual(_MODEL_BY_TIER["l4"],      "Qwen/Qwen2.5-14B-Instruct")
-        self.assertEqual(_MODEL_BY_TIER["a100_40"], "Qwen/Qwen2.5-32B-Instruct")
-        self.assertEqual(_MODEL_BY_TIER["a100_80"], "Qwen/Qwen2.5-32B-Instruct")
+        # Phase 1A: A100 tiers run 14B fp16. 28 GB weights leaves ~52 GB KV
+        # cache headroom vs. 32B's 11 GB, eliminating the max_model_len=1024
+        # truncation that capacity on 32B was being wasted on.
+        self.assertEqual(_MODEL_BY_TIER["a100_40"], "Qwen/Qwen2.5-14B-Instruct")
+        self.assertEqual(_MODEL_BY_TIER["a100_80"], "Qwen/Qwen2.5-14B-Instruct")
         self.assertEqual(_MODEL_BY_TIER["unknown"], "Qwen/Qwen2.5-7B-Instruct")
 
     def test_dtype_by_tier(self):

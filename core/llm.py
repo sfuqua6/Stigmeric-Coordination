@@ -147,6 +147,24 @@ def _build_cascade(base_model: str, base_dtype: str,
             "kv_cache_dtype": "fp8_e5m2",
             "enable_chunked_prefill": False,
         })
+    elif tier in ("a100_40", "a100_80"):
+        # 14B fp16 (28 GB) leaves ~52 GB KV cache headroom on a100_80.
+        # max_model_len=4096 supports ~13k cached tokens × max_num_seqs=32
+        # and eliminates the per-call truncation that was damaging output.
+        # enforce_eager=False unlocks Inductor compile + CUDA graphs —
+        # ~25-40% throughput gain on Ampere, costs ~30s extra warm-up.
+        primary_kwargs.update({
+            "gpu_memory_utilization": 0.90,
+            "max_num_seqs": 32,
+            "max_model_len": 4096,
+            "enforce_eager": False,
+            "enable_chunked_prefill": True,
+        })
+    elif tier == "l4":
+        primary_kwargs.update({
+            "max_model_len": 4096,
+            "enforce_eager": False,
+        })
     attempts.append(("configured", base_model, primary_kwargs))
 
     # Attempt 2: AWQ 4-bit variant of the configured model. Fits 16 GB T4

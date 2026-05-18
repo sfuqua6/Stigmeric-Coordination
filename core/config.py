@@ -38,8 +38,11 @@ _TIER = _detect_colab_tier()
 _MODEL_BY_TIER = {
     "t4":      "Qwen/Qwen2.5-7B-Instruct",
     "l4":      "Qwen/Qwen2.5-14B-Instruct",
-    "a100_40": "Qwen/Qwen2.5-32B-Instruct",
-    "a100_80": "Qwen/Qwen2.5-32B-Instruct",
+    # A100 uses 14B fp16: 28 GB weights leaves ~52 GB for KV cache vs. 32B's
+    # 11 GB. KV pressure on 32B was forcing max_model_len=1024 and truncating
+    # generations mid-sentence — capacity was being wasted.
+    "a100_40": "Qwen/Qwen2.5-14B-Instruct",
+    "a100_80": "Qwen/Qwen2.5-14B-Instruct",
     "unknown": "Qwen/Qwen2.5-7B-Instruct",
 }
 
@@ -84,19 +87,19 @@ LLM_CONCURRENCY = 1 if _TIER is None else 32
 # Mock mode: set MOCK_LLM=1 to skip model loading entirely (CI / dev).
 USE_MOCK_LLM = os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False")
 
-# Per-agent generation length budget.
-MAX_TOKENS_SCOUT = 100
-MAX_TOKENS_FORAGER = 160
-MAX_TOKENS_CRITIC = 120
-MAX_TOKENS_HATER = 160
-MAX_TOKENS_VALIDATOR = 80
+# Per-agent generation length budget. Raised in Phase 1F (A100 + max_model_len=4096
+# supports these without truncation). Laptop overrides via SWARM_MAX_TOKENS_* env
+# vars if needed; the Colab tier block below tightens these further per tier.
+MAX_TOKENS_SCOUT = 200
+MAX_TOKENS_FORAGER = 300
+MAX_TOKENS_CRITIC = 200
+MAX_TOKENS_HATER = 300
+MAX_TOKENS_VALIDATOR = 150
 # Per-cluster call budget for the synthesizer. Each surviving/contested cluster
 # gets its own LLM call capped at this value; total output scales with cluster
-# count (target 1200-1500 tokens across 2-4 clusters).
-# §6d: Raised from 400 to 600. Truncations in the faithfulness audit were caused
-# by the 400-token cap cutting paragraphs mid-sentence. Legacy value preserved.
+# count.
 MAX_TOKENS_SYNTHESIZER_LEGACY = 400
-MAX_TOKENS_SYNTHESIZER = 600
+MAX_TOKENS_SYNTHESIZER = 1500
 
 # ---------------------------------------------------------------------------
 # Population
@@ -223,15 +226,23 @@ if _TIER is not None:
     # Smaller chunks so the corpus yields enough partitions to feed the
     # larger scout population at the lower per-scout chunk count.
     CHUNK_WORDS = 400
-    # Token budgets: non-quantized Qwen-Instruct produces denser content per
-    # token, so we raise budgets modestly. Don't go higher — at fp16 with a
-    # strong model, longer generations risk drift back into chat-style retry.
-    MAX_TOKENS_SCOUT       = 140
-    MAX_TOKENS_FORAGER     = 200
-    MAX_TOKENS_CRITIC      = 150
-    MAX_TOKENS_HATER       = 200
-    MAX_TOKENS_VALIDATOR   = 100
-    MAX_TOKENS_SYNTHESIZER = 800
+    # Token budgets: Phase 1F raises the budgets on A100 where max_model_len=4096
+    # supports them without truncating context. Smaller tiers (t4/l4) keep the
+    # tighter caps because their KV cache cannot absorb the larger generations.
+    if _TIER in ("a100_40", "a100_80"):
+        MAX_TOKENS_SCOUT       = 200
+        MAX_TOKENS_FORAGER     = 300
+        MAX_TOKENS_CRITIC      = 200
+        MAX_TOKENS_HATER       = 300
+        MAX_TOKENS_VALIDATOR   = 150
+        MAX_TOKENS_SYNTHESIZER = 1500
+    else:
+        MAX_TOKENS_SCOUT       = 140
+        MAX_TOKENS_FORAGER     = 200
+        MAX_TOKENS_CRITIC      = 150
+        MAX_TOKENS_HATER       = 200
+        MAX_TOKENS_VALIDATOR   = 100
+        MAX_TOKENS_SYNTHESIZER = 800
 
     # Phase H: strength dynamics recalibrated for higher deposit volume.
     # Laptop deltas were tuned for ~30 deposits/round; Colab tiers run

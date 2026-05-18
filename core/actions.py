@@ -112,8 +112,13 @@ ACTION_PRECONDITIONS: dict[str, Callable[[FieldState], bool]] = {
     SCOUT:    lambda f: True,
     DEVELOP:  lambda f: f.n_initials >= 1,
     CHAIN:    lambda f: f.n_supports >= 2,
-    CRITIQUE: lambda f: f.n_initials >= 2 and f.max_strength >= 0.5,
-    OBJECT:   lambda f: f.n_initials >= 3 and f.max_strength >= 0.6,
+    # CRITIQUE / OBJECT used to require max_strength >= 0.5 / 0.6. That
+    # gated critics out of exactly the regime where they're most needed:
+    # weak fields with no signal above 0.5 after decay. Removed in favour
+    # of pure structural preconditions — the field-state cluster gate
+    # (signals_with_many_children) keeps OBJECT from firing on lone INITIALs.
+    CRITIQUE: lambda f: f.n_initials >= 2,
+    OBJECT:   lambda f: f.n_initials >= 3,
     VALIDATE: lambda f: f.n_clusters_with_support_div_ge_2 >= 1,
     REFINE:   lambda f: f.n_surviving_unverified >= 1,
 }

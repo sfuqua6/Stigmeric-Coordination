@@ -113,6 +113,43 @@ _PRONOUN_RE = re.compile(r"\b(?:i|me|my|myself|we|our|ours)\b", re.IGNORECASE)
 
 _MIN_CONTENT_WORDS = 6  # was 3; bumped because real claims need substance
 
+# CJK / non-Latin script range. A deposit with > _NON_LATIN_REJECT_RATIO of
+# non-Latin chars is rejected: it's almost always a Qwen multilingual-leak
+# bug where the model dropped into Chinese mid-claim. Pure-English claims
+# that happen to mention "café" or "Schrödinger" stay under the threshold.
+_NON_LATIN_RE = re.compile(
+    r"[　-〿぀-ゟ゠-ヿ㐀-䶿一-鿿가-힯豈-﫿]"
+)
+_NON_LATIN_REJECT_RATIO = 0.10
+
+
+def _has_excess_non_latin(content: str) -> bool:
+    """True if more than _NON_LATIN_REJECT_RATIO of chars are CJK/Hangul.
+
+    Triggers on the "The Apollo program had profound economic impacts,
+    不仅直接促进了航空航天产业..." pathology where Qwen randomly switches
+    mid-deposit. Mixed-language output downstream pollutes search queries.
+    """
+    if not content:
+        return False
+    total = len(content)
+    if total < 20:
+        return False
+    n_non_latin = len(_NON_LATIN_RE.findall(content))
+    return (n_non_latin / total) > _NON_LATIN_REJECT_RATIO
+
+
+def strip_non_latin(text: str) -> str:
+    """Remove CJK / Hangul characters from a string.
+
+    Used for sanitizing search queries before they hit DDG — non-Latin
+    blobs in the query produce zero meaningful results and waste the
+    rate-limit budget.
+    """
+    if not text:
+        return text
+    return _NON_LATIN_RE.sub("", text)
+
 
 def _has_decoder_repetition(content: str) -> bool:
     """Cheap check: 3+ sentences, and 50%+ share the same 80-char prefix.
@@ -173,6 +210,10 @@ def is_junk_output(content: str) -> bool:
 
     # (6) decoder repetition
     if _has_decoder_repetition(stripped):
+        return True
+
+    # (7) Qwen multilingual-leak: > 10% CJK/Hangul chars in a claim
+    if _has_excess_non_latin(stripped):
         return True
 
     return False

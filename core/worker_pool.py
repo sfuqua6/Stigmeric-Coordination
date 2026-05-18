@@ -135,6 +135,11 @@ class PoolState:
     # avoid repeated store.stats() across workers).
     last_snapshot: Optional[FieldState] = None
     last_snapshot_iter: int = -1
+    # Query history (Phase: emergent refinement). Maps the literal query
+    # string -> n_results returned by the backend. Other workers consult
+    # this before issuing a new query so we don't spend rate-limit budget
+    # re-fetching the same thing.
+    served_queries: dict = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def record_action(self, action: str, target_id: Optional[str]) -> int:
@@ -389,7 +394,14 @@ class Worker:
         dyn_type = _parse_type(raw)
         dyn_parent = _parse_parent(raw, store)
         effective_type = dyn_type if dyn_type is not None else parsed.signal_type
-        if dyn_parent == "__NONE__":
+        if action == CHAIN and target is not None:
+            # CHAIN's whole point is depth — force parent to the SUPPORT we
+            # sampled, regardless of what the model emitted. Otherwise the
+            # LLM routinely returns PARENT: <some_initial_id> and the chain
+            # flattens back to depth 2.
+            effective_parent = target.id
+            effective_type = SUPPORT  # also lock the type for safety
+        elif dyn_parent == "__NONE__":
             effective_parent = None
         elif dyn_parent is not None:
             effective_parent = dyn_parent
@@ -445,16 +457,30 @@ class Worker:
         query = ""
         dissent: Optional[Signal] = None
         if action == SCOUT:
-            # Agentic search.
+            # Emergent query refinement: planner consults the live store
+            # for high-strength INITIAL keyphrases and the pool's served-
+            # queries history to avoid loops.
+            from core.query_planner import plan_scout_query, find_cached_query
+            from core.search_tool import search as _search, summarize_for_signal
             try:
-                from core.search_tool import search as _search, summarize_for_signal
-                query = self._compose_scout_query()
+                query = plan_scout_query(
+                    self.user_prompt, store, pool_state.served_queries,
+                    self.worker_id, len(self._query_history),
+                    self._query_history,
+                )
+                cached_q = find_cached_query(query, pool_state.served_queries) if query else None
+                if cached_q is not None and cached_q != query:
+                    # Skip the network round-trip — another worker already
+                    # fetched substantially the same thing. The cached
+                    # result is in the search_tool's on-disk cache; reuse it.
+                    query = cached_q
                 retrieved = _search(query, max_results=5) if query else []
-            except Exception:
+            except Exception as exc:
+                print(f"[scout {self.agent_id}] query plan failed: "
+                      f"{type(exc).__name__}: {exc}")
                 retrieved = []
             if retrieved:
                 try:
-                    from core.search_tool import summarize_for_signal
                     store.deposit(
                         signal_type=SEARCH,
                         content=summarize_for_signal(query, retrieved),
@@ -469,6 +495,10 @@ class Worker:
                         },
                     )
                     self._query_history.append(query)
+                    # Record in shared served-queries (no lock — dict assign
+                    # is atomic in CPython; max() handles racing workers).
+                    prev = pool_state.served_queries.get(query, 0)
+                    pool_state.served_queries[query] = max(prev, len(retrieved))
                 except Exception:
                     pass
             return None, retrieved, query, None
@@ -488,23 +518,29 @@ class Worker:
             if n_support < 2:
                 try:
                     from core.search_tool import search as _search, summarize_for_signal
-                    snippet = " ".join(target.content.split()[:8])
-                    query = f"{snippet} evidence"
-                    retrieved = _search(query, max_results=3)
-                    if retrieved:
-                        store.deposit(
-                            signal_type=SEARCH,
-                            content=summarize_for_signal(query, retrieved),
-                            strength=0.4,
-                            depositor="develop",
-                            parent_id=target.id,
-                            metadata={
-                                "depositor_agent_id": self.agent_id,
-                                "query": query,
-                                "n_results": len(retrieved),
-                                "trigger": "sparse_support",
-                            },
-                        )
+                    from core.query_planner import plan_develop_query, find_cached_query
+                    query = plan_develop_query(target.content, pool_state.served_queries)
+                    if query:
+                        cached_q = find_cached_query(query, pool_state.served_queries)
+                        if cached_q is not None and cached_q != query:
+                            query = cached_q
+                        retrieved = _search(query, max_results=3)
+                        if retrieved:
+                            store.deposit(
+                                signal_type=SEARCH,
+                                content=summarize_for_signal(query, retrieved),
+                                strength=0.4,
+                                depositor="develop",
+                                parent_id=target.id,
+                                metadata={
+                                    "depositor_agent_id": self.agent_id,
+                                    "query": query,
+                                    "n_results": len(retrieved),
+                                    "trigger": "sparse_support",
+                                },
+                            )
+                            prev = pool_state.served_queries.get(query, 0)
+                            pool_state.served_queries[query] = max(prev, len(retrieved))
                 except Exception:
                     retrieved = []
             return target, retrieved, query, dissent
@@ -541,9 +577,16 @@ class Worker:
                 return None, [], "", None
             try:
                 from core.search_tool import search as _search
-                snippet = " ".join(target.content.split()[:8])
-                query = snippet
-                hits = _search(query, max_results=2)
+                from core.query_planner import plan_validate_query, find_cached_query
+                query = plan_validate_query(target.content)
+                if query:
+                    cached_q = find_cached_query(query, pool_state.served_queries)
+                    if cached_q is not None and cached_q != query:
+                        query = cached_q
+                hits = _search(query, max_results=2) if query else []
+                if hits:
+                    prev = pool_state.served_queries.get(query, 0)
+                    pool_state.served_queries[query] = max(prev, len(hits))
                 blocks = []
                 for c in hits[:2]:
                     tag = (getattr(c, "source_tag", "") or "")[:120]
@@ -598,28 +641,6 @@ class Worker:
         if action == REFINE:
             return A.refine_prompt(self.task_prompt, target)
         return None
-
-    def _compose_scout_query(self) -> str:
-        base = (self.user_prompt or self.task_prompt or "").strip()
-        if not base:
-            return ""
-        phrasings = [
-            base,
-            f"{base} evidence",
-            f"{base} arguments",
-            f"{base} criticism",
-            f"{base} consequences",
-            f"counterarguments to {base}",
-            f"recent research on {base}",
-            f"case studies of {base}",
-        ]
-        already = set(self._query_history)
-        seed = (self.worker_id * 17 + len(self._query_history)) % len(phrasings)
-        for offset in range(len(phrasings)):
-            q = phrasings[(seed + offset) % len(phrasings)]
-            if q not in already:
-                return q
-        return phrasings[seed]
 
     def _assert_no_leak(self, prompt: str) -> None:
         forbidden = (

@@ -1711,23 +1711,39 @@ def main():
     user_prompt = " ".join(args[1:])
 
     if small:
-        if heterogeneous:
-            # GGUF per-role path (used with --legacy-rounds or --isolated):
-            # point the router at the small assignment file.
-            config.HETEROGENEOUS_CONFIG_FILE = "heterogeneous_small.json"
-            print("[pipeline] --small --heterogeneous: "
-                  "using configs/heterogeneous_small.json "
-                  "(Qwen2.5-3B + Phi-3.5-mini)")
-        elif not legacy_rounds and run_mode != "baseline":
-            # Default continuous-pool path: select the task-matched small bundle.
+        # Dispatch on the EXECUTION PATH, not on --heterogeneous.
+        # --heterogeneous is only meaningful on the legacy-rounds + isolated
+        # path (GGUF sequential per-phase loading). The continuous pool uses
+        # the bundle system and --heterogeneous has no effect there.
+        _in_continuous_pool = (
+            not legacy_rounds
+            and run_mode != "baseline"
+            and not (isolated and phase != "all")
+        )
+        if _in_continuous_pool:
+            # Continuous pool (default): select the task-matched small vLLM
+            # bundle. --heterogeneous is silently ignored here — it only
+            # applies to the GGUF sequential path.
             _small_bundle = config.TASK_TO_BUNDLE_SMALL.get(task_type, "small")
             if bundle is None:
                 bundle = _small_bundle
             config.USE_MODEL_BUNDLES = True
+            config.HETEROGENEOUS_CONFIG_FILE = "heterogeneous_small.json"
             print(f"[pipeline] --small: continuous pool using bundle {bundle!r} "
                   f"(Qwen2.5-3B-Instruct + Phi-3.5-mini)")
+            if heterogeneous:
+                print("[pipeline] --small: note — --heterogeneous ignored in "
+                      "continuous-pool mode (use --legacy-rounds for GGUF "
+                      "per-role routing)")
+        elif heterogeneous:
+            # Legacy-rounds / isolated + --heterogeneous: GGUF sequential
+            # per-phase loading with the small model assignment.
+            config.HETEROGENEOUS_CONFIG_FILE = "heterogeneous_small.json"
+            print("[pipeline] --small --heterogeneous: "
+                  "using configs/heterogeneous_small.json "
+                  "(Qwen2.5-3B + Phi-3.5-mini)")
         else:
-            # Legacy-rounds single-model path or baseline.
+            # Legacy-rounds single-model or baseline.
             config.MODEL_NAME = config.SMALL_MODEL
             print(f"[pipeline] --small: model overridden to {config.MODEL_NAME!r}")
 

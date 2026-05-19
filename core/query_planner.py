@@ -302,28 +302,29 @@ def plan_develop_query(target_content: str, served_queries: dict[str, int],
                        task_type: Optional[str] = None) -> str:
     """Build a DEVELOP search query from an INITIAL's content.
 
-    Uses a natural-language sentence fragment from the target — never
-    stripped keywords — and applies one neutral stance modifier suited
-    to the task type. Falls back to "" (skip search) when every variant
-    is already served.
+    Prefers the natural-language sentence fragment ALONE — the prior
+    "arguments supporting X" prefix produced ungrammatical pairings when
+    X already contained "supported" or similar. Stance prefixes are
+    fall-backs used only after the bare fragment is duplicate-served.
     """
     fragment = _extract_sentence_fragment(target_content or "", max_words=12)
     if not fragment or len(fragment.split()) < 3:
         return ""
-    # Task-aware extension: factual tasks want corroborating evidence;
-    # debate tasks want supporting arguments. Always one variant only.
+    # First try the bare fragment — cleanest signal to DDG.
+    if not _is_dup_of_existing(fragment, served_queries):
+        return fragment
+    # Fall-back stances: neutral framings that don't structurally clash
+    # with content already inside the fragment.
     stance_options = {
-        "debate":          ["arguments supporting", "evidence for", "rationale for"],
-        "analysis":        ["evidence for", "research on", "data on"],
-        "problem_solving": ["case studies of", "examples of", "evidence for"],
-        "creative":        ["examples of", "themes around"],
+        "debate":          ["perspectives on", "scholarly debate about", "philosophy of"],
+        "analysis":        ["research on", "studies on", "data about"],
+        "problem_solving": ["case studies of", "examples of", "approaches to"],
+        "creative":        ["themes of", "examples of"],
         "coding":          ["implementations of", "examples of"],
     }
-    stances = stance_options.get(task_type or "", ["evidence for", "research on"])
-    base_q = f"{stances[0]} {fragment}"
-    if not _is_dup_of_existing(base_q, served_queries):
-        return base_q
-    for stance in stances[1:]:
+    stances = stance_options.get(task_type or "",
+                                  ["research on", "perspectives on"])
+    for stance in stances:
         alt = f"{stance} {fragment}"
         if not _is_dup_of_existing(alt, served_queries):
             return alt

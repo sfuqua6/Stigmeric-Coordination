@@ -223,14 +223,26 @@ def _compute_initial_metrics(sig, store: SignalStore) -> dict:
         for grandchild in store.by_parent(child_id):
             queue.append((grandchild, new_depth))
 
-    # support_diversity: distinct strategy names parsed from depositor_agent_ids
+    # support_diversity: count distinct "perspectives" contributing support.
+    # Legacy pipeline used strategy_name parsed from agent_id like
+    # `forager_R1_2_under_supported_clusters`. Worker pool agent_ids are
+    # `worker_001` (no strategy suffix), so the legacy parse returns "" for
+    # every worker deposit and support_diversity is permanently 0 —
+    # which traps every cluster at the weakly_supported gate. The new
+    # diversity dimension reads metadata["action"] (SUPPORT can come from
+    # DEVELOP / CHAIN / REFINE / CRITIQUE_POSITIVE), falling back to the
+    # legacy strategy parse so legacy runs and the round/phase scheduler
+    # still work unchanged.
     strategy_names: set[str] = set()
     for sid in support_ids:
         s = store.get(sid)
         if s is None:
             continue
-        agent_id = s.metadata.get("depositor_agent_id", "")
-        strategy = _parse_strategy_name(agent_id)
+        action = s.metadata.get("action", "")
+        if action:
+            strategy_names.add(action)
+            continue
+        strategy = _parse_strategy_name(s.metadata.get("depositor_agent_id", ""))
         if strategy:
             strategy_names.add(strategy)
     support_diversity = len(strategy_names)
@@ -365,10 +377,15 @@ def _aggregate_cluster(
     strategy_names: set[str] = set()
     for sid in all_support:
         s = store.get(sid)
-        if s:
-            strategy = _parse_strategy_name(s.metadata.get("depositor_agent_id", ""))
-            if strategy:
-                strategy_names.add(strategy)
+        if not s:
+            continue
+        action = s.metadata.get("action", "")
+        if action:
+            strategy_names.add(action)
+            continue
+        strategy = _parse_strategy_name(s.metadata.get("depositor_agent_id", ""))
+        if strategy:
+            strategy_names.add(strategy)
 
     ver_scores = []
     for mid in member_ids:

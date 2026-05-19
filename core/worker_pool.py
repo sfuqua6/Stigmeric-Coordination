@@ -780,20 +780,31 @@ async def run_pool(store: SignalStore, llm, task_prompt: str,
 # Time-based decay/prune background task (Phase 3)
 # ---------------------------------------------------------------------------
 
+# Wall-clock baseline for a single "round" of decay. DELTA_DECAY in
+# core/config.py is calibrated for one round, so a continuous-pool tick
+# should apply (interval_s / DECAY_ROUND_BASELINE_S) of that magnitude.
+# 300 s = 5 minutes — the rough wall-clock cost of one round in the
+# legacy scheduler.
+DECAY_ROUND_BASELINE_S = 300.0
+
+
 async def decay_loop(store: SignalStore, stop_event: asyncio.Event,
                      interval_s: float = 60.0) -> int:
     """Periodically decay + prune until stop_event fires. Returns prune count.
 
-    Interval raised 30 s -> 60 s after the depth-regression diagnosis: at 30 s
-    cadence with DELTA_DECAY=-0.10 (-0.12 on Colab), an unrefreshed SUPPORT
-    signal at strength 0.6 drops below PRUNE_THRESHOLD=0.30 within ~5 minutes
-    and is removed. That cut chain bases out from under CHAIN faster than
-    CHAIN could rebuild them, capping support_depth_max in the 3-4 range.
+    Wall-clock-scaled decay: each tick applies (interval_s / DECAY_ROUND_BASELINE_S)
+    of one legacy round's decay. At 60 s interval with 300 s baseline that's
+    0.2× per tick, so a signal at strength 0.6 takes ~50 ticks (~50 minutes)
+    to reach PRUNE_THRESHOLD=0.30 — long enough for CHAIN and DEVELOP to keep
+    the field consolidating without prune storms.
 
-    At 60 s the same signal survives ~10 minutes — long enough for a chain
-    to deepen before the base is pruned.
+    Without scaling, prior runs saw 60-80 clusters pruned per cycle (the
+    "Pool oscillates between ~65-100 weakly supported and never consolidates
+    upward" pathology) because DELTA_DECAY was calibrated for 1 round but
+    fired every 30-60 s.
     """
     total_pruned = 0
+    factor = max(0.0, interval_s / DECAY_ROUND_BASELINE_S)
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
@@ -802,10 +813,10 @@ async def decay_loop(store: SignalStore, stop_event: asyncio.Event,
         if stop_event.is_set():
             break
         try:
-            store.decay_all()
+            store.decay_all(factor=factor)
             pruned = store.prune_weak()
             total_pruned += pruned
-            print(f"[decay] applied 1 round of decay; pruned {pruned}")
+            print(f"[decay] applied 1 tick (factor={factor:.2f}); pruned {pruned}")
         except Exception as exc:
             print(f"[decay] error: {type(exc).__name__}: {exc}")
     return total_pruned

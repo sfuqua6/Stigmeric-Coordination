@@ -607,33 +607,41 @@ class SignalStore:
             s.visits += 1
             return True
 
-    def decay_all(self) -> None:
-        """Apply one round of decay.
+    def decay_all(self, factor: float = 1.0) -> None:
+        """Apply decay scaled by `factor`.
 
         Logit mode (default, USE_LOGIT_DYNAMICS=True):
-            non-contrarian:  logit += DELTA_DECAY              (e.g. -0.10)
-            contrarian:      logit += DELTA_DECAY_CONTRARIAN   (e.g. -0.04)
+            non-contrarian:  logit += DELTA_DECAY              × factor
+            contrarian:      logit += DELTA_DECAY_CONTRARIAN   × factor
 
-        This is the fix for the contrarian-drift bug: contrarians now decay
-        (slowly), so dissent_pressure cannot accumulate indefinitely without
-        renewed support.
+        `factor=1.0` is the legacy "one round" decay magnitude. Callers in
+        the continuous worker pool pass a smaller factor (e.g. 0.2) so a
+        60 s decay tick applies 1/5 of a legacy-round's decay rather than a
+        full round's worth — without this scaling, continuous-pool runs
+        apply decay 5–25× more often than the dynamics were calibrated for
+        and prune SUPPORT bases out from under CHAIN before depth can
+        accumulate.
 
         Legacy mode (USE_LOGIT_DYNAMICS=False) preserves the old
-        multiplicative path with exact anti-decay for contrarians; kept as an
-        escape hatch for one release.
+        multiplicative path with exact anti-decay for contrarians; kept as
+        an escape hatch for one release. factor scales the (1 - DECAY_RATE)
+        step toward 1.0 — factor=0.0 means no decay; factor=1.0 means full.
         """
         with self._lock:
             if USE_LOGIT_DYNAMICS:
+                d_main = DELTA_DECAY * factor
+                d_contra = DELTA_DECAY_CONTRARIAN * factor
                 for s in self._signals.values():
                     if s.type in CONTRARIAN_TYPES:
-                        s._logit += DELTA_DECAY_CONTRARIAN
+                        s._logit += d_contra
                     else:
-                        s._logit += DELTA_DECAY
+                        s._logit += d_main
                     s.strength = _from_logit(s._logit)
                 return
-            anti_decay = 1.0 / (1.0 - DECAY_RATE)  # exact cancellation (legacy)
+            decay = DECAY_RATE * factor
+            anti_decay = 1.0 / (1.0 - decay) if decay < 1.0 else 1.0
             for s in self._signals.values():
-                s.strength *= (1.0 - DECAY_RATE)
+                s.strength *= (1.0 - decay)
                 if s.type in CONTRARIAN_TYPES:
                     s.strength = min(1.0, s.strength * anti_decay)
                 s._logit = _to_logit(s.strength)

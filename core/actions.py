@@ -527,7 +527,37 @@ def validate_parse(raw: str, task_type: Optional[str] = None) -> ParsedDeposit:
 # REFINE — patch a surviving-but-unverified cluster
 # ---------------------------------------------------------------------------
 
-def refine_prompt(task_prompt: str, target: Signal) -> str:
+def refine_prompt(task_prompt: str, target: Signal,
+                  dissent: Optional[Signal] = None) -> str:
+    """Build a REFINE prompt.
+
+    Two modes:
+      - With dissent: rebuttal mode. The renderer must read the supplied
+        objection and produce a SUPPORT that DIRECTLY addresses the named
+        weakness. Closes the loop that previously made objections cosmetic
+        (visits=0) — REFINE is now the deliberative step that consumes
+        OBJECTION/CRITIQUE_NEGATIVE signals.
+      - Without dissent: legacy polishing mode (sharpen the claim toward
+        verifiability).
+    """
+    if dissent is not None:
+        return (
+            f"TASK: {task_prompt}\n\n"
+            f"This claim has been challenged by another agent. Produce ONE "
+            f"SUPPORT that directly rebuts the named weakness — acknowledging "
+            f"the challenge, then giving evidence, narrowing the scope, or "
+            f"qualifying the original claim so the challenge no longer "
+            f"applies. Do NOT ignore the challenge or restate the original "
+            f"claim verbatim.\n\n"
+            f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
+            f"---CHALLENGE [{dissent.id}] (strength={dissent.strength:.2f})---\n"
+            f"{dissent.content}\n---END CHALLENGE---\n\n"
+            f"One or two sentences. Your SUPPORT should be readable as a "
+            f"reply to the challenge: it must engage what the challenge "
+            f"actually says.\n\n"
+            f"{_type_parent_instruction()}\n"
+            f"REBUTTAL:"
+        )
     return (
         f"TASK: {task_prompt}\n\n"
         f"This claim survived structural filtering but lacks external "

@@ -369,10 +369,47 @@ def _aggregate_cluster(
         if pt and pt not in all_partitions:
             all_partitions.append(pt)
 
-    # Recompute aggregate dissent_pressure and support_diversity over cluster
-    support_strengths = [store.get(i).strength for i in all_support if store.get(i)]
-    dissent_strengths = [store.get(i).strength for i in all_dissent if store.get(i)]
-    dissent_pressure = sum(dissent_strengths) / max(_EPS, sum(support_strengths))
+    # Recompute aggregate dissent_pressure and support_diversity over cluster.
+    # Temporal normalization (post-mortem on m13): raw count produced a
+    # ranking artifact where claims deposited early in the run accumulated
+    # objections purely because they had more wall-clock time to be seen.
+    # We now reference the cluster representative's age as a baseline and
+    # apply an age-equalizing weight to each contrarian: each dissent's
+    # contribution shrinks with its OWN age, normalized to the support
+    # signals' median age. Net effect: a claim that has been in the field
+    # 10× longer than the typical support no longer gets a proportional
+    # dissent stack — it gets a comparable one. Newer dissent dominates.
+    support_sigs = [store.get(i) for i in all_support if store.get(i)]
+    dissent_sigs = [store.get(i) for i in all_dissent if store.get(i)]
+    support_strengths = [s.strength for s in support_sigs]
+    dissent_strengths = [s.strength for s in dissent_sigs]
+
+    # Reference time: median support timestamp if we have supports, else
+    # the median dissent timestamp, else "now". Supports are the natural
+    # baseline because the cluster's existence as a CLUSTER is established
+    # by its support pattern, not its detractors.
+    import time as _time
+    if support_sigs:
+        ref_ts = sorted(s.timestamp for s in support_sigs)[len(support_sigs) // 2]
+    elif dissent_sigs:
+        ref_ts = sorted(s.timestamp for s in dissent_sigs)[len(dissent_sigs) // 2]
+    else:
+        ref_ts = _time.time()
+
+    # Half-life for age-decay weighting. 5 minutes ≈ the wall-clock window
+    # over which a single "round" of activity completes in continuous-pool
+    # mode (see DECAY_ROUND_BASELINE_S in worker_pool). A dissent twice as
+    # old as ref_ts contributes ~71% weight; ten minutes older contributes ~25%.
+    _AGE_HALFLIFE_S = 300.0
+    def _age_weight(sig) -> float:
+        age = max(0.0, ref_ts - sig.timestamp)
+        return 0.5 ** (age / _AGE_HALFLIFE_S)
+
+    weighted_dissent = sum(s.strength * _age_weight(s) for s in dissent_sigs)
+    # Apply the same weighting to supports so the ratio stays dimensionally
+    # honest: both numerator and denominator are now "current-relevance".
+    weighted_support = sum(s.strength * _age_weight(s) for s in support_sigs)
+    dissent_pressure = weighted_dissent / max(_EPS, weighted_support)
 
     strategy_names: set[str] = set()
     for sid in all_support:

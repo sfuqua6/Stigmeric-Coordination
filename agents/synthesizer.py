@@ -73,16 +73,27 @@ _DISSENT_CHARS = 400
 _SUMMARY_CHARS = 150   # for Section 3 "filtered" entries
 _EXTERNAL_CHARS = 400  # Wikipedia snippet injected into Section 1 calls
 
-# Hard cap on Section 1 paragraphs. Surviving clusters past this rank go
-# into Section 3 ("considered and filtered") instead of getting their own
-# LLM-rendered paragraph. Prevents 41-paragraph executive-summary bloat.
-_SECTION_1_RENDER_CAP = 5
+# Fallback cap when the LLM planner returns nothing usable. The planner
+# normally chooses the render set itself based on a structural digest that
+# carries no signal content — see _plan_synthesis below. The cap only fires
+# when the planner call fails or yields zero valid cluster IDs.
+_SECTION_1_FALLBACK_CAP = 5
 # Hard cap on Section 3 entries (after merging tail-of-surviving, unverified,
 # rejected_by_field, and weakly_supported). Was 5; raised because we now
 # route more buckets through this section.
 _SECTION_3_RENDER_CAP = 10
 # Threshold above which the run-end summary prints a faithfulness warning.
 _AUDIT_WARNING_THRESHOLD = 20
+
+# Planner is a single LLM call ahead of per-cluster rendering. Its prompt
+# carries STRUCTURAL metadata only (cluster IDs, support / dissent / ver
+# counts, scores) — never Signal.content — so the synthesizer can decide
+# what to surface without ingesting the full DAG. Per-cluster renderers
+# then read the specific signals the plan selected. This satisfies the
+# no-leak rule: the planner sees structure, the renderer sees content,
+# neither sees other agents' reasoning chains.
+_PLAN_MAX_TOKENS = 1500
+_PLAN_TEMPERATURE = 0.2
 
 # Composite cluster priority score used for rendering order.
 # Higher support_diversity and verification_score = more credible.
@@ -272,26 +283,38 @@ class Synthesizer:
         sections: list[str] = []
 
         # ------------------------------------------------------------------
-        # Executive summary — one LLM call that names top cluster + counts
+        # Synthesis plan FIRST — the executive summary then references it.
         # ------------------------------------------------------------------
-        exec_summary = await self._render_executive_summary(projection, store)
+        plan = await self._plan_synthesis(projection, store)
+        plan_render_ids: set = set(plan.get("render_full", []))
+        plan_section3_ids: set = set(plan.get("section3_only", []))
+        merge_groups: list = list(plan.get("merge_groups", []))
+        plan_notes: str = plan.get("notes", "")
+
+        # ------------------------------------------------------------------
+        # Executive summary — deterministic counts + planner overview
+        # ------------------------------------------------------------------
+        exec_summary = await self._render_executive_summary(
+            projection, store, plan_notes=plan_notes,
+        )
         if exec_summary:
             sections.append(exec_summary)
 
         # ------------------------------------------------------------------
-        # Section 1: Position synthesis — one LLM call per surviving cluster
-        # Ranked by composite priority score (support_diversity *
-        # verification_score / dissent_pressure), highest first. Capped at
-        # _SECTION_1_RENDER_CAP so the executive summary doesn't bloat when
-        # the projection happens to surface many clusters; the tail falls
-        # through to Section 3.
+        # Section 1: per-cluster rendering, driven by the synthesis plan
+        # already produced above (no hard cap on Section-1 size).
         # ------------------------------------------------------------------
         if projection.surviving:
-            # Diversity-aware selection: don't render 5 paragraphs all
-            # restating the same conceptual cluster.
-            rendered_surviving, section1_tail = _select_diverse_clusters(
-                projection.surviving, store, _SECTION_1_RENDER_CAP,
-            )
+            rendered_surviving = [
+                cp for cp in projection.surviving
+                if cp.representative_id in plan_render_ids
+            ]
+            section1_tail = [
+                cp for cp in projection.surviving
+                if cp.representative_id not in plan_render_ids
+            ]
+            # Preserve priority order within the planned set.
+            rendered_surviving = _rank_clusters(rendered_surviving)
         else:
             rendered_surviving = []
             section1_tail = []
@@ -394,8 +417,11 @@ class Synthesizer:
         # ------------------------------------------------------------------
         answer = "\n\n".join(sections)
 
-        # Section 4 — Citations: deterministic stamp appended to the answer
-        answer = _stamp_citations(answer, projection, store)
+        # Section 4 — Citations: deterministic stamp appended to the answer.
+        # Pass merge_groups so the reader can see when the planner treated
+        # two clusters as a single position.
+        answer = _stamp_citations(answer, projection, store,
+                                   merge_groups=merge_groups)
 
         # ------------------------------------------------------------------
         # Post-hoc faithfulness audit
@@ -439,11 +465,168 @@ class Synthesizer:
         return answer
 
     # -----------------------------------------------------------------------
+    # Planner: structural digest -> render plan (no content ingestion)
+    # -----------------------------------------------------------------------
+
+    async def _plan_synthesis(
+        self, projection: SynthesisProjection, store: SignalStore,
+    ) -> dict:
+        """Ask the LLM to plan the synthesis from STRUCTURE alone.
+
+        The planner is shown a digest of the surviving + contested clusters:
+        cluster IDs, type, support / dissent / verification *counts* and
+        *scores*, support_depth, and a short preview (first 80 chars of the
+        representative claim — just enough to let the planner topic-cluster
+        without consuming the full DAG). It is NOT shown the support /
+        dissent / verification signal contents.
+
+        It returns JSON:
+            {"render_full":   [<cluster_id>, ...],
+             "section3_only": [<cluster_id>, ...],
+             "merge_groups":  [[<cluster_id>, <cluster_id>], ...],
+             "notes":         "<one-sentence overview>"}
+
+        `render_full` clusters get a full Section-1 paragraph via the
+        per-cluster renderer. `section3_only` clusters are demoted. Merge
+        groups are recorded in the citation block so the reader can see
+        the planner identified them as one position. Falls back to the
+        legacy diversity-aware top-N selection if the call or parse fails.
+
+        No leak rule: the digest carries only IDs and aggregate counts,
+        not other agents' reasoning. The per-cluster renderer is the only
+        layer that reads Signal.content.
+        """
+        candidates = list(projection.surviving) + list(projection.contested)
+        if not candidates:
+            return {"render_full": [], "section3_only": [], "merge_groups": [], "notes": ""}
+
+        # Build the digest. ID + short preview + structural metrics.
+        lines: list[str] = []
+        for cp in candidates:
+            rep = store.get(cp.representative_id)
+            preview = _truncate(rep.content, 80) if rep else "(no rep)"
+            lines.append(
+                f"- {cp.representative_id}  status={cp.status}  "
+                f"n_supports={len(cp.support_set)}  "
+                f"n_dissent={len(cp.dissent_set)}  "
+                f"n_verifications={len(cp.verification_set)}  "
+                f"support_diversity={cp.support_diversity}  "
+                f"support_depth={cp.support_depth}  "
+                f"verification_score={cp.verification_score:.2f}  "
+                f"dissent_pressure={cp.dissent_pressure:.2f}  "
+                f"preview=\"{preview}\""
+            )
+        digest = "\n".join(lines)
+
+        prompt = (
+            f"TASK: {self.task_prompt}\n\n"
+            f"You are planning the structure of a synthesis. You see ONLY a "
+            f"structural digest of claim clusters: their IDs, counts of "
+            f"supporting / dissenting / verifying signals, scores, and an "
+            f"80-character preview. You do NOT see the underlying signals' "
+            f"content — that gets rendered in a separate pass per cluster.\n\n"
+            f"Your job: decide which clusters deserve a full paragraph in "
+            f"Section 1 (POSITION SYNTHESIS) and which can be demoted to "
+            f"Section 3 (CONSIDERED AND FILTERED). Pick clusters that are:\n"
+            f"  1. Topically distinct from each other (avoid 5 paragraphs "
+            f"     restating the same position).\n"
+            f"  2. Well-supported (high support_diversity, support_depth >= 2).\n"
+            f"  3. Verified where possible (verification_score > 0.3).\n"
+            f"  4. Contested clusters are valuable — surface them.\n\n"
+            f"If two clusters look like the same position by their previews, "
+            f"name them in a merge_group rather than rendering both.\n\n"
+            f"You can choose up to {len(candidates)} clusters for "
+            f"render_full — there is NO fixed cap. The downstream renderer "
+            f"will render exactly what you list. Prefer a slightly smaller, "
+            f"sharper set over a larger noisy one.\n\n"
+            f"---DIGEST---\n{digest}\n---END DIGEST---\n\n"
+            f"Reply with EXACTLY this JSON object (no other text):\n"
+            f'{{"render_full":   ["<cluster_id>", ...],\n'
+            f'  "section3_only": ["<cluster_id>", ...],\n'
+            f'  "merge_groups":  [["<cluster_id>", "<cluster_id>"], ...],\n'
+            f'  "notes": "<one sentence overview of the plan>"}}\n\n'
+            f"PLAN:"
+        )
+
+        try:
+            raw = await self.llm.generate(
+                prompt, role=self.ROLE,
+                max_tokens=_PLAN_MAX_TOKENS,
+                temperature=_PLAN_TEMPERATURE,
+            )
+        except Exception as exc:
+            print(f"[synthesizer] plan call failed: {type(exc).__name__}: {exc}")
+            return self._fallback_plan(candidates, store)
+        return self._parse_plan(raw, candidates, store)
+
+    def _parse_plan(
+        self, raw: str, candidates: list, store: SignalStore,
+    ) -> dict:
+        """Parse the planner JSON. Falls back to legacy selection on failure."""
+        match = re.search(r"\{[\s\S]*\}", raw or "")
+        if not match:
+            print(f"[synthesizer] plan parse: no JSON block; using fallback")
+            return self._fallback_plan(candidates, store)
+        try:
+            plan = json.loads(match.group(0))
+        except Exception as exc:
+            print(f"[synthesizer] plan JSON parse error: {exc}; using fallback")
+            return self._fallback_plan(candidates, store)
+
+        valid_ids = {cp.representative_id for cp in candidates}
+        render_full = [cid for cid in plan.get("render_full", []) if cid in valid_ids]
+        section3_only = [cid for cid in plan.get("section3_only", []) if cid in valid_ids]
+        merge_groups = []
+        for grp in plan.get("merge_groups", []):
+            if isinstance(grp, list):
+                cleaned = [cid for cid in grp if cid in valid_ids]
+                if len(cleaned) >= 2:
+                    merge_groups.append(cleaned)
+        notes = str(plan.get("notes", "")).strip()
+
+        # The plan must contain *something* renderable; if not, fall back.
+        if not render_full:
+            print(f"[synthesizer] plan empty after validation; using fallback")
+            return self._fallback_plan(candidates, store)
+
+        # Implicit demotion: any candidate not in render_full and not in a
+        # merge group's secondary slot drops to section3.
+        used = set(render_full)
+        for grp in merge_groups:
+            used.update(grp)
+        section3_set = set(section3_only)
+        for cp in candidates:
+            if cp.representative_id not in used and cp.representative_id not in section3_set:
+                section3_set.add(cp.representative_id)
+
+        return {
+            "render_full": render_full,
+            "section3_only": sorted(section3_set),
+            "merge_groups": merge_groups,
+            "notes": notes,
+        }
+
+    def _fallback_plan(self, candidates: list, store: SignalStore) -> dict:
+        """Legacy diversity-aware top-N selection. Used when the LLM plan fails."""
+        surviving = [c for c in candidates if c.status == "surviving"]
+        picked, tail = _select_diverse_clusters(
+            surviving, store, _SECTION_1_FALLBACK_CAP,
+        )
+        return {
+            "render_full":   [cp.representative_id for cp in picked],
+            "section3_only": [cp.representative_id for cp in tail
+                              + [c for c in candidates if c.status != "surviving"]],
+            "merge_groups":  [],
+            "notes":         "(fallback: diversity-aware top-N — planner unavailable)",
+        }
+
+    # -----------------------------------------------------------------------
     # Executive summary
     # -----------------------------------------------------------------------
 
     async def _render_executive_summary(
-        self, projection: SynthesisProjection, store: SignalStore
+        self, projection: SynthesisProjection, store: SignalStore,
+        plan_notes: str = "",
     ) -> str:
         """Deterministic executive summary built directly from the projection.
 
@@ -504,6 +687,13 @@ class Synthesizer:
                     f"Most contested cluster [{top_cont.representative_id}] "
                     f"(dissent_pressure={top_cont.dissent_pressure:.2f}): {excerpt}"
                 )
+
+        # Planner overview — surface the structural reasoning the planner
+        # used, so the reader can see *why* this many paragraphs (vs. some
+        # other set of clusters). Empty when the planner fell back.
+        if plan_notes:
+            lines.append("")
+            lines.append(f"Synthesis plan: {plan_notes}")
 
         return "\n".join(lines)
 
@@ -672,6 +862,7 @@ def _stamp_citations(
     answer: str,
     projection: SynthesisProjection,
     store: SignalStore,
+    merge_groups: Optional[list] = None,
 ) -> str:
     """Append a deterministic CITATIONS block to the rendered answer.
 
@@ -682,6 +873,9 @@ def _stamp_citations(
           Verifications: VERIFICATION_00062
           Partition:     partition_2
           Coverage:      2 partition(s) contributed to this cluster
+
+    When the planner identified merge groups, those appear as a trailing
+    block so the reader sees which clusters were treated as one position.
     """
     active = projection.surviving + projection.contested
     if not active:
@@ -706,6 +900,13 @@ def _stamp_citations(
             f"dissent_pressure={cp.dissent_pressure:.2f}  "
             f"verification_score={cp.verification_score:.2f}"
         )
+        lines.append("")
+
+    # Merge groups: planner-identified equivalent clusters.
+    if merge_groups:
+        lines.append("MERGED POSITIONS (planner identified as same claim):")
+        for grp in merge_groups:
+            lines.append(f"  - {' <=> '.join(grp)}")
         lines.append("")
 
     return answer.rstrip() + "\n".join(lines)
@@ -753,8 +954,36 @@ def _build_faithfulness_audit(
     flags: list[dict] = []
     paragraphs = [p.strip() for p in answer.split("\n\n") if p.strip()]
 
+    # Track which section each paragraph belongs to so prose-only checks
+    # (truncation, short-paragraph) don't fire on Section 3 list items or
+    # Section 4 citation blocks — both are deterministic structured output
+    # that lacks terminal punctuation by design and produced ~22 false
+    # positives per run before this gate.
+    paragraph_sections: list[str] = []
+    current_section = "preamble"
+    for para in paragraphs:
+        # Detect section headers. Synthesizer emits them as a Markdown H2
+        # with a digit prefix ("## 1. POSITION SYNTHESIS") or the literal
+        # "## EXECUTIVE SUMMARY".
+        stripped = para.lstrip()
+        if stripped.startswith("## EXECUTIVE SUMMARY") or stripped.startswith("# EXECUTIVE SUMMARY"):
+            current_section = "exec_summary"
+        elif stripped.startswith("## 1.") or "POSITION SYNTHESIS" in stripped.split("\n", 1)[0]:
+            current_section = "section_1"
+        elif stripped.startswith("## 2.") or "OPEN QUESTIONS" in stripped.split("\n", 1)[0]:
+            current_section = "section_2"
+        elif stripped.startswith("## 3.") or "CONSIDERED AND FILTERED" in stripped.split("\n", 1)[0]:
+            current_section = "section_3"
+        elif stripped.startswith("## 4.") or "CITATIONS" in stripped.split("\n", 1)[0]:
+            current_section = "section_4"
+        paragraph_sections.append(current_section)
+    # Prose-only sections: truncation + short-paragraph checks run only here.
+    _PROSE_SECTIONS = {"preamble", "exec_summary", "section_1", "section_2"}
+
     for i, para in enumerate(paragraphs):
         cited_ids = _CITATION_RE.findall(para)
+        section_name = paragraph_sections[i]
+        is_prose = section_name in _PROSE_SECTIONS
 
         for cid in cited_ids:
             # Check 1: ID must exist in the signal store (fabrication check).
@@ -803,20 +1032,28 @@ def _build_faithfulness_audit(
             })
 
         # Check 5: truncated mid-sentence (no terminal punctuation before section break).
-        if i < len(paragraphs) - 1:
+        # Prose sections only. Section 3 (list) and Section 4 (citation block)
+        # are deterministic structured output that lacks terminal punctuation
+        # by design — running this check there produced ~22 FPs/run all
+        # pointing at the trailing `support_diversity=...` line of each
+        # citation entry.
+        if is_prose and i < len(paragraphs) - 1:
             last_char = para.rstrip()[-1] if para.rstrip() else ""
             if last_char not in {".", "!", "?", '"', ")", "'"}:
                 flags.append({
                     "issue": "truncated_mid_sentence",
                     "paragraph_excerpt": para[-200:],
+                    "section": section_name,
                 })
 
         # Check 6: suspiciously short paragraph (likely incomplete render).
-        if cited_ids and len(para) < 50:
+        # Prose only — Section 3 list entries are legitimately short.
+        if is_prose and cited_ids and len(para) < 50:
             flags.append({
                 "issue": "suspiciously_short_paragraph",
                 "paragraph_excerpt": para,
                 "length": len(para),
+                "section": section_name,
             })
 
     return flags

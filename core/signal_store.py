@@ -742,6 +742,35 @@ class SignalStore:
         with self._lock:
             return set(self._by_parent.get(parent_id, set()))
 
+    def mark_read(self, signal_id: str, n: int = 1) -> None:
+        """Bump `visits` by n on a signal that was rendered into a prompt.
+
+        `visits` was previously only incremented by the random-sample helpers
+        (sample_strength_biased, sample_recent, sample_under_visited). That
+        missed every signal pulled in as context via the dissent-routing,
+        REFINE-rebuttal, or synthesizer-traverse paths — so OBJECTION /
+        CRITIQUE_NEGATIVE signals showed visits=0 across full runs even when
+        they actually informed downstream generation.
+
+        Callers should invoke this *after* successfully reading the content
+        into the prompt body, so visits reflects only real prompt inclusion,
+        not arbitrary lookups like provenance walks.
+        """
+        if n <= 0:
+            return
+        with self._lock:
+            s = self._signals.get(signal_id)
+            if s is not None:
+                s.visits += int(n)
+
+    def mark_many_read(self, signal_ids) -> None:
+        """Batch helper for callers that consume several signals at once."""
+        with self._lock:
+            for sid in signal_ids:
+                s = self._signals.get(sid)
+                if s is not None:
+                    s.visits += 1
+
     # ---- internals -------------------------------------------------------
 
     def _avg_verification_strength(self, signal_id: str) -> float:

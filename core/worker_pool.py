@@ -90,26 +90,40 @@ COLD_START_ACTIONS = {SCOUT: 0.7, DEVELOP: 0.3}
 # CHAIN bumped 0.8 -> 1.1 because depth regressed (support_depth_max 4 -> 3)
 # when share fell to 16% — CHAIN now competes more strongly with DEVELOP for
 # turns once chains exist (share floor / ceiling still bound the long-term mix).
+#
+# OBJECT raised 0.7 -> 1.0 and REFINE raised 0.7 -> 1.0 after the m13 audit
+# showed pro:contra signals at 5.7:1 in a debate task. REFINE is now the
+# rebuttal path (consumes objections, produces SUPPORTs that engage them),
+# so its base weight is bumped in tandem with OBJECT — otherwise objections
+# generate but never get answered.
 _BASE_WEIGHTS = {
     SCOUT:    1.0,
     DEVELOP:  1.5,
     CHAIN:    1.1,
     CRITIQUE: 1.0,
-    OBJECT:   0.7,
+    OBJECT:   1.0,
     VALIDATE: 1.2,
-    REFINE:   0.7,
+    REFINE:   1.0,
 }
 
 ACTION_SHARE_TARGETS = {
     SCOUT:    {"min": 0.10, "max": 0.40},
-    DEVELOP:  {"min": 0.20, "max": 0.50},
+    DEVELOP:  {"min": 0.20, "max": 0.45},   # ceiling 0.50 -> 0.45 to free up
+                                             # iterations for OBJECT + REFINE
     CRITIQUE: {"min": 0.10, "max": 0.30},
-    OBJECT:   {"min": 0.05, "max": 0.20},
+    # OBJECT floor 0.05 -> 0.12: in m13 audit OBJECT *actions* fired ~18%
+    # of iterations but produced only 7% of signals (44 vs 304 supports).
+    # Raising the floor compensates for higher rejection rate on objection
+    # outputs, and the ceiling rises with it so OBJECT can dominate when
+    # the field is heavily skewed.
+    OBJECT:   {"min": 0.12, "max": 0.30},
     VALIDATE: {"min": 0.10, "max": 0.25},
     # CHAIN ceiling raised 0.20 -> 0.30 so it can deepen lineage without
     # bumping into the soft ceiling at 20% share.
     CHAIN:    {"min": 0.05, "max": 0.30},
-    REFINE:   {"min": 0.05, "max": 0.20},
+    # REFINE floor 0.05 -> 0.10 and ceiling 0.20 -> 0.25 — needed for the
+    # rebuttal-mode REFINE to consume the new OBJECT volume.
+    REFINE:   {"min": 0.10, "max": 0.25},
 }
 
 # Look-back window for share enforcement.
@@ -309,6 +323,31 @@ def _sample_support(store: SignalStore, recent: Counter,
     return rng.choices(supports, weights=weights, k=1)[0]
 
 
+def _sample_contested_initial(
+    store: SignalStore, recent: Counter,
+    rng: random.Random,
+) -> Optional[Signal]:
+    """Sample an INITIAL that has accumulated dissent (cluster-aware).
+
+    Returns None when no INITIAL in the field has any contrarian children
+    on its lineage — REFINE then falls back to the underserved-initial path
+    so it still polishes claims when there's no dissent to rebut.
+    """
+    contested: list[Signal] = []
+    for sig in store.by_type(INITIAL):
+        if _cluster_dissent(store, sig.id) is not None:
+            contested.append(sig)
+    if not contested:
+        return None
+    weights = []
+    for s in contested:
+        w = max(0.05, s.strength)
+        if recent.get(s.id, 0) > 0:
+            w *= _RECENT_TARGET_PENALTY
+        weights.append(w)
+    return rng.choices(contested, weights=weights, k=1)[0]
+
+
 def _sample_well_supported_cluster_head(
     store: SignalStore, recent: Counter, rng: random.Random,
 ) -> Optional[Signal]:
@@ -325,12 +364,76 @@ def _sample_well_supported_cluster_head(
 
 
 def _strongest_dissent(store: SignalStore, parent_id: str) -> Optional[Signal]:
+    """Strongest CRITIQUE_NEGATIVE / OBJECTION attached to a single INITIAL.
+
+    Kept for back-compat with REFINE and the legacy DEVELOP path. New code
+    should prefer _cluster_dissent which walks the whole cluster (objections
+    are typically deposited against cluster reps, not against every sibling
+    INITIAL that talks about the same idea).
+    """
     children = [store.get(cid) for cid in store.by_parent(parent_id)]
     children = [c for c in children if c is not None and c.type in
                 (CRITIQUE_NEGATIVE, OBJECTION)]
     if not children:
         return None
     return max(children, key=lambda c: c.strength)
+
+
+def _cluster_dissent(
+    store: SignalStore, target_id: str,
+    sim_threshold: float = 0.65,
+) -> Optional[Signal]:
+    """Strongest dissent against the whole *cluster* the target belongs to.
+
+    Previously DEVELOP only saw objections deposited as direct children of
+    the *specific* INITIAL it sampled. But OBJECT-action deposits target
+    cluster representatives — typically the highest-strength INITIAL — so
+    a sibling INITIAL that talks about the same idea (different framing /
+    different scout) saw zero dissent.
+
+    This walks both: (1) direct children of target_id, and (2) direct
+    children of every sibling INITIAL with embedding similarity above
+    sim_threshold. Returns the strongest contrarian among the union.
+
+    Threshold 0.65 is slightly below the default cluster threshold (0.72)
+    so we catch loosely-related dissent without dragging in objections
+    from an entirely different conceptual cluster.
+    """
+    target = store.get(target_id)
+    if target is None:
+        return None
+    target_emb = store.get_embedding(target_id)
+
+    # Start with direct children — same set the legacy walk found.
+    candidates: list[Signal] = []
+    for cid in store.by_parent(target_id):
+        c = store.get(cid)
+        if c is not None and c.type in (CRITIQUE_NEGATIVE, OBJECTION):
+            candidates.append(c)
+
+    # Add dissent from sibling INITIALs in the same conceptual cluster.
+    if target_emb is not None:
+        from .signal_types import INITIAL
+        for sib in store.by_type(INITIAL):
+            if sib.id == target_id:
+                continue
+            sib_emb = store.get_embedding(sib.id)
+            if sib_emb is None:
+                continue
+            sim = sum(a * b for a, b in zip(target_emb, sib_emb))
+            if sim < sim_threshold:
+                continue
+            for cid in store.by_parent(sib.id):
+                c = store.get(cid)
+                if c is not None and c.type in (CRITIQUE_NEGATIVE, OBJECTION):
+                    candidates.append(c)
+
+    # Dedupe by id (same dissent could be reachable from multiple siblings
+    # in dense clusters — though objections only have one parent each).
+    by_id = {c.id: c for c in candidates}
+    if not by_id:
+        return None
+    return max(by_id.values(), key=lambda c: c.strength)
 
 
 # ---------------------------------------------------------------------------
@@ -601,7 +704,14 @@ class Worker:
             )
             if target is None:
                 return None, [], "", None
-            dissent = _strongest_dissent(store, target.id)
+            # Cluster-aware dissent walk: objections deposited against
+            # cluster reps now reach DEVELOP even when DEVELOP sampled a
+            # sibling INITIAL. mark_read bumps visits on the dissent the
+            # prompt actually renders.
+            dissent = _cluster_dissent(store, target.id)
+            if dissent is not None:
+                store.mark_read(dissent.id)
+                store.mark_read(target.id)
             # Sparse-cluster search hook: <2 SUPPORT children → query.
             n_support = sum(
                 1 for cid in store.by_parent(target.id)
@@ -705,11 +815,24 @@ class Worker:
             return target, [], query, None
 
         if action == REFINE:
-            # Pick an unverified INITIAL with at least some support.
-            target = _sample_underserved_initial(
+            # Prefer INITIALs that have accumulated dissent — REFINE now
+            # serves as the rebuttal/deliberation step. Falls back to the
+            # underserved-initial path when no dissent exists anywhere.
+            target = _sample_contested_initial(
                 store, pool_state.recent_targets, self._rng,
             )
-            return target, [], "", None
+            if target is None:
+                target = _sample_underserved_initial(
+                    store, pool_state.recent_targets, self._rng,
+                )
+                if target is None:
+                    return None, [], "", None
+            # Pull cluster-aware dissent so the prompt can render a rebuttal.
+            dissent = _cluster_dissent(store, target.id)
+            if dissent is not None:
+                store.mark_read(dissent.id)
+                store.mark_read(target.id)
+            return target, [], "", dissent
 
         return None, [], "", None
 
@@ -743,7 +866,10 @@ class Worker:
             return A.validate_prompt(self.task_prompt, target, external,
                                      task_type=self.task_type)
         if action == REFINE:
-            return A.refine_prompt(self.task_prompt, target)
+            # `dissent` is forwarded from _gather_target when the chosen
+            # target has cluster-level dissent; A.refine_prompt switches
+            # to its rebuttal variant when dissent is non-None.
+            return A.refine_prompt(self.task_prompt, target, dissent=dissent)
         return None
 
     def _assert_no_leak(self, prompt: str) -> None:

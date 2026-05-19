@@ -453,7 +453,15 @@ MODEL_BUNDLES = {
     "debate_analysis": {
         "primary":   {"model": "Qwen/Qwen2.5-14B-Instruct",       "dtype": "float16",
                       "max_num_seqs": 24, "max_model_len": 4096},
-        "reasoner":  {"model": "Qwen/QwQ-32B-Preview-AWQ",        "dtype": "float16",
+        # The Qwen org publishes QwQ-32B-Preview only as fp16; the AWQ
+        # variant lives in a community namespace. casperhansen's AWQ is
+        # the most widely-mirrored one and preserves the QwQ reasoning
+        # behavior the critic/hater roles depend on. Override via env if
+        # the community model gets renamed or you prefer another mirror.
+        "reasoner":  {"model": os.environ.get(
+                          "SWARM_REASONER_MODEL",
+                          "casperhansen/QwQ-32B-Preview-AWQ"),
+                      "dtype": "float16",
                       "quantization": "awq", "max_num_seqs": 12, "max_model_len": 4096},
         "fast":      {"model": "Qwen/Qwen2.5-7B-Instruct",        "dtype": "float16",
                       "max_num_seqs": 32, "max_model_len": 2048},

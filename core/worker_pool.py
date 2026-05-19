@@ -917,6 +917,17 @@ async def worker_loop(worker: Worker, store: SignalStore,
         # when dedup or junk-filter rejects a string of attempts.
         async with pool_state.lock:
             pool_state.iteration_counter += 1
+            # Mirror the counter into the store so newly-deposited signals
+            # stamp iter_at_deposit correctly. set_iteration is cheap (one
+            # lock-and-assign). The store uses this for both decay's
+            # youth-grace gate and projection's age-density weighting.
+            try:
+                store.set_iteration(pool_state.iteration_counter)
+            except AttributeError:
+                # SignalStore old enough to not have set_iteration — skip.
+                # The fallback in projection.py handles iter_age == 0
+                # gracefully.
+                pass
         await asyncio.sleep(0)
 
 

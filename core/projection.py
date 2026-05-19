@@ -370,45 +370,79 @@ def _aggregate_cluster(
             all_partitions.append(pt)
 
     # Recompute aggregate dissent_pressure and support_diversity over cluster.
-    # Temporal normalization (post-mortem on m13): raw count produced a
-    # ranking artifact where claims deposited early in the run accumulated
-    # objections purely because they had more wall-clock time to be seen.
-    # We now reference the cluster representative's age as a baseline and
-    # apply an age-equalizing weight to each contrarian: each dissent's
-    # contribution shrinks with its OWN age, normalized to the support
-    # signals' median age. Net effect: a claim that has been in the field
-    # 10× longer than the typical support no longer gets a proportional
-    # dissent stack — it gets a comparable one. Newer dissent dominates.
+    #
+    # Interaction-density age weighting + youth grace.
+    # ------------------------------------------------
+    # Raw count of dissents produced a ranking artifact in m13: claims
+    # deposited early accumulated objections purely because they had more
+    # wall-clock TIME to be seen. The fix that landed first used a wall-
+    # clock half-life — that helped, but baked in survivor bias against
+    # young signals (they hadn't lived long enough to grow EITHER supports
+    # or dissents). Under the interaction-density model we weight each
+    # contrarian / supporter by how many pool iterations have ALREADY
+    # elapsed since it was deposited. Signals deposited in busy windows
+    # age fast (lots of opportunity to be reviewed); signals deposited in
+    # quiet windows stay young. The "youth grace" floor exempts very-new
+    # signals from contributing to dissent_pressure at all — they get a
+    # window to mature before being judged.
+    #
+    # Fallback: when the SignalStore was never told about iterations
+    # (legacy round-based pipeline, isolated tests) the iter_at_deposit
+    # field is 0 on every signal and current_iter is 0, so iter_age is 0
+    # for everyone. We detect that and drop back to the wall-clock half-
+    # life calculation so nothing regresses.
+    from .config import MIN_INTERACTIONS_BEFORE_DECAY, INTERACTION_AGE_HALFLIFE
+
     support_sigs = [store.get(i) for i in all_support if store.get(i)]
     dissent_sigs = [store.get(i) for i in all_dissent if store.get(i)]
     support_strengths = [s.strength for s in support_sigs]
     dissent_strengths = [s.strength for s in dissent_sigs]
 
-    # Reference time: median support timestamp if we have supports, else
-    # the median dissent timestamp, else "now". Supports are the natural
-    # baseline because the cluster's existence as a CLUSTER is established
-    # by its support pattern, not its detractors.
-    import time as _time
-    if support_sigs:
-        ref_ts = sorted(s.timestamp for s in support_sigs)[len(support_sigs) // 2]
-    elif dissent_sigs:
-        ref_ts = sorted(s.timestamp for s in dissent_sigs)[len(dissent_sigs) // 2]
+    current_iter = store.get_iteration() if hasattr(store, "get_iteration") else 0
+    use_iteration_age = current_iter > 0 and any(
+        s.iter_at_deposit > 0 for s in (support_sigs + dissent_sigs)
+    )
+
+    if use_iteration_age:
+        # Interaction-density path. Age = iterations elapsed since deposit.
+        # Newborns (iter_age < MIN_INTERACTIONS_BEFORE_DECAY) are dropped
+        # entirely from the dissent_pressure calculation so they can't
+        # be judged before they've had a fair shot. They DO count toward
+        # the support side once they exist — what we're protecting them
+        # from is being penalized as a CHALLENGE before they've existed
+        # long enough to be challenged.
+        def _iter_weight(sig) -> float:
+            age = max(0, current_iter - sig.iter_at_deposit)
+            if age < MIN_INTERACTIONS_BEFORE_DECAY:
+                # Youth grace on dissent attribution. For supporters we
+                # still want them counted at full weight as soon as they
+                # land — that's how a fresh cluster bootstraps.
+                return 0.0 if sig.type in (
+                    "CRITIQUE_NEGATIVE", "OBJECTION",
+                ) else 1.0
+            return 0.5 ** (age / INTERACTION_AGE_HALFLIFE)
+
+        weighted_dissent = sum(s.strength * _iter_weight(s) for s in dissent_sigs)
+        weighted_support = sum(s.strength * _iter_weight(s) for s in support_sigs)
     else:
-        ref_ts = _time.time()
+        # Wall-clock fallback (legacy path). Reference time = median support
+        # timestamp; same half-life math as the prior fix.
+        import time as _time
+        if support_sigs:
+            ref_ts = sorted(s.timestamp for s in support_sigs)[len(support_sigs) // 2]
+        elif dissent_sigs:
+            ref_ts = sorted(s.timestamp for s in dissent_sigs)[len(dissent_sigs) // 2]
+        else:
+            ref_ts = _time.time()
+        _AGE_HALFLIFE_S = 300.0
 
-    # Half-life for age-decay weighting. 5 minutes ≈ the wall-clock window
-    # over which a single "round" of activity completes in continuous-pool
-    # mode (see DECAY_ROUND_BASELINE_S in worker_pool). A dissent twice as
-    # old as ref_ts contributes ~71% weight; ten minutes older contributes ~25%.
-    _AGE_HALFLIFE_S = 300.0
-    def _age_weight(sig) -> float:
-        age = max(0.0, ref_ts - sig.timestamp)
-        return 0.5 ** (age / _AGE_HALFLIFE_S)
+        def _ts_weight(sig) -> float:
+            age = max(0.0, ref_ts - sig.timestamp)
+            return 0.5 ** (age / _AGE_HALFLIFE_S)
 
-    weighted_dissent = sum(s.strength * _age_weight(s) for s in dissent_sigs)
-    # Apply the same weighting to supports so the ratio stays dimensionally
-    # honest: both numerator and denominator are now "current-relevance".
-    weighted_support = sum(s.strength * _age_weight(s) for s in support_sigs)
+        weighted_dissent = sum(s.strength * _ts_weight(s) for s in dissent_sigs)
+        weighted_support = sum(s.strength * _ts_weight(s) for s in support_sigs)
+
     dissent_pressure = weighted_dissent / max(_EPS, weighted_support)
 
     strategy_names: set[str] = set()

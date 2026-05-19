@@ -121,6 +121,15 @@ class Signal:
                                  # to discourage agent-identity-based reasoning
     parent_id: Optional[str] = None
     visits: int = 0
+    # Iteration counter at deposit time. Set by SignalStore.deposit() from
+    # its own ._current_iter, which is bumped by the worker pool each tick
+    # via set_iteration(). Used by interaction-density age weighting in
+    # core/projection.py and by the youth-grace gate in decay_all.
+    # When SignalStore was never told about iterations (legacy round-based
+    # path that doesn't call set_iteration), iter_at_deposit stays 0 for
+    # every signal and the interaction-based metrics fall back to the
+    # timestamp half-life calculation.
+    iter_at_deposit: int = 0
     metadata: dict = field(default_factory=dict)
     # Internal: logit(strength), used only when USE_LOGIT_DYNAMICS is True.
     # Kept in sync with `strength` at every mutation point in SignalStore.
@@ -169,6 +178,11 @@ class SignalStore:
         self._lock = RLock()
         self._signals: dict[str, Signal] = {}
         self._next_id = 0
+        # Interaction counter. The worker pool calls set_iteration() each
+        # tick. When it stays 0 (legacy round-based path / tests that don't
+        # plumb it), iter_at_deposit on every signal is 0 and downstream
+        # interaction-density code falls back to its timestamp path.
+        self._current_iter: int = 0
 
         # secondary indexes
         self._by_type: dict[str, set[str]] = {}
@@ -273,6 +287,7 @@ class SignalStore:
                 timestamp=time.time(),
                 depositor=depositor,
                 parent_id=parent_id,
+                iter_at_deposit=self._current_iter,
                 metadata=meta,
             )
             self._signals[sid] = sig
@@ -627,11 +642,29 @@ class SignalStore:
         an escape hatch for one release. factor scales the (1 - DECAY_RATE)
         step toward 1.0 — factor=0.0 means no decay; factor=1.0 means full.
         """
+        # Lazy import: MIN_INTERACTIONS_BEFORE_DECAY is a config knob and
+        # carries calibration meaning, so we don't bake it into a constant
+        # at module-load — env overrides applied by config.py would miss.
+        try:
+            from .config import MIN_INTERACTIONS_BEFORE_DECAY as _MIN_INT
+        except ImportError:
+            _MIN_INT = 0
         with self._lock:
+            current_iter = self._current_iter
             if USE_LOGIT_DYNAMICS:
                 d_main = DELTA_DECAY * factor
                 d_contra = DELTA_DECAY_CONTRARIAN * factor
                 for s in self._signals.values():
+                    # Youth grace: signals younger than _MIN_INT iterations
+                    # skip decay entirely. Removes the "deposited late and
+                    # immediately punished" pathology while the rest of the
+                    # field continues to consolidate. When current_iter is 0
+                    # (no worker pool wiring) iter_age is 0 for everyone, so
+                    # this branch effectively no-ops and behavior matches
+                    # the pre-pivot path.
+                    if _MIN_INT > 0 and current_iter > 0:
+                        if (current_iter - s.iter_at_deposit) < _MIN_INT:
+                            continue
                     if s.type in CONTRARIAN_TYPES:
                         s._logit += d_contra
                     else:
@@ -641,6 +674,9 @@ class SignalStore:
             decay = DECAY_RATE * factor
             anti_decay = 1.0 / (1.0 - decay) if decay < 1.0 else 1.0
             for s in self._signals.values():
+                if _MIN_INT > 0 and current_iter > 0:
+                    if (current_iter - s.iter_at_deposit) < _MIN_INT:
+                        continue
                 s.strength *= (1.0 - decay)
                 if s.type in CONTRARIAN_TYPES:
                     s.strength = min(1.0, s.strength * anti_decay)
@@ -741,6 +777,34 @@ class SignalStore:
         """Return IDs of direct children of parent_id (read-only copy)."""
         with self._lock:
             return set(self._by_parent.get(parent_id, set()))
+
+    def set_iteration(self, n: int) -> None:
+        """Advance the store's internal iteration counter.
+
+        Called by the worker pool each tick. Every deposit() that follows
+        stamps `iter_at_deposit = n`. Setting backward is allowed but
+        unusual; the counter is monotonic in practice.
+        """
+        with self._lock:
+            self._current_iter = int(n)
+
+    def get_iteration(self) -> int:
+        """Read the current iteration counter."""
+        with self._lock:
+            return self._current_iter
+
+    def iter_age(self, signal_id: str) -> int:
+        """Iterations elapsed since this signal was deposited.
+
+        Used by the interaction-density age weighting in projection.py
+        and by decay_all's youth-grace gate. Returns 0 for signals
+        deposited before set_iteration() was wired (legacy path).
+        """
+        with self._lock:
+            s = self._signals.get(signal_id)
+            if s is None:
+                return 0
+            return max(0, self._current_iter - s.iter_at_deposit)
 
     def mark_read(self, signal_id: str, n: int = 1) -> None:
         """Bump `visits` by n on a signal that was rendered into a prompt.

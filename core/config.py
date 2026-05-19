@@ -194,6 +194,27 @@ assert DELTA_DECAY <= DELTA_DECAY_CONTRARIAN  # non-contrarians decay at least a
 assert DELTA_AMPLIFY > 0 and DELTA_DEDUP_AMPLIFY > 0 and DELTA_BOOST_BETA > 0
 
 # ---------------------------------------------------------------------------
+# Interaction-based aging (replacing pure wall-clock decay)
+# ---------------------------------------------------------------------------
+# Signals younger than MIN_INTERACTIONS_BEFORE_DECAY pool iterations skip
+# decay AND don't contribute to dissent_pressure. Wall-clock decay punished
+# late-deposited signals for the swarm's finite budget — they couldn't
+# accumulate supports fast enough before the run ended. Interaction-based
+# aging measures "field activity during the signal's lifetime"; youth grace
+# adds a strict floor so signals always get N iterations to mature.
+#
+# Calibrated against pool throughput (~50–200 iters/sec on Colab A100):
+# 5 iterations ≈ tens of milliseconds of grace, which is enough for several
+# concurrent workers to read and respond before decay can bite. Bare
+# integer defaults here; the env-var override block at the bottom of the
+# file widens these to SWARM_MIN_INTERACTIONS_BEFORE_DECAY /
+# SWARM_INTERACTION_AGE_HALFLIFE once _int_env is defined.
+MIN_INTERACTIONS_BEFORE_DECAY = 5
+INTERACTION_AGE_HALFLIFE = 200
+assert MIN_INTERACTIONS_BEFORE_DECAY >= 0
+assert INTERACTION_AGE_HALFLIFE > 0
+
+# ---------------------------------------------------------------------------
 # Intake / partitioning
 # ---------------------------------------------------------------------------
 
@@ -420,6 +441,10 @@ SURVIVAL_CONTEST_MAX             = _float_env("SWARM_SURVIVAL_CONTEST_MAX",     
 SURVIVAL_VERIFY_MIN              = _float_env("SWARM_SURVIVAL_VERIFY_MIN",              SURVIVAL_VERIFY_MIN)
 SURVIVAL_BROAD_SUPPORT           = _int_env(  "SWARM_SURVIVAL_BROAD_SUPPORT",           SURVIVAL_BROAD_SUPPORT)
 CLUSTER_SIM_THRESHOLD            = _float_env("SWARM_CLUSTER_SIM_THRESHOLD",            CLUSTER_SIM_THRESHOLD)
+
+# Interaction-based aging knobs (env override).
+MIN_INTERACTIONS_BEFORE_DECAY    = _int_env("SWARM_MIN_INTERACTIONS_BEFORE_DECAY", MIN_INTERACTIONS_BEFORE_DECAY)
+INTERACTION_AGE_HALFLIFE         = _int_env("SWARM_INTERACTION_AGE_HALFLIFE",      INTERACTION_AGE_HALFLIFE)
 
 # Re-validate after overrides so a bad value crashes early rather than
 # producing weird mid-run behavior.

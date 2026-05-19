@@ -95,6 +95,37 @@ _AUDIT_WARNING_THRESHOLD = 20
 _PLAN_MAX_TOKENS = 1500
 _PLAN_TEMPERATURE = 0.2
 
+# Prompt-interpreter call. Reads the user's task prompt and extracts the
+# structural contract (form, regime, constraints) BEFORE any rendering, so
+# downstream stages know whether they're producing a haiku, a function,
+# or an argument. Decouples task category (coarse) from output shape (fine).
+_INTERPRET_MAX_TOKENS = 600
+_INTERPRET_TEMPERATURE = 0.1
+
+# Final integration call for cohesive output strategies. Sees the surviving
+# cluster representatives + supports as raw materials and the prompt
+# contract as the shape directive. Higher temp than per-cluster (which
+# rendered prose paragraphs from a fixed template) because the integration
+# call is producing the final user-facing artifact and benefits from a
+# little freedom — but capped so coding outputs stay deterministic enough.
+_INTEGRATE_MAX_TOKENS = 2500
+_INTEGRATE_TEMPERATURE_EXPLORATION = 0.7
+_INTEGRATE_TEMPERATURE_OPTIMIZATION = 0.3
+
+# Map task_type to output strategy. Tasks not listed fall back to
+# "sectioned" (the original multi-section format). Per the design memo:
+# debate/analysis -> sectioned (positions presented separately is the
+# whole point); creative/problem_solving -> cohesive_exploration (one
+# unified user-facing artifact); coding -> cohesive_optimization (one
+# working implementation).
+_OUTPUT_STRATEGY_BY_TASK = {
+    "debate":          "sectioned",
+    "analysis":        "sectioned",
+    "problem_solving": "cohesive_exploration",
+    "creative":        "cohesive_exploration",
+    "coding":          "cohesive_optimization",
+}
+
 # Composite cluster priority score used for rendering order.
 # Higher support_diversity and verification_score = more credible.
 # Higher dissent_pressure = more contested = lower priority for Section 1.
@@ -280,6 +311,19 @@ class Synthesizer:
                 f"via `python synthesize.py <run_dir>`."
             )
 
+        # ------------------------------------------------------------------
+        # Stage 1: interpret the user's prompt into a structural contract.
+        # Decouples task category (coarse) from output shape (fine). The
+        # contract drives Stage 3's cohesive integration call.
+        # ------------------------------------------------------------------
+        contract = await self._interpret_prompt(self.task_prompt)
+        self._prompt_contract = contract  # stashed for downstream + summary.json
+        strategy = _OUTPUT_STRATEGY_BY_TASK.get(
+            getattr(self, "_task_type", None), "sectioned",
+        )
+        print(f"[synthesizer] contract: form={contract.get('form')!r} "
+              f"regime={contract.get('regime')!r} strategy={strategy!r}")
+
         sections: list[str] = []
 
         # ------------------------------------------------------------------
@@ -292,7 +336,61 @@ class Synthesizer:
         plan_notes: str = plan.get("notes", "")
 
         # ------------------------------------------------------------------
-        # Executive summary — deterministic counts + planner overview
+        # COHESIVE strategies short-circuit the multi-section render path.
+        # The integration call produces the actual user-facing artifact;
+        # process notes (exec summary, plan, citations) are appended
+        # deterministically below.
+        # ------------------------------------------------------------------
+        if strategy in ("cohesive_exploration", "cohesive_optimization"):
+            render_id_list = list(plan_render_ids) or [
+                cp.representative_id for cp in
+                (_rank_clusters(projection.surviving) or projection.contested)[:5]
+            ]
+            try:
+                if strategy == "cohesive_exploration":
+                    artifact = await self._render_cohesive_exploration(
+                        contract, projection, store, render_id_list,
+                    )
+                else:
+                    artifact = await self._render_cohesive_optimization(
+                        contract, projection, store, render_id_list,
+                    )
+            except Exception as exc:
+                print(f"[synthesizer] cohesive render failed: "
+                      f"{type(exc).__name__}: {exc}; "
+                      f"falling back to sectioned output")
+                strategy = "sectioned"
+                artifact = None
+
+            if strategy != "sectioned":
+                # Assemble: artifact at the top, then deterministic process
+                # notes (exec summary, plan), then citations stamp.
+                exec_notes = await self._render_executive_summary(
+                    projection, store, plan_notes=plan_notes,
+                )
+                parts = [artifact]
+                parts.append("\n\n---\n\n## PROCESS NOTES\n")
+                parts.append(exec_notes)
+                answer = "\n\n".join(p for p in parts if p)
+                answer = _stamp_citations(answer, projection, store,
+                                           merge_groups=merge_groups)
+                # Soft audit for cohesive outputs (looser than 4-gram).
+                try:
+                    audit_flags = _build_cohesive_audit(
+                        artifact, contract, projection, store,
+                    )
+                    if output_dir is not None:
+                        _write_faithfulness_audit(audit_flags, output_dir)
+                except Exception as exc:
+                    print(f"[synthesizer] cohesive audit crashed: "
+                          f"{type(exc).__name__}: {exc}")
+                    if output_dir is not None:
+                        _write_crashed_audit(output_dir, exc)
+                return answer
+
+        # ------------------------------------------------------------------
+        # SECTIONED strategy (debate/analysis fallback): keep the existing
+        # multi-section render path. Executive summary appears first.
         # ------------------------------------------------------------------
         exec_summary = await self._render_executive_summary(
             projection, store, plan_notes=plan_notes,
@@ -463,6 +561,111 @@ class Synthesizer:
                 _write_crashed_audit(output_dir, exc)
 
         return answer
+
+    # -----------------------------------------------------------------------
+    # Stage 1: Prompt interpreter — extracts the structural contract
+    # -----------------------------------------------------------------------
+
+    async def _interpret_prompt(self, user_prompt: str) -> dict:
+        """Extract a structured contract from the user's task prompt.
+
+        Decouples *task category* (coarse: creative/coding/debate/...) from
+        *output form* (fine: haiku vs short story vs slogan; binary-search
+        function vs JSON parser; etc.). Same swarm behavior produces the
+        surviving ideas in all cases; this contract is what tells the
+        synthesizer what *shape* to render them in.
+
+        Returns a dict with at least:
+            regime:     "exploration" | "optimization"
+            form:       short string naming the target form
+            structural: list of hard constraints (line count, signature,
+                        complexity bound, format markers)
+            soft:       list of style/voice/theme cues
+            length_hint: "short" | "medium" | "long"
+
+        Falls back to a heuristic contract on parse failure so downstream
+        rendering can still proceed.
+        """
+        prompt = (
+            f"Read the following user prompt and extract its structural "
+            f"contract as JSON. Two regimes exist:\n"
+            f"  - exploration: no oracle answer; reader wants novel/"
+            f"interesting ideas (haiku, story, essay, slogan, argument, "
+            f"action plan, analysis).\n"
+            f"  - optimization: a correct answer or class of correct "
+            f"answers exists (code, math, formal proof).\n\n"
+            f"---USER PROMPT---\n{user_prompt}\n---END USER PROMPT---\n\n"
+            f"Reply with EXACTLY this JSON object (no other text):\n"
+            f'{{"regime": "exploration" | "optimization",\n'
+            f'  "form": "<short label, e.g. haiku | short_story | slogan | '
+            f'argument | function | action_plan | analysis>",\n'
+            f'  "structural": ["<hard constraint>", ...],\n'
+            f'  "soft":       ["<style/theme cue>", ...],\n'
+            f'  "length_hint": "short" | "medium" | "long",\n'
+            f'  "audience":   "<one short phrase>"}}\n\n'
+            f"Hard constraints are things you can VERIFY post-hoc (line "
+            f"count, syllable structure, function signature, presence of "
+            f"a section, language requirement). Soft cues are stylistic "
+            f"directions (tone, voice, themes) that the renderer must "
+            f"interpret. If the prompt is vague, infer the most likely "
+            f"form rather than listing nothing.\n\n"
+            f"CONTRACT:"
+        )
+        try:
+            raw = await self.llm.generate(
+                prompt, role=self.ROLE,
+                max_tokens=_INTERPRET_MAX_TOKENS,
+                temperature=_INTERPRET_TEMPERATURE,
+            )
+        except Exception as exc:
+            print(f"[synthesizer] prompt-interpret call failed: "
+                  f"{type(exc).__name__}: {exc}")
+            return self._fallback_contract(user_prompt)
+        match = re.search(r"\{[\s\S]*\}", raw or "")
+        if not match:
+            return self._fallback_contract(user_prompt)
+        try:
+            contract = json.loads(match.group(0))
+        except Exception:
+            return self._fallback_contract(user_prompt)
+        # Coerce / sanitize fields. Anything missing gets a default.
+        out = {
+            "regime":      str(contract.get("regime", "exploration")).strip().lower(),
+            "form":        str(contract.get("form", "free_response")).strip(),
+            "structural":  [str(x) for x in contract.get("structural", []) if x],
+            "soft":        [str(x) for x in contract.get("soft", []) if x],
+            "length_hint": str(contract.get("length_hint", "medium")).strip().lower(),
+            "audience":    str(contract.get("audience", "general")).strip(),
+        }
+        if out["regime"] not in ("exploration", "optimization"):
+            out["regime"] = "exploration"
+        if out["length_hint"] not in ("short", "medium", "long"):
+            out["length_hint"] = "medium"
+        return out
+
+    def _fallback_contract(self, user_prompt: str) -> dict:
+        """Heuristic contract used when the interpreter call fails.
+
+        Inferred entirely from the task_type recorded on self._task_type.
+        Less precise than the LLM extraction but always available.
+        """
+        tt = getattr(self, "_task_type", None) or "analysis"
+        regime = "optimization" if tt == "coding" else "exploration"
+        form_by_task = {
+            "creative":        "free_creative",
+            "coding":          "function",
+            "problem_solving": "action_plan",
+            "debate":          "argument",
+            "analysis":        "analysis",
+        }
+        return {
+            "regime":      regime,
+            "form":        form_by_task.get(tt, "free_response"),
+            "structural":  [],
+            "soft":        [],
+            "length_hint": "medium",
+            "audience":    "general",
+        }
 
     # -----------------------------------------------------------------------
     # Planner: structural digest -> render plan (no content ingestion)
@@ -698,6 +901,186 @@ class Synthesizer:
         return "\n".join(lines)
 
     # -----------------------------------------------------------------------
+    # Stage 3: cohesive output — produces the user-facing artifact
+    # -----------------------------------------------------------------------
+
+    def _gather_raw_materials(
+        self, projection: SynthesisProjection, store: SignalStore,
+        cluster_ids: list[str],
+    ) -> list[dict]:
+        """Pack cluster reps + their best supports as integration-call input.
+
+        Returns a list of {id, rep_content, support_excerpts: [...]} dicts.
+        Used by both cohesive_exploration and cohesive_optimization. Reads
+        only Signal.content — no reasoning chains, no metadata that could
+        leak deposit ordering.
+        """
+        materials: list[dict] = []
+        for cid in cluster_ids:
+            cp = next(
+                (c for c in projection.surviving + projection.contested
+                 if c.representative_id == cid),
+                None,
+            )
+            if cp is None:
+                continue
+            rep = store.get(cp.representative_id)
+            if rep is None:
+                continue
+            supports: list[str] = []
+            for sid in cp.support_set[:4]:
+                s = store.get(sid)
+                if s and s.content:
+                    supports.append(_truncate(s.content, _SUPPORT_CHARS))
+                    store.mark_read(sid)
+            store.mark_read(cp.representative_id)
+            materials.append({
+                "id": cp.representative_id,
+                "rep_content": _truncate(rep.content, _REPRESENTATIVE_CHARS),
+                "support_excerpts": supports,
+                "verification_score": cp.verification_score,
+                "support_diversity": cp.support_diversity,
+            })
+        return materials
+
+    def _format_materials_block(self, materials: list[dict]) -> str:
+        """Render raw materials into a labeled block the integration call reads."""
+        if not materials:
+            return "(no raw materials surfaced — synthesizer must fall back to the task prompt alone)"
+        lines: list[str] = []
+        for m in materials:
+            lines.append(f"--- THREAD [{m['id']}] (support_diversity="
+                          f"{m['support_diversity']}, "
+                          f"verification_score={m['verification_score']:.2f}) ---")
+            lines.append(m["rep_content"])
+            for ex in m["support_excerpts"]:
+                lines.append(f"  · {ex}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
+    async def _render_cohesive_exploration(
+        self,
+        contract: dict,
+        projection: SynthesisProjection,
+        store: SignalStore,
+        render_ids: list[str],
+    ) -> str:
+        """Produce ONE unified artifact (haiku/story/plan/etc) from cluster threads.
+
+        The integration call sees:
+          - the prompt contract (form, structural constraints, soft cues)
+          - the raw materials block (surviving cluster reps + supports)
+          - a sharp instruction to produce THE THING, not a description of it.
+
+        Single LLM call. Output is the final user-facing artifact, with
+        process notes appended deterministically below. Faithfulness for
+        cohesive outputs is graded by the soft audit (see
+        _build_cohesive_audit) — content-word overlap and structural
+        plausibility, not 4-gram exact match.
+        """
+        materials = self._gather_raw_materials(projection, store, render_ids)
+        materials_block = self._format_materials_block(materials)
+
+        form = contract.get("form", "free_response")
+        structural = contract.get("structural", []) or ["(none explicit)"]
+        soft = contract.get("soft", []) or ["(none explicit)"]
+        length_hint = contract.get("length_hint", "medium")
+
+        struct_block = "\n".join(f"  · {x}" for x in structural)
+        soft_block = "\n".join(f"  · {x}" for x in soft)
+
+        prompt = (
+            f"USER PROMPT: {self.task_prompt}\n\n"
+            f"You are producing the FINAL user-facing artifact. Do not "
+            f"describe what the artifact would contain — write the artifact "
+            f"itself. The swarm has already explored the conceptual space "
+            f"and surfaced the threads below; your job is to integrate them "
+            f"into a single coherent work that matches the prompt's form.\n\n"
+            f"FORM: {form}\n"
+            f"LENGTH HINT: {length_hint}\n\n"
+            f"HARD STRUCTURAL CONSTRAINTS (must satisfy):\n{struct_block}\n\n"
+            f"SOFT CUES (style/voice/themes):\n{soft_block}\n\n"
+            f"RAW MATERIALS — surviving threads from the swarm's exploration. "
+            f"These are NOT meant to be quoted verbatim; they are the kernels "
+            f"of ideas you should integrate, transform, or build on. The "
+            f"final artifact should USE these ideas, not list them.\n\n"
+            f"{materials_block}\n\n"
+            f"RULES:\n"
+            f"  1. Produce the artifact itself — no preface, no 'Here is...', "
+            f"no meta-commentary, no markdown headers unless the form demands them.\n"
+            f"  2. Honor every hard structural constraint exactly.\n"
+            f"  3. Integrate at least two distinct threads — don't just paraphrase "
+            f"the strongest one.\n"
+            f"  4. Do NOT invent named entities, citations, or quotes that aren't "
+            f"in the raw materials.\n"
+            f"  5. No bracketed cluster IDs (e.g. [INITIAL_00023]) in the final "
+            f"artifact — those are process metadata.\n\n"
+            f"ARTIFACT:"
+        )
+        raw = await self.llm.generate(
+            prompt, role=self.ROLE,
+            max_tokens=_INTEGRATE_MAX_TOKENS,
+            temperature=_INTEGRATE_TEMPERATURE_EXPLORATION,
+        )
+        return strip_reasoning(raw.strip())
+
+    async def _render_cohesive_optimization(
+        self,
+        contract: dict,
+        projection: SynthesisProjection,
+        store: SignalStore,
+        render_ids: list[str],
+    ) -> str:
+        """Produce ONE working implementation from candidate approaches.
+
+        Optimization regime: a correct answer exists. The swarm's surviving
+        clusters are candidate approaches; the integration call selects the
+        best one (or merges them) and emits a working solution that satisfies
+        the spec. Same single-call shape as the exploration path, but lower
+        temperature and a spec-shaped instruction.
+        """
+        materials = self._gather_raw_materials(projection, store, render_ids)
+        materials_block = self._format_materials_block(materials)
+
+        form = contract.get("form", "function")
+        structural = contract.get("structural", []) or ["(none explicit)"]
+        soft = contract.get("soft", []) or ["(none explicit)"]
+
+        struct_block = "\n".join(f"  · {x}" for x in structural)
+        soft_block = "\n".join(f"  · {x}" for x in soft)
+
+        prompt = (
+            f"USER PROMPT: {self.task_prompt}\n\n"
+            f"You are producing the FINAL implementation. The swarm has "
+            f"surfaced candidate approaches below — your job is to select "
+            f"the best one (or merge compatible elements) and write a "
+            f"working, correct solution. The output is the implementation "
+            f"itself, not commentary about it.\n\n"
+            f"FORM: {form}\n\n"
+            f"HARD SPEC (signature, complexity bounds, language, behavior):\n"
+            f"{struct_block}\n\n"
+            f"SOFT GUIDANCE (idioms, style):\n{soft_block}\n\n"
+            f"CANDIDATE APPROACHES — surviving threads from the swarm's "
+            f"exploration. Pick the strongest, or merge compatible ideas. "
+            f"Do NOT include every approach — produce ONE solution.\n\n"
+            f"{materials_block}\n\n"
+            f"RULES:\n"
+            f"  1. Output the code/solution itself — no preface, no 'Here is...', "
+            f"no English commentary outside docstrings/comments.\n"
+            f"  2. Match the hard spec exactly (signature, types, complexity).\n"
+            f"  3. Include a brief docstring stating the algorithm + complexity.\n"
+            f"  4. Handle edge cases the swarm surfaced.\n"
+            f"  5. No bracketed cluster IDs in the final code.\n\n"
+            f"IMPLEMENTATION:"
+        )
+        raw = await self.llm.generate(
+            prompt, role=self.ROLE,
+            max_tokens=_INTEGRATE_MAX_TOKENS,
+            temperature=_INTEGRATE_TEMPERATURE_OPTIMIZATION,
+        )
+        return strip_reasoning(raw.strip())
+
+    # -----------------------------------------------------------------------
     # Per-cluster render helpers
     # -----------------------------------------------------------------------
 
@@ -917,6 +1300,116 @@ def _stamp_citations(
 # ---------------------------------------------------------------------------
 
 _CITATION_RE = re.compile(r"\[([A-Z]+_\d+)\]")
+
+
+def _build_cohesive_audit(
+    artifact: str,
+    contract: dict,
+    projection: SynthesisProjection,
+    store: SignalStore,
+) -> list[dict]:
+    """Soft audit for cohesive outputs (creative / coding / problem_solving).
+
+    The hard 4-gram overlap audit doesn't fit a haiku — by design the
+    artifact transforms cluster content rather than quoting it. Instead
+    we check:
+
+      1. content_word_overlap_low: fewer than K distinct content words from
+         surviving cluster reps appear in the artifact. Flags total
+         hallucination — the integration call ignored its source material.
+      2. structural_violation: hard constraints from contract.structural
+         that can be checked deterministically (line count, presence of
+         a specific token, expected length range).
+      3. fabricated_id_in_artifact: a bracketed [INITIAL_XXXXX]-style tag
+         leaked into the artifact (process metadata in user-facing output).
+      4. length_implausible: artifact is way shorter / longer than the
+         length_hint suggests (e.g. a "haiku" that's 500 chars).
+
+    Returns the same flag-list shape as _build_faithfulness_audit so the
+    audit writer / summary.json reader doesn't need to branch.
+    """
+    flags: list[dict] = []
+    _STOP = frozenset({
+        "the","a","an","is","are","to","of","in","and","or","it","be",
+        "that","this","with","for","on","as","by","at","from","but","not",
+    })
+    _CITATION_TAG = re.compile(r"\[[A-Z]+_\d+\]")
+
+    rep_word_pool: set[str] = set()
+    for cp in projection.surviving + projection.contested:
+        rep = store.get(cp.representative_id)
+        if not rep:
+            continue
+        for w in re.findall(r"[a-z]{4,}", rep.content.lower()):
+            if w not in _STOP:
+                rep_word_pool.add(w)
+
+    artifact_words: set[str] = set()
+    for w in re.findall(r"[a-z]{4,}", (artifact or "").lower()):
+        if w not in _STOP:
+            artifact_words.add(w)
+    overlap = rep_word_pool & artifact_words
+    # Threshold: at least 4 distinct content words from surviving threads
+    # should appear in a non-trivial artifact. Haikus often dip below this;
+    # we only flag if the artifact is longer than ~100 chars (i.e. not a
+    # form where lexical brevity is the whole point).
+    if len(artifact or "") > 100 and len(overlap) < 4:
+        flags.append({
+            "issue": "content_word_overlap_low",
+            "overlap_count": len(overlap),
+            "rep_pool_size": len(rep_word_pool),
+            "artifact_length": len(artifact or ""),
+        })
+
+    tag_hits = _CITATION_TAG.findall(artifact or "")
+    if tag_hits:
+        flags.append({
+            "issue": "fabricated_id_in_artifact",
+            "tags": tag_hits[:10],
+        })
+
+    length_hint = contract.get("length_hint", "medium")
+    artifact_len = len(artifact or "")
+    # Loose per-hint bounds. Calibrated against form-typical lengths;
+    # crosses-the-line cases (a "short" creative artifact 2000+ chars,
+    # or a "long" one under 200) are the ones worth surfacing.
+    if length_hint == "short" and artifact_len > 1500:
+        flags.append({
+            "issue": "length_implausible",
+            "detail": f"length={artifact_len} exceeds 'short' bound (1500)",
+        })
+    elif length_hint == "long" and artifact_len < 300:
+        flags.append({
+            "issue": "length_implausible",
+            "detail": f"length={artifact_len} below 'long' floor (300)",
+        })
+
+    # Form-specific structural checks. Conservative — only fire on signals
+    # we can verify cheaply and unambiguously.
+    form = contract.get("form", "").lower()
+    if form == "haiku":
+        # A haiku is three lines. We don't enforce syllable count (that
+        # requires phonetic analysis), but line count we can check.
+        non_empty_lines = [ln for ln in (artifact or "").splitlines() if ln.strip()]
+        if non_empty_lines and len(non_empty_lines) != 3:
+            flags.append({
+                "issue": "structural_violation",
+                "form": "haiku",
+                "detail": f"expected 3 non-empty lines, got {len(non_empty_lines)}",
+            })
+    elif form in ("function", "code"):
+        # For code: try ast.parse if it looks like Python.
+        if any(tok in (artifact or "") for tok in ("def ", "class ", "import ")):
+            try:
+                import ast as _ast
+                _ast.parse(artifact or "")
+            except SyntaxError as exc:
+                flags.append({
+                    "issue": "structural_violation",
+                    "form": form,
+                    "detail": f"python syntax error: {exc}",
+                })
+    return flags
 
 
 def _build_faithfulness_audit(

@@ -225,16 +225,17 @@ if _TIER is not None:
     # Smaller chunks so the corpus yields enough partitions to feed the
     # larger scout population at the lower per-scout chunk count.
     CHUNK_WORDS = 400
-    # Token budgets: Phase 1F raises the budgets on A100 where max_model_len=4096
-    # supports them without truncating context. Smaller tiers (t4/l4) keep the
-    # tighter caps because their KV cache cannot absorb the larger generations.
+    # Token budgets: A100 path uses max_model_len=8192/16384 (Phase: context
+    # bump) so per-cluster synthesizer calls can produce richer paragraphs
+    # without bumping the input ceiling. Smaller tiers (t4/l4) keep tighter
+    # caps because their KV cache cannot absorb the larger generations.
     if _TIER in ("a100_40", "a100_80"):
         MAX_TOKENS_SCOUT       = 200
         MAX_TOKENS_FORAGER     = 300
         MAX_TOKENS_CRITIC      = 200
         MAX_TOKENS_HATER       = 300
-        MAX_TOKENS_VALIDATOR   = 150
-        MAX_TOKENS_SYNTHESIZER = 1500
+        MAX_TOKENS_VALIDATOR   = 200   # 150 -> 200 (engages/quality JSON + reasoning fits)
+        MAX_TOKENS_SYNTHESIZER = 2000  # 1500 -> 2000 (anti-parametric prompt is longer)
     else:
         MAX_TOKENS_SCOUT       = 140
         MAX_TOKENS_FORAGER     = 200

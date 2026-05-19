@@ -148,21 +148,29 @@ def _build_cascade(base_model: str, base_dtype: str,
             "enable_chunked_prefill": False,
         })
     elif tier in ("a100_40", "a100_80"):
-        # 14B fp16 (28 GB) leaves ~52 GB KV cache headroom on a100_80.
-        # max_model_len=4096 supports ~13k cached tokens × max_num_seqs=32
-        # and eliminates the per-call truncation that was damaging output.
+        # max_model_len bumped 4096 -> 8192 (a100_40) / 16384 (a100_80) so
+        # longer prompts fit without truncation. vLLM uses paged KV cache —
+        # blocks are allocated dynamically, so a higher per-request ceiling
+        # doesn't pre-reserve the full max × seqs worst-case. Most pipeline
+        # prompts run 2-4 K tokens; the headroom matters for:
+        #   - synthesizer per-cluster calls when the cluster has many
+        #     SUPPORT excerpts plus external context
+        #   - a future global integration pass that reads all surviving
+        #     paragraphs at once
+        #   - retrieval-rich SCOUT prompts with multiple chunks
+        # max_num_seqs=32 keeps the continuous batcher saturated.
         # enforce_eager=False unlocks Inductor compile + CUDA graphs —
         # ~25-40% throughput gain on Ampere, costs ~30s extra warm-up.
         primary_kwargs.update({
             "gpu_memory_utilization": 0.90,
             "max_num_seqs": 32,
-            "max_model_len": 4096,
+            "max_model_len": 16384 if tier == "a100_80" else 8192,
             "enforce_eager": False,
             "enable_chunked_prefill": True,
         })
     elif tier == "l4":
         primary_kwargs.update({
-            "max_model_len": 4096,
+            "max_model_len": 8192,
             "enforce_eager": False,
         })
     attempts.append(("configured", base_model, primary_kwargs))

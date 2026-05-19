@@ -229,7 +229,7 @@ class SignalStore:
                     None, content.lower(), existing.content.lower()
                 ).ratio()
                 if quick_ratio > 0.95:
-                    self._apply_dedup_amplify(existing)
+                    self._apply_dedup_amplify(existing, new_strength=strength)
                     existing.visits += 1
                     return None
 
@@ -241,7 +241,7 @@ class SignalStore:
                 sim = self._similarity(content, existing.content,
                                        new_emb, self._embeddings.get(existing.id))
                 if sim >= DIVERSITY_THRESHOLD:
-                    self._apply_dedup_amplify(existing)
+                    self._apply_dedup_amplify(existing, new_strength=strength)
                     existing.visits += 1
                     return None
 
@@ -648,12 +648,28 @@ class SignalStore:
 
     # ---- logit-update helpers (internal) --------------------------------
 
-    def _apply_dedup_amplify(self, sig: Signal) -> None:
+    def _apply_dedup_amplify(self, sig: Signal,
+                              new_strength: Optional[float] = None) -> None:
         """Bump strength when a near-duplicate deposit arrives.
+
+        For VERIFICATION signals specifically: when the new deposit's strength
+        is higher than the existing one, REPLACE the strength (high-water-
+        mark) rather than additively amplify. Otherwise a stale 0.0
+        verification deposited early in the run dominates over fresh higher-
+        score validators that happen to land as dedup-matches — the prior
+        run's verification floor stayed at zero because of this.
+
+        For other signal types, additive amplify (the original semantics):
+        repeated deposit of the same content = stigmergic reinforcement.
 
         Logit mode: additive delta (DELTA_DEDUP_AMPLIFY).
         Legacy mode: multiplicative ×1.05 (matches prior behaviour).
         """
+        if sig.type == VERIFICATION and new_strength is not None and new_strength > sig.strength:
+            new_strength = min(1.0, max(0.0, new_strength))
+            sig.strength = new_strength
+            sig._logit = _to_logit(new_strength)
+            return
         if USE_LOGIT_DYNAMICS:
             sig._logit += DELTA_DEDUP_AMPLIFY
             sig.strength = _from_logit(sig._logit)

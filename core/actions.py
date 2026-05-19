@@ -465,19 +465,38 @@ def validate_parse(raw: str, task_type: Optional[str] = None) -> ParsedDeposit:
     if json_match:
         try:
             parsed = json.loads(json_match.group(0))
-            if task_type in _NON_FACTUAL_TASKS and (
-                "engages" in parsed or "quality" in parsed
-            ):
-                engages = bool(parsed.get("engages", False))
-                qual = float(parsed.get("quality", 0.5))
-                qual = max(0.0, min(1.0, qual))
-                # Engaged snippet scores its quality; non-engaged scores
-                # a floor of 0.2 (not 0.0) — the validator showed up and
-                # the topic was at least visible in the source.
-                score = qual if engages else 0.2
+            if task_type in _NON_FACTUAL_TASKS:
+                # Non-factual: prefer engages/quality if the model emitted
+                # them. Otherwise ADAPT a supports/confidence response
+                # (which the model may default to from its training
+                # distribution) instead of dropping into the factual branch
+                # where supports=false + confidence=0.95 produces score=0.05.
+                if "engages" in parsed or "quality" in parsed:
+                    engages = bool(parsed.get("engages", False))
+                    qual = float(parsed.get("quality", 0.5))
+                    qual = max(0.0, min(1.0, qual))
+                    # Engaged → quality; not-engaged → 0.2 floor.
+                    score = qual if engages else 0.2
+                elif "supports" in parsed or "confidence" in parsed:
+                    # Schema-mismatch fallback: treat `supports` as `engages`
+                    # proxy, treat `confidence` as `quality`. supports=False
+                    # in this context means "doesn't confirm" not
+                    # "irrelevant" — so the floor is 0.3 (a confident "the
+                    # source doesn't support, but the topic is addressed").
+                    supports = bool(parsed.get("supports", True))
+                    conf = float(parsed.get("confidence", 0.5))
+                    conf = max(0.0, min(1.0, conf))
+                    score = conf if supports else max(0.3, conf * 0.6)
+                else:
+                    # Unknown JSON shape — fall back to mid-range and let
+                    # downstream dynamics decide.
+                    score = 0.5
                 note = str(parsed.get("reasoning",
                                       parsed.get("note", ""))).strip() or text
             else:
+                # Factual branch (coding): the old supports/confidence
+                # semantics — a confident "doesn't support" SHOULD score
+                # near zero because that's literal negative evidence.
                 supports = bool(parsed.get("supports", False))
                 conf = float(parsed.get("confidence", 0.5))
                 conf = max(0.0, min(1.0, conf))
@@ -493,6 +512,11 @@ def validate_parse(raw: str, task_type: Optional[str] = None) -> ParsedDeposit:
                 score = max(0.0, min(1.0, float(m.group(1))))
             except ValueError:
                 pass
+        # On non-factual tasks, an unparseable validator response is more
+        # likely "the model went off-format" than "the model rejected the
+        # claim". Floor the score so we don't pin verification at 0.
+        if task_type in _NON_FACTUAL_TASKS:
+            score = max(score, 0.3)
     return ParsedDeposit(
         signal_type=VERIFICATION, content=note, strength=score,
         metadata={"score": round(score, 4)},

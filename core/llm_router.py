@@ -604,9 +604,15 @@ class MultiEngineRouter:
               f"for unbudgeted engines)")
         for engine_name, kwargs in self._bundle_spec.items():
             print(f"[router] loading engine {engine_name} ({kwargs.get('model')})")
-            # to_thread keeps the asyncio loop responsive (warmup notifications,
-            # progress ticks, etc.) but only one engine constructs at a time.
-            llm = await asyncio.to_thread(_load_sync, engine_name, kwargs)
+            # Load on the MAIN thread, not via asyncio.to_thread. vLLM v1's
+            # AsyncLLMEngine spawns a subprocess engine-core via mp.spawn;
+            # spawning multiprocessing from a worker thread on Linux
+            # Python 3.12 fails the ZMQ handshake silently ("Engine core
+            # initialization failed. Failed core proc(s): {}"). Blocking
+            # the asyncio loop for a few seconds per engine load is the
+            # price of correctness here — nothing else runs during the
+            # one-time bundle warm-up.
+            llm = _load_sync(engine_name, kwargs)
             self.engines[engine_name] = llm
         print(f"[router] bundle {self.bundle_name!r} fully loaded "
               f"({len(self.engines)} engines)")

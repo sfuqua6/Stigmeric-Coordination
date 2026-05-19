@@ -451,8 +451,14 @@ DEFAULT_HETEROGENEOUS_ASSIGNMENT = {
 
 MODEL_BUNDLES = {
     "debate_analysis": {
+        # Per-engine gpu_memory_utilization is PINNED here because the
+        # auto-budget can't see model size. 14B fp16 needs ~35% of an 80 GB
+        # GPU just for weights; 32B AWQ needs ~22%; 7B fp16 needs ~20%.
+        # Sum ~77%, leaving ~3% slack for activations and the speculative
+        # draft (when re-enabled).
         "primary":   {"model": "Qwen/Qwen2.5-14B-Instruct",       "dtype": "float16",
-                      "max_num_seqs": 24, "max_model_len": 4096},
+                      "max_num_seqs": 24, "max_model_len": 4096,
+                      "gpu_memory_utilization": 0.35},
         # The Qwen org publishes QwQ-32B-Preview only as fp16; the AWQ
         # variant lives in a community namespace. casperhansen's AWQ is
         # the most widely-mirrored one and preserves the QwQ reasoning
@@ -462,28 +468,38 @@ MODEL_BUNDLES = {
                           "SWARM_REASONER_MODEL",
                           "casperhansen/QwQ-32B-Preview-AWQ"),
                       "dtype": "float16",
-                      "quantization": "awq", "max_num_seqs": 12, "max_model_len": 4096},
+                      "quantization": "awq", "max_num_seqs": 12, "max_model_len": 4096,
+                      "gpu_memory_utilization": 0.22},
         "fast":      {"model": "Qwen/Qwen2.5-7B-Instruct",        "dtype": "float16",
-                      "max_num_seqs": 32, "max_model_len": 2048},
+                      "max_num_seqs": 32, "max_model_len": 2048,
+                      "gpu_memory_utilization": 0.20},
     },
     "coding": {
         "primary":   {"model": "Qwen/Qwen2.5-Coder-32B-Instruct", "dtype": "float16",
-                      "quantization": "fp8", "max_num_seqs": 16, "max_model_len": 4096},
+                      "quantization": "fp8", "max_num_seqs": 16, "max_model_len": 4096,
+                      "gpu_memory_utilization": 0.45},
         "secondary": {"model": "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
-                      "dtype": "float16", "max_num_seqs": 16, "max_model_len": 4096},
+                      "dtype": "float16", "max_num_seqs": 16, "max_model_len": 4096,
+                      "gpu_memory_utilization": 0.25},
         "fast":      {"model": "Qwen/Qwen2.5-Coder-7B-Instruct",  "dtype": "float16",
-                      "max_num_seqs": 32, "max_model_len": 2048},
+                      "max_num_seqs": 32, "max_model_len": 2048,
+                      "gpu_memory_utilization": 0.20},
     },
     "creative": {
         "primary":   {"model": "mistralai/Mistral-Nemo-Instruct-2407", "dtype": "float16",
-                      "max_num_seqs": 24, "max_model_len": 4096},
+                      "max_num_seqs": 24, "max_model_len": 4096,
+                      "gpu_memory_utilization": 0.40},
         "fast":      {"model": "Qwen/Qwen2.5-7B-Instruct",        "dtype": "float16",
-                      "max_num_seqs": 32, "max_model_len": 2048},
+                      "max_num_seqs": 32, "max_model_len": 2048,
+                      "gpu_memory_utilization": 0.25},
     },
     "research_ensemble": {  # family-diverse for ensemble runs
-        "primary":   {"model": "Qwen/Qwen2.5-14B-Instruct",        "dtype": "float16"},
-        "secondary": {"model": "meta-llama/Llama-3.1-8B-Instruct", "dtype": "float16"},
-        "tertiary":  {"model": "mistralai/Mistral-Nemo-Instruct-2407", "dtype": "float16"},
+        "primary":   {"model": "Qwen/Qwen2.5-14B-Instruct",        "dtype": "float16",
+                      "gpu_memory_utilization": 0.35},
+        "secondary": {"model": "meta-llama/Llama-3.1-8B-Instruct", "dtype": "float16",
+                      "gpu_memory_utilization": 0.22},
+        "tertiary":  {"model": "mistralai/Mistral-Nemo-Instruct-2407", "dtype": "float16",
+                      "gpu_memory_utilization": 0.30},
     },
 }
 

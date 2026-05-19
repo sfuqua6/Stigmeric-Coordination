@@ -200,7 +200,8 @@ class PoolState:
 # ---------------------------------------------------------------------------
 
 def choose_action(field_state: FieldState, worker_history: deque,
-                  pool_state: PoolState, rng: random.Random) -> Optional[str]:
+                  pool_state: PoolState, rng: random.Random,
+                  disabled_actions: Optional[set] = None) -> Optional[str]:
     """Pick an action for one worker iteration.
 
     Returns None when nothing is available (only SCOUT is precondition-free,
@@ -209,9 +210,12 @@ def choose_action(field_state: FieldState, worker_history: deque,
     Rules:
       1. Cold-start phase: restrict to SCOUT / DEVELOP until threshold met.
       2. Preconditions: filter actions whose precondition fails.
-      3. Share floors/ceilings: bias weight ×1.5 below min, ×0.3 above max.
-      4. Recency penalty: a worker's recent action gets ×0.7 to avoid loops.
+      3. Disabled actions (bundle-specific, e.g. OBJECT/VALIDATE on
+         "creative") are removed from the candidate set entirely.
+      4. Share floors/ceilings: bias weight ×1.5 below min, ×0.3 above max.
+      5. Recency penalty: a worker's recent action gets ×0.7 to avoid loops.
     """
+    disabled = disabled_actions or frozenset()
     cold_start = (
         not pool_state.cold_start_done
         and pool_state.iteration_counter < COLD_START_ITERATIONS
@@ -221,6 +225,8 @@ def choose_action(field_state: FieldState, worker_history: deque,
         # Restricted set: only SCOUT and DEVELOP, with stated weights.
         candidates = []
         for a, w in COLD_START_ACTIONS.items():
+            if a in disabled:
+                continue
             if ACTION_PRECONDITIONS[a](field_state):
                 candidates.append((a, w))
         if not candidates:
@@ -232,7 +238,10 @@ def choose_action(field_state: FieldState, worker_history: deque,
     if pool_state.iteration_counter >= COLD_START_ITERATIONS and not pool_state.cold_start_done:
         pool_state.cold_start_done = True
 
-    available = [a for a in ACTIONS if ACTION_PRECONDITIONS[a](field_state)]
+    available = [
+        a for a in ACTIONS
+        if a not in disabled and ACTION_PRECONDITIONS[a](field_state)
+    ]
     if not available:
         return SCOUT  # SCOUT is unconditionally available
     weights = []
@@ -333,10 +342,15 @@ class Worker:
 
     def __init__(self, worker_id: int, llm, task_prompt: str,
                  user_prompt: str, rng_seed: Optional[int] = None,
-                 task_type: Optional[str] = None):
+                 task_type: Optional[str] = None,
+                 router=None):
         self.worker_id = worker_id
         self.agent_id = f"worker_{worker_id:03d}"
+        # When `router` is set, llm is unused — every generate() call routes
+        # through router.engine_for(role). The single-llm path is kept so
+        # MockLLM / homogeneous single-engine runs work unchanged.
         self.llm = llm
+        self.router = router
         self.task_prompt = task_prompt
         self.user_prompt = user_prompt
         # Task type drives query-stance selection and survival profile
@@ -349,12 +363,39 @@ class Worker:
         self._query_history: list[str] = []
         # Track own deposits so SCOUT re-seed can avoid restating them.
         self._own_scout_excerpts: list[str] = []
+        # Bundle-disabled actions (cached). Roles set to None in the bundle's
+        # ROLE_TO_ENGINE map cause their action to drop out of choose_action.
+        self._disabled_actions: frozenset = self._compute_disabled_actions()
+
+    def _compute_disabled_actions(self) -> frozenset:
+        if self.router is None:
+            return frozenset()
+        from core.config import ACTION_TO_ROLE
+        out = set()
+        for act, role in ACTION_TO_ROLE.items():
+            if self.router.role_disabled(role):
+                out.add(act)
+        return frozenset(out)
+
+    def _llm_for_action(self, action: str):
+        """Resolve the right LLM backend for this action.
+
+        When a router is wired, look up the role implied by the action via
+        ACTION_TO_ROLE and ask the router for that role's engine. Otherwise
+        fall back to the single self.llm.
+        """
+        if self.router is None:
+            return self.llm
+        from core.config import ACTION_TO_ROLE
+        role = ACTION_TO_ROLE.get(action, "forager")
+        return self.router.engine_for(role)
 
     async def iterate(self, store: SignalStore, pool_state: PoolState,
                       field_state: FieldState) -> Optional[str]:
         """Run one iteration. Returns the action name on deposit, None on skip."""
         action = choose_action(field_state, self.recent_actions, pool_state,
-                               self._rng)
+                               self._rng,
+                               disabled_actions=self._disabled_actions)
         if action is None:
             return None
 
@@ -372,7 +413,8 @@ class Worker:
                 elapsed_s=time.time() - pool_state.started_at,
             )
             action = choose_action(fresh, self.recent_actions, pool_state,
-                                   self._rng) or SCOUT
+                                   self._rng,
+                                   disabled_actions=self._disabled_actions) or SCOUT
             target, retrieved_chunks, query, dissent = await self._gather_target(
                 action, store, pool_state, fresh,
             )
@@ -400,7 +442,8 @@ class Worker:
         self._assert_no_leak(prompt)
 
         spec = ACTION_REGISTRY[action]
-        raw = await self.llm.generate(
+        chosen_llm = self._llm_for_action(action)
+        raw = await chosen_llm.generate(
             prompt, role=action.lower(),
             max_tokens=spec.max_tokens, temperature=spec.temperature,
         )
@@ -754,15 +797,22 @@ async def worker_loop(worker: Worker, store: SignalStore,
 async def run_pool(store: SignalStore, llm, task_prompt: str,
                    user_prompt: str, stop_event: asyncio.Event,
                    n_workers: int = 24,
-                   task_type: Optional[str] = None) -> PoolState:
+                   task_type: Optional[str] = None,
+                   router=None) -> PoolState:
     """Spin up `n_workers` and run until `stop_event` fires.
 
     Returns the PoolState (action log, iteration count, etc.) for the
     orchestrator's summary.
+
+    `router` (optional MultiEngineRouter): when provided, each Worker
+    routes generate() per-action via ACTION_TO_ROLE → router.engine_for.
+    The single `llm` argument is still accepted as the fallback for
+    actions whose role is missing from the bundle.
     """
     pool_state = PoolState()
     workers = [
-        Worker(i, llm, task_prompt, user_prompt, rng_seed=i, task_type=task_type)
+        Worker(i, llm, task_prompt, user_prompt, rng_seed=i,
+               task_type=task_type, router=router)
         for i in range(n_workers)
     ]
     tasks = [

@@ -458,3 +458,252 @@ def make_router(tier):
             "a base model + LoRA adapter cache. Set USE_HETEROGENEOUS=False."
         )
     return HeterogeneousRouter()
+
+
+# ---------------------------------------------------------------------------
+# MultiEngineRouter — task-conditional model bundles (Phase 1C)
+# ---------------------------------------------------------------------------
+# Loads every engine in a MODEL_BUNDLES bundle simultaneously and routes
+# Worker.generate() calls per-role. Engines stay resident for the entire
+# run; swap cost between roles is zero.
+#
+# Contract (intentionally different from HeterogeneousRouter — no acquire/
+# group_agents indirection, no per-phase teardown):
+#
+#   router = MultiEngineRouter(bundle_name="debate_analysis", task_type="debate")
+#   await router.load()            # parallel engine load via asyncio.gather
+#   llm = router.engine_for("scout")   # returns VLLMBackend (or MockLLM)
+#   await router.teardown()        # end-of-run cleanup
+#
+# Also exposes:
+#   router.bundle_name             # the resolved bundle name
+#   router.engines: dict[str,LLM]  # all loaded engines, keyed by engine name
+#   router.manifest()              # {role: model_name} for run_meta.json
+#   router.engines_summary()       # {engine_name: model_name} for summary.json
+#   router.speculative_enabled     # bool, whether a draft model was attached
+#   router.disabled_roles          # set of roles with engine=None
+#   router.action_disabled(action) # True iff its implied role is disabled
+
+
+def _role_engine_key(role_to_engine: dict, role: str, iteration: int):
+    """Resolve a role to a single engine key.
+
+    Handles three shapes:
+      - None: role disabled
+      - str:  fixed engine
+      - list[str]: round-robin by iteration counter (research_ensemble.scout)
+    """
+    spec = role_to_engine.get(role)
+    if spec is None:
+        return None
+    if isinstance(spec, list):
+        if not spec:
+            return None
+        return spec[iteration % len(spec)]
+    return spec
+
+
+class MultiEngineRouter:
+    """Loads all engines in a bundle and routes per-role.
+
+    Unlike HeterogeneousRouter (sequential GGUF swap) and
+    LoRAHeterogeneousRouter (single base + LoRA), every engine in the bundle
+    is held resident in VRAM. Designed for A100 80 GB; A100 40 GB / L4 may
+    not fit larger bundles, in which case the caller should pick a smaller
+    bundle via --bundle.
+    """
+
+    def __init__(self, bundle_name: str, task_type: Optional[str] = None):
+        from .config import MODEL_BUNDLES, ROLE_TO_ENGINE, USE_MOCK_LLM
+        if bundle_name not in MODEL_BUNDLES:
+            raise ValueError(
+                f"unknown bundle {bundle_name!r}; "
+                f"choose from {sorted(MODEL_BUNDLES)}"
+            )
+        self.bundle_name = bundle_name
+        self.task_type = task_type
+        self._bundle_spec = MODEL_BUNDLES[bundle_name]
+        self._role_to_engine: dict = ROLE_TO_ENGINE.get(bundle_name, {})
+        self.engines: dict = {}
+        self._use_mock = USE_MOCK_LLM
+        self._round_robin_state: dict = {}  # role -> int counter
+        self.speculative_enabled: bool = False
+        self.disabled_roles: set = {
+            role for role, eng in self._role_to_engine.items() if eng is None
+        }
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+
+    async def load(self) -> None:
+        """Load every engine declared in the bundle. Parallel via asyncio.gather.
+
+        VLLMBackend.__init__ is currently synchronous (it blocks on the
+        vLLM engine construction). asyncio.to_thread runs each load in a
+        worker thread so loads start concurrently — the gain comes from
+        overlapping HF Hub downloads and Triton JIT for different models,
+        not from CUDA-level concurrency.
+        """
+        from .config import (
+            SPECULATIVE_DRAFT_MODEL, SPECULATIVE_NUM_TOKENS,
+            SPECULATIVE_TARGET_ENGINE, USE_MOCK_LLM,
+        )
+        if USE_MOCK_LLM:
+            from .llm import MockLLM
+            for engine_name in self._bundle_spec:
+                self.engines[engine_name] = MockLLM()
+            print(f"[router] bundle: {self.bundle_name} (mock-loaded "
+                  f"{len(self.engines)} engines)")
+            return
+
+        async def _load_one(engine_name: str, kwargs: dict):
+            # Inject speculative config onto the synthesizer-targeted engine.
+            engine_kwargs = dict(kwargs)
+            if engine_name == SPECULATIVE_TARGET_ENGINE and SPECULATIVE_DRAFT_MODEL:
+                engine_kwargs["speculative_config"] = {
+                    "model": SPECULATIVE_DRAFT_MODEL,
+                    "num_speculative_tokens": int(SPECULATIVE_NUM_TOKENS),
+                }
+                self.speculative_enabled = True
+            model = engine_kwargs.pop("model")
+            from .llm_vllm import VLLMBackend
+            def _construct():
+                return VLLMBackend(
+                    model_name=model, engine_tag=engine_name, **engine_kwargs,
+                )
+            return engine_name, await asyncio.to_thread(_construct)
+
+        tasks = [
+            _load_one(name, kwargs)
+            for name, kwargs in self._bundle_spec.items()
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        for engine_name, llm in results:
+            self.engines[engine_name] = llm
+        print(f"[router] bundle: {self.bundle_name}")
+        for engine_name, llm in self.engines.items():
+            print(f"[router] engine {engine_name}: {getattr(llm, 'name', '?')}")
+
+    # ------------------------------------------------------------------
+    # Per-call routing
+    # ------------------------------------------------------------------
+
+    def engine_for(self, role: str):
+        """Return the LLM backend that should serve `role`.
+
+        Disabled roles raise — callers should check action_disabled() (or
+        the engine bundle's ROLE_TO_ENGINE entry) and drop the action
+        BEFORE generate() is invoked.
+        """
+        if role in self.disabled_roles:
+            raise RuntimeError(
+                f"role {role!r} is disabled in bundle {self.bundle_name!r}; "
+                f"check ACTION_TO_ROLE / ROLE_TO_ENGINE before calling generate()"
+            )
+        counter = self._round_robin_state.get(role, 0)
+        engine_name = _role_engine_key(self._role_to_engine, role, counter)
+        if engine_name is None:
+            # Fallback when a role is missing from the bundle's role map —
+            # use the synthesizer-target engine which is guaranteed present.
+            from .config import SPECULATIVE_TARGET_ENGINE
+            engine_name = SPECULATIVE_TARGET_ENGINE
+        # Bump the round-robin counter regardless of whether this role uses
+        # one; cheap, and keeps the state usable if list-form is added later.
+        self._round_robin_state[role] = counter + 1
+        llm = self.engines.get(engine_name)
+        if llm is None:
+            # Bundle declares this engine but load() didn't populate it. The
+            # only path to that is a load failure that didn't raise — shouldn't
+            # happen in practice. Pick any loaded engine to keep the call alive.
+            if not self.engines:
+                raise RuntimeError(
+                    f"router {self.bundle_name!r} has no engines loaded"
+                )
+            llm = next(iter(self.engines.values()))
+        return llm
+
+    def role_disabled(self, role: str) -> bool:
+        return role in self.disabled_roles
+
+    def action_disabled(self, action: str) -> bool:
+        from .config import ACTION_TO_ROLE
+        role = ACTION_TO_ROLE.get(action)
+        if role is None:
+            return False
+        return role in self.disabled_roles
+
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+
+    def manifest(self) -> dict:
+        """Return {role: model_name} for run_meta.json's model_assignment."""
+        out: dict = {}
+        for role, spec in self._role_to_engine.items():
+            if spec is None:
+                out[role] = None
+                continue
+            if isinstance(spec, list):
+                out[role] = [self._engine_model(e) for e in spec]
+            else:
+                out[role] = self._engine_model(spec)
+        return out
+
+    def engines_summary(self) -> dict:
+        """Return {engine_name: model_name} for summary.json's `engines` field."""
+        return {
+            name: getattr(llm, "name", name)
+            for name, llm in self.engines.items()
+        }
+
+    def _engine_model(self, engine_name: str) -> Optional[str]:
+        llm = self.engines.get(engine_name)
+        if llm is not None:
+            return getattr(llm, "name", engine_name)
+        spec = self._bundle_spec.get(engine_name)
+        return spec.get("model") if spec else None
+
+    async def warmup(self, n: int = 3) -> None:
+        """Best-effort warmup across all engines (parallel)."""
+        async def _w(llm):
+            if hasattr(llm, "warmup"):
+                try:
+                    await llm.warmup(n=n)
+                except Exception as exc:
+                    print(f"[router] warmup on {getattr(llm, 'name', '?')} "
+                          f"raised {type(exc).__name__}: {exc}")
+        await asyncio.gather(*(_w(llm) for llm in self.engines.values()))
+
+    async def teardown(self) -> None:
+        """End-of-run cleanup. Drops references and triggers GC."""
+        self.engines.clear()
+        try:
+            gc.collect()
+            import torch  # type: ignore
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
+def make_bundle_router(task_type: str,
+                       override_bundle: Optional[str] = None
+                       ) -> MultiEngineRouter:
+    """Pick the right bundle for a task and return an unloaded router.
+
+    Caller must `await router.load()` before issuing generate() calls.
+    """
+    from .config import TASK_TO_BUNDLE, MODEL_BUNDLES
+    bundle = override_bundle or TASK_TO_BUNDLE.get(task_type)
+    if bundle is None:
+        # Unknown task type — pick the most general bundle.
+        bundle = "debate_analysis"
+        print(f"[router] no TASK_TO_BUNDLE entry for {task_type!r}; "
+              f"falling back to {bundle!r}")
+    if bundle not in MODEL_BUNDLES:
+        raise ValueError(
+            f"requested bundle {bundle!r} not in MODEL_BUNDLES "
+            f"({sorted(MODEL_BUNDLES)})"
+        )
+    return MultiEngineRouter(bundle_name=bundle, task_type=task_type)

@@ -1,6 +1,7 @@
 """Configuration for the cleaned stigmergic implementation."""
 
 import os
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Colab tier detection — drives model selection, populations, dtype, etc.
@@ -432,3 +433,147 @@ DEFAULT_HETEROGENEOUS_ASSIGNMENT = {
     "validator":    "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
     "synthesizer":  "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
 }
+
+
+# ---------------------------------------------------------------------------
+# Task-conditional model bundles (multi-engine resident routing)
+# ---------------------------------------------------------------------------
+# A "bundle" is a coherent set of vLLM engines loaded simultaneously and
+# routed per-role for a given task type. Unlike DEFAULT_HETEROGENEOUS_ASSIGNMENT
+# (sequential swap), bundle engines all stay resident for the run; the
+# MultiEngineRouter dispatches each Worker.generate() call to the engine its
+# role implies. Fits the A100 80 GB envelope.
+#
+# Each engine kwargs dict is forwarded to VLLMBackend(__init__); recognised
+# keys: model, dtype, quantization, max_num_seqs, max_model_len,
+# gpu_memory_utilization, enforce_eager, kv_cache_dtype, enable_chunked_prefill,
+# speculative_config, plus any extra_engine_args.
+
+MODEL_BUNDLES = {
+    "debate_analysis": {
+        "primary":   {"model": "Qwen/Qwen2.5-14B-Instruct",       "dtype": "float16",
+                      "max_num_seqs": 24, "max_model_len": 4096},
+        "reasoner":  {"model": "Qwen/QwQ-32B-Preview-AWQ",        "dtype": "float16",
+                      "quantization": "awq", "max_num_seqs": 12, "max_model_len": 4096},
+        "fast":      {"model": "Qwen/Qwen2.5-7B-Instruct",        "dtype": "float16",
+                      "max_num_seqs": 32, "max_model_len": 2048},
+    },
+    "coding": {
+        "primary":   {"model": "Qwen/Qwen2.5-Coder-32B-Instruct", "dtype": "float16",
+                      "quantization": "fp8", "max_num_seqs": 16, "max_model_len": 4096},
+        "secondary": {"model": "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
+                      "dtype": "float16", "max_num_seqs": 16, "max_model_len": 4096},
+        "fast":      {"model": "Qwen/Qwen2.5-Coder-7B-Instruct",  "dtype": "float16",
+                      "max_num_seqs": 32, "max_model_len": 2048},
+    },
+    "creative": {
+        "primary":   {"model": "mistralai/Mistral-Nemo-Instruct-2407", "dtype": "float16",
+                      "max_num_seqs": 24, "max_model_len": 4096},
+        "fast":      {"model": "Qwen/Qwen2.5-7B-Instruct",        "dtype": "float16",
+                      "max_num_seqs": 32, "max_model_len": 2048},
+    },
+    "research_ensemble": {  # family-diverse for ensemble runs
+        "primary":   {"model": "Qwen/Qwen2.5-14B-Instruct",        "dtype": "float16"},
+        "secondary": {"model": "meta-llama/Llama-3.1-8B-Instruct", "dtype": "float16"},
+        "tertiary":  {"model": "mistralai/Mistral-Nemo-Instruct-2407", "dtype": "float16"},
+    },
+}
+
+# Maps task_type → bundle name. Unknown task types fall back to
+# "debate_analysis" (full-featured) so the router can always pick *some*
+# bundle. Override via --bundle in run_swarm.py.
+TASK_TO_BUNDLE = {
+    "debate":          "debate_analysis",
+    "analysis":        "debate_analysis",
+    "problem_solving": "debate_analysis",
+    "creative":        "creative",
+    "coding":          "coding",
+}
+
+# Role → engine routing. Each entry maps a role name to:
+#   - a string engine key ("primary"|"reasoner"|"fast"|"secondary"|"tertiary"),
+#   - None → role is disabled for this bundle (the action chooser drops
+#     the corresponding action),
+#   - a list of strings → round-robin across engines for that role across
+#     iterations (used by research_ensemble.scout).
+ROLE_TO_ENGINE = {
+    "debate_analysis": {
+        "scout":       "primary",
+        "forager":     "primary",
+        "developer":   "primary",   # alias for forager
+        "critic":      "reasoner",
+        "hater":       "reasoner",
+        "validator":   "fast",
+        "synthesizer": "primary",
+    },
+    "coding": {
+        "scout":       "primary",
+        "forager":     "primary",
+        "developer":   "primary",
+        "critic":      "primary",
+        "hater":       "secondary",   # different family for adversarial
+        "validator":   "fast",
+        "synthesizer": "primary",
+    },
+    "creative": {
+        "scout":       "primary",
+        "forager":     "primary",
+        "developer":   "primary",
+        "critic":      "primary",
+        "hater":       None,           # disabled for creative
+        "validator":   None,           # disabled for creative
+        "synthesizer": "primary",
+    },
+    "research_ensemble": {
+        "scout":       ["primary", "secondary", "tertiary"],  # round-robin across families
+        "forager":     "primary",
+        "developer":   "primary",
+        "critic":      "secondary",
+        "hater":       "tertiary",
+        "validator":   "primary",
+        "synthesizer": "primary",
+    },
+}
+
+# Per-engine SamplingParams defaults. Per-role temperature/max_tokens
+# overrides apply on top via SamplingParams(**engine_defaults, **role_override).
+# Llama-family engines keep a lower repetition_penalty than Qwen because Llama
+# fp16 amplifies the 1.15 penalty into degenerate token loops at temp >=0.7.
+SAMPLING_PER_ENGINE = {
+    "primary":   {"temperature": 0.7, "top_p": 0.92, "repetition_penalty": 1.15},
+    "reasoner":  {"temperature": 0.6, "top_p": 0.95, "repetition_penalty": 1.10},
+    "fast":      {"temperature": 0.4, "top_p": 0.92, "repetition_penalty": 1.10},
+    "secondary": {"temperature": 0.7, "top_p": 0.92, "repetition_penalty": 1.10},
+    "tertiary":  {"temperature": 0.7, "top_p": 0.92, "repetition_penalty": 1.10},
+}
+
+# Action → role mapping for worker_pool. Used by the MultiEngineRouter to
+# pick the right engine for each Worker.iterate() call.
+ACTION_TO_ROLE = {
+    "SCOUT":    "scout",
+    "DEVELOP":  "forager",
+    "CHAIN":    "forager",
+    "CRITIQUE": "critic",
+    "OBJECT":   "hater",
+    "VALIDATE": "validator",
+    "REFINE":   "synthesizer",
+}
+
+# Feature flag for the bundle path. Defaults off; flipped on by
+# run_swarm.py main() when --bundle is passed or USE_MODEL_BUNDLES=1 env is set.
+USE_MODEL_BUNDLES = os.environ.get("USE_MODEL_BUNDLES", "").strip() not in ("", "0", "false", "False")
+# Active bundle name; set by run_swarm.py once task_type is parsed. None
+# means "auto-pick from TASK_TO_BUNDLE[task_type]".
+ACTIVE_BUNDLE: Optional[str] = None  # populated at runtime
+
+# Speculative-decoding draft model used on the synthesizer-targeted engine.
+# vLLM ≥ 0.5 supports `speculative_config` on AsyncEngineArgs. Drafts are
+# verified by the primary engine, so wall-clock falls 1.8-2.2× on long
+# generations (synthesizer cluster calls) with no quality regression.
+SPECULATIVE_DRAFT_MODEL = os.environ.get(
+    "SWARM_SPECULATIVE_DRAFT", "Qwen/Qwen2.5-1.5B-Instruct",
+)
+SPECULATIVE_NUM_TOKENS = _int_env("SWARM_SPECULATIVE_NUM_TOKENS", 5)
+# Engine key that the speculative draft attaches to. "primary" is the
+# default — that's the engine the synthesizer routes to in every bundle.
+SPECULATIVE_TARGET_ENGINE = "primary"

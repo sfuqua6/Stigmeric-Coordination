@@ -103,11 +103,14 @@ class VLLMBackend:
                  enforce_eager: bool = True,
                  kv_cache_dtype: Optional[str] = None,
                  enable_chunked_prefill: bool = False,
+                 enable_prefix_caching: bool = True,
                  quantization: Optional[str] = None,
                  trust_remote_code: bool = True,
                  enable_lora: bool = False,
                  max_loras: int = 8,
                  max_lora_rank: int = 32,
+                 speculative_config: Optional[dict] = None,
+                 engine_tag: Optional[str] = None,
                  **extra_engine_args):
         if not _VLLM_AVAILABLE:
             raise RuntimeError(
@@ -127,6 +130,7 @@ class VLLMBackend:
             max_model_len=max_model_len,
             enforce_eager=enforce_eager,
             enable_chunked_prefill=enable_chunked_prefill,
+            enable_prefix_caching=enable_prefix_caching,
             trust_remote_code=trust_remote_code,
         )
         # Only include kv_cache_dtype / quantization if explicitly set —
@@ -142,10 +146,35 @@ class VLLMBackend:
             engine_kwargs["enable_lora"] = True
             engine_kwargs["max_loras"] = max_loras
             engine_kwargs["max_lora_rank"] = max_lora_rank
+        # Speculative decoding: vLLM verifies a small draft model's
+        # tokens with the primary engine, getting ~1.8-2.2× throughput on
+        # long generations (synthesizer cluster calls). Bundle config wires
+        # this only onto the synthesizer-targeted engine.
+        if speculative_config:
+            engine_kwargs["speculative_config"] = speculative_config
         # Forward any other knobs the caller passed (e.g. tensor_parallel_size).
         for k, v in extra_engine_args.items():
             engine_kwargs[k] = v
-        engine_args = AsyncEngineArgs(**engine_kwargs)
+        # AsyncEngineArgs may not accept `enable_prefix_caching` or
+        # `speculative_config` on older vLLM versions. Drop unknowns
+        # gracefully so a stale install still loads.
+        try:
+            engine_args = AsyncEngineArgs(**engine_kwargs)
+        except TypeError as exc:
+            msg = str(exc)
+            dropped = []
+            for opt_key in ("enable_prefix_caching", "speculative_config"):
+                if opt_key in msg and opt_key in engine_kwargs:
+                    engine_kwargs.pop(opt_key, None)
+                    dropped.append(opt_key)
+            if not dropped:
+                raise
+            print(f"[llm-vllm] warning: AsyncEngineArgs rejected {dropped}; "
+                  f"dropping and retrying (likely older vllm version)")
+            engine_args = AsyncEngineArgs(**engine_kwargs)
+        # Bind back whatever finally stuck so introspection logs the truth.
+        self._prefix_caching_enabled = bool(engine_kwargs.get("enable_prefix_caching"))
+        self._speculative_config = engine_kwargs.get("speculative_config")
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)
         self._lora_enabled = enable_lora
         # Load tokenizer separately. vLLM's engine.get_tokenizer() is
@@ -158,11 +187,19 @@ class VLLMBackend:
         self._model_name = model_name
         self._max_num_seqs = max_num_seqs
         self._request_counter = 0
+        # Engine tag drives per-engine SamplingParams selection. Default
+        # ("primary") matches the Qwen sampling profile if no MultiEngineRouter
+        # is wired (homogeneous-vLLM path).
+        self.engine_tag = engine_tag or "primary"
         self.name = f"vLLM:{model_name}"
         # Acceptance-criterion banner: makes the live config trivially greppable
         # in Colab logs ("did the A100 path really raise max_model_len?").
         print(f"[llm] backend: vLLM:{model_name} "
               f"max_model_len={max_model_len} enforce_eager={enforce_eager}")
+        print(f"[llm-vllm] prefix_caching={'enabled' if self._prefix_caching_enabled else 'disabled'}")
+        if self._speculative_config:
+            print(f"[llm-vllm] speculative: draft={self._speculative_config.get('model')} "
+                  f"num_speculative_tokens={self._speculative_config.get('num_speculative_tokens')}")
         print(f"[llm-vllm] loaded ok. internal batching cap: {max_num_seqs}")
 
         # Phase 0: clean shutdown. vLLM's AsyncLLMEngine doesn't tear down
@@ -197,13 +234,24 @@ class VLLMBackend:
 
         lora_request: an instance of vllm.lora.request.LoRARequest or None.
         Ignored if the engine wasn't loaded with enable_lora=True.
+
+        Sampling params are pulled from SAMPLING_PER_ENGINE[engine_tag],
+        with per-call temperature/max_tokens overriding the engine default
+        (the caller's `temperature` argument always wins for that field).
         """
         formatted = self._apply_chat_template(prompt, role)
+        try:
+            from .config import SAMPLING_PER_ENGINE
+            engine_defaults = dict(SAMPLING_PER_ENGINE.get(self.engine_tag, {}))
+        except Exception:
+            engine_defaults = {}
+        # Per-call overrides (caller-supplied temperature / max_tokens always
+        # take precedence over the engine default).
         params = SamplingParams(
             max_tokens=max_tokens,
             temperature=max(0.05, temperature),
-            top_p=0.92,
-            repetition_penalty=1.15,
+            top_p=engine_defaults.get("top_p", 0.92),
+            repetition_penalty=engine_defaults.get("repetition_penalty", 1.15),
             stop=_STOP_TOKENS,
         )
         self._request_counter += 1

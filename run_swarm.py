@@ -85,7 +85,7 @@ from core.diversity import (
 )
 from core.output_diversity import format_output_diversity_report
 from core.llm import make_llm
-from core.llm_router import HeterogeneousRouter, make_router
+from core.llm_router import HeterogeneousRouter, make_router, make_bundle_router
 from core.knowledge_base import KnowledgeBase
 
 from agents.scout import Scout, ScoutConfig
@@ -218,6 +218,36 @@ def _make_progress(total: int, desc: str):
 
 
 _LLM_INFLIGHT_METRICS = {"peak": 0, "total_calls": 0, "total_tokens_generated": 0}
+
+
+def _print_bundle_banner(router) -> None:
+    """Emit the Phase 5 startup banner for a MultiEngineRouter."""
+    from core.config import (
+        ROLE_TO_ENGINE, SPECULATIVE_DRAFT_MODEL, SPECULATIVE_TARGET_ENGINE,
+        MODEL_BUNDLES,
+    )
+    bundle = router.bundle_name
+    print(f"[router] bundle: {bundle}")
+    bundle_spec = MODEL_BUNDLES.get(bundle, {})
+    for engine_name, llm in router.engines.items():
+        cfg = bundle_spec.get(engine_name, {})
+        model_id = cfg.get("model", getattr(llm, "name", "?"))
+        quant = cfg.get("quantization", cfg.get("dtype", "?"))
+        max_seqs = cfg.get("max_num_seqs", "?")
+        print(f"[router] engine {engine_name:>10s}: {model_id} "
+              f"({quant}, max_seqs={max_seqs})")
+    routing = ROLE_TO_ENGINE.get(bundle, {})
+    routing_pairs = ", ".join(
+        f"{r}->{('|'.join(e) if isinstance(e, list) else (e or 'disabled'))}"
+        for r, e in routing.items()
+    )
+    print(f"[router] role routing: {routing_pairs}")
+    if router.speculative_enabled and SPECULATIVE_DRAFT_MODEL:
+        print(f"[router] speculative: {SPECULATIVE_TARGET_ENGINE} engine "
+              f"uses {SPECULATIVE_DRAFT_MODEL} draft model")
+    else:
+        print(f"[router] speculative: disabled")
+    print(f"[router] prefix_caching=enabled on all engines")
 
 
 def _wrap_llm_with_progress(llm, progress):
@@ -812,24 +842,43 @@ async def run_continuous_pipeline(
     reset_kb: bool = False,
     n_workers: int = _CONTINUOUS_DEFAULT_WORKERS,
     cloud_provider: str = "none",
+    bundle: Optional[str] = None,
 ) -> dict:
     """Continuous worker pool replacing the round/phase scheduler.
 
     Workers pick actions per iteration against the live store; the
     ConvergenceDetector decides when to halt. No fixed NUM_ROUNDS,
     no Phase A / Phase B serialization.
+
+    `bundle` (optional): name of a MODEL_BUNDLES entry. When provided, the
+    pipeline loads every engine in the bundle and routes Worker.generate()
+    calls per-role via MultiEngineRouter. When None and config.USE_MODEL_BUNDLES
+    is set, falls back to TASK_TO_BUNDLE[task_type].
     """
     pipeline_start = time.time()
     task_prompt = build_task_prompt(task_type, user_prompt)
 
-    llm = make_llm()
-    # Phase 0: JIT warmup so the slot-mapping kernel doesn't stall the
-    # first real iteration. Only meaningful on vLLM; MockLLM/HF skip.
-    if hasattr(llm, "warmup"):
-        try:
-            await llm.warmup(n=5)
-        except Exception as exc:
-            print(f"[pipeline] warmup raised {type(exc).__name__}: {exc}")
+    # Bundle path: load every engine declared in the bundle and route per-role.
+    # Single-engine path: traditional make_llm() backed by vLLM cascade / HF.
+    router = None
+    use_bundle = bundle is not None or config.USE_MODEL_BUNDLES
+    if use_bundle:
+        router = make_bundle_router(task_type, override_bundle=bundle)
+        config.ACTIVE_BUNDLE = router.bundle_name
+        await router.load()
+        _print_bundle_banner(router)
+        # Warm every engine in parallel (cheap once they're loaded).
+        await router.warmup(n=3)
+        llm = next(iter(router.engines.values())) if router.engines else None
+    else:
+        llm = make_llm()
+        # Phase 0: JIT warmup so the slot-mapping kernel doesn't stall the
+        # first real iteration. Only meaningful on vLLM; MockLLM/HF skip.
+        if hasattr(llm, "warmup"):
+            try:
+                await llm.warmup(n=5)
+            except Exception as exc:
+                print(f"[pipeline] warmup raised {type(exc).__name__}: {exc}")
 
     store = SignalStore()
 
@@ -867,6 +916,7 @@ async def run_continuous_pipeline(
         store, llm, task_prompt, user_prompt, stop_event,
         n_workers=n_workers,
         task_type=task_type,
+        router=router,
     ))
     decay_task = asyncio.create_task(decay_loop(store, stop_event, interval_s=30.0))
 
@@ -930,20 +980,25 @@ async def run_continuous_pipeline(
         json.dumps(signal_dump, indent=2), encoding="utf-8"
     )
 
+    backend_label = ("bundle:" + router.bundle_name) if router is not None else (llm.name if llm else "unknown")
+    model_assignment = router.manifest() if router is not None else (
+        {"all": llm.name} if llm is not None else {}
+    )
     (output_dir / "run_meta.json").write_text(json.dumps({
         "task_type": task_type,
         "user_prompt": user_prompt,
-        "llm_backend": llm.name,
+        "llm_backend": backend_label,
         "is_mock": USE_MOCK_LLM,
         "timestamp": os.environ.get("SWARM_RUN_TIMESTAMP", datetime.now().isoformat()),
         "colab_tier": config._TIER,
         "model_name": config.MODEL_NAME,
         "execution_mode": "continuous_pool",
         "n_workers": n_workers,
+        "bundle": (router.bundle_name if router is not None else None),
         # Single-model run; keep the heterogeneous-routing manifest shape
         # so downstream tooling that diffs runs across modes doesn't have to
         # branch.
-        "model_assignment": {"all": llm.name},
+        "model_assignment": model_assignment,
     }, indent=2), encoding="utf-8")
 
     # Synthesis
@@ -954,7 +1009,8 @@ async def run_continuous_pipeline(
     }
     SynthesizerClass = get_role_classes(task_type).get("synthesizer", Synthesizer)
     try:
-        synth = SynthesizerClass(llm, task_prompt)
+        synth_llm = router.engine_for("synthesizer") if router is not None else llm
+        synth = SynthesizerClass(synth_llm, task_prompt)
         final_answer, citations, lineage_dot = await synth.synthesize(
             store,
             has_validators=True,
@@ -968,6 +1024,9 @@ async def run_continuous_pipeline(
         final_answer = f"(synthesis failed: {type(exc).__name__}: {exc})"
         citations = {}
         lineage_dot = ""
+
+    if router is not None:
+        await router.teardown()
 
     (output_dir / "answer.txt").write_text(final_answer, encoding="utf-8")
     if citations:
@@ -1017,6 +1076,10 @@ async def run_continuous_pipeline(
             "task_type": task_type,
             "user_prompt": user_prompt,
             "execution_mode": "continuous_pool",
+            "bundle": (router.bundle_name if router is not None else None),
+            "engines": (router.engines_summary() if router is not None else None),
+            "speculative_enabled": bool(router.speculative_enabled) if router is not None else False,
+            "prefix_caching_enabled": True,
             "total_iterations": int(total_iterations),
             "wall_clock_s": round(final_elapsed, 1),
             "quality_met": bool(detector.state.quality_met),
@@ -1522,6 +1585,22 @@ def main():
             print(f"[pipeline] --workers expects an integer; got {worker_flags[-1]!r}")
             sys.exit(1)
     args = [a for a in args if not a.startswith("--workers=")]
+
+    # --bundle=NAME: pick a MODEL_BUNDLES entry, overriding TASK_TO_BUNDLE.
+    # Only meaningful with the default continuous_pool execution mode.
+    bundle: Optional[str] = None
+    bundle_flags = [a for a in args if a.startswith("--bundle=")]
+    if bundle_flags:
+        bundle = bundle_flags[-1].split("=", 1)[1]
+        from core.config import MODEL_BUNDLES as _BUNDLES
+        if bundle not in _BUNDLES:
+            print(f"[pipeline] --bundle={bundle!r} is not in MODEL_BUNDLES "
+                  f"({sorted(_BUNDLES)})")
+            sys.exit(1)
+        # Setting the flag turns the bundle path on even if env was unset.
+        config.USE_MODEL_BUNDLES = True
+    args = [a for a in args if not a.startswith("--bundle=")]
+
     if heterogeneous:
         # Tier-gated. T4 cannot run heterogeneous: VRAM (16 GB) only fits one
         # 7B AWQ with usable KV cache. Per-role GGUF specialists were never the
@@ -1699,6 +1778,7 @@ def main():
             reset_kb=reset_kb,
             n_workers=workers,
             cloud_provider=cloud_provider,
+            bundle=bundle,
         ))
 
 

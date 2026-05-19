@@ -578,9 +578,15 @@ ACTIVE_BUNDLE: Optional[str] = None  # populated at runtime
 # vLLM ≥ 0.5 supports `speculative_config` on AsyncEngineArgs. Drafts are
 # verified by the primary engine, so wall-clock falls 1.8-2.2× on long
 # generations (synthesizer cluster calls) with no quality regression.
-SPECULATIVE_DRAFT_MODEL = os.environ.get(
-    "SWARM_SPECULATIVE_DRAFT", "Qwen/Qwen2.5-1.5B-Instruct",
-)
+#
+# DEFAULT IS DISABLED. Speculative decoding requires the draft model to
+# share the target model's vocabulary. Qwen2.5 splits vocab across sizes —
+# 0.5B/1.5B/3B use vocab 151936, while 7B/14B/32B use 152064 — so there
+# is no small Qwen2.5 model that pairs with the bundle's primary engine.
+# Opt back in by setting SWARM_SPECULATIVE_DRAFT to a vocab-matched draft
+# (e.g. "Qwen/Qwen2.5-7B-Instruct" for a 14B target gets ~1.4× but the
+# draft is itself big enough that the win is small).
+SPECULATIVE_DRAFT_MODEL = os.environ.get("SWARM_SPECULATIVE_DRAFT", "")
 SPECULATIVE_NUM_TOKENS = _int_env("SWARM_SPECULATIVE_NUM_TOKENS", 5)
 # Engine key that the speculative draft attaches to. "primary" is the
 # default — that's the engine the synthesizer routes to in every bundle.

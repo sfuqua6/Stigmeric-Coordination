@@ -175,7 +175,30 @@ class VLLMBackend:
         # Bind back whatever finally stuck so introspection logs the truth.
         self._prefix_caching_enabled = bool(engine_kwargs.get("enable_prefix_caching"))
         self._speculative_config = engine_kwargs.get("speculative_config")
-        self._engine = AsyncLLMEngine.from_engine_args(engine_args)
+        try:
+            self._engine = AsyncLLMEngine.from_engine_args(engine_args)
+        except Exception as exc:
+            # Most common cause: speculative_config validation failure
+            # (target vs draft vocab mismatch, unsupported pair, etc).
+            # Disable speculative and retry once. Vocab-mismatch surfaces
+            # as a pydantic ValidationError; we can't import pydantic just
+            # to type-check it, so match on the message instead.
+            msg = str(exc)
+            spec_signals = ("speculative", "vocab_size", "draft model",
+                            "SpeculativeConfig")
+            if (
+                "speculative_config" in engine_kwargs
+                and any(sig in msg for sig in spec_signals)
+            ):
+                print(f"[llm-vllm] speculative_config rejected "
+                      f"({type(exc).__name__}: {msg.splitlines()[0][:200]}); "
+                      f"retrying without speculative decoding")
+                engine_kwargs.pop("speculative_config", None)
+                self._speculative_config = None
+                engine_args = AsyncEngineArgs(**engine_kwargs)
+                self._engine = AsyncLLMEngine.from_engine_args(engine_args)
+            else:
+                raise
         self._lora_enabled = enable_lora
         # Load tokenizer separately. vLLM's engine.get_tokenizer() is
         # awaitable in recent versions; the HF AutoTokenizer is version-stable

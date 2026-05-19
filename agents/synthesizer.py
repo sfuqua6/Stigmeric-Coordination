@@ -370,7 +370,7 @@ class Synthesizer:
         # Now aggregates four buckets in priority order:
         #   1. rejected_by_field      (most diagnostic — explicit field rejection)
         #   2. unverified             (would have survived but lacked credibility)
-        #   3. tail-of-surviving      (rank > _SECTION_1_RENDER_CAP)
+        #   3. tail-of-surviving      (clusters the planner demoted to section 3)
         #   4. weakly_supported       (insufficient distinct supporters)
         # Each sorted by descending verification_score within its bucket.
         # ------------------------------------------------------------------
@@ -401,7 +401,7 @@ class Synthesizer:
                     reason = (f"held: no verification, no dissent, "
                               f"support_diversity={cp.support_diversity} < 4")
                 elif cp.status == "surviving":
-                    reason = (f"tail (rank > {_SECTION_1_RENDER_CAP}): "
+                    reason = (f"tail (planner demoted): "
                               f"support_diversity={cp.support_diversity}, "
                               f"verification_score={cp.verification_score:.2f}")
                 else:

@@ -537,13 +537,15 @@ class MultiEngineRouter:
     # ------------------------------------------------------------------
 
     async def load(self) -> None:
-        """Load every engine declared in the bundle. Parallel via asyncio.gather.
+        """Load every engine declared in the bundle, sequentially.
 
-        VLLMBackend.__init__ is currently synchronous (it blocks on the
-        vLLM engine construction). asyncio.to_thread runs each load in a
-        worker thread so loads start concurrently — the gain comes from
-        overlapping HF Hub downloads and Triton JIT for different models,
-        not from CUDA-level concurrency.
+        vLLM v1 spawns a subprocess engine-core per AsyncLLMEngine. Loading
+        them concurrently races the multi-process spawn handshake AND has
+        each subprocess attempt to grab `gpu_memory_utilization` of total
+        VRAM independently — so three engines at the default 0.92 sum to
+        276% of the GPU and fail. Sequential load lets each engine pin
+        its share before the next one starts. The auto-budget below splits
+        gpu_memory_utilization across engines so they actually fit.
         """
         from .config import (
             SPECULATIVE_DRAFT_MODEL, SPECULATIVE_NUM_TOKENS,
@@ -557,31 +559,57 @@ class MultiEngineRouter:
                   f"{len(self.engines)} engines)")
             return
 
-        async def _load_one(engine_name: str, kwargs: dict):
-            # Inject speculative config onto the synthesizer-targeted engine.
+        # Auto-budget VRAM across engines that don't specify their own
+        # gpu_memory_utilization. Total budget across all engines targets
+        # ~90% of VRAM with a 4% slack per engine to leave room for
+        # activations and the speculative draft (when attached).
+        n_engines = max(1, len(self._bundle_spec))
+        n_unbudgeted = sum(
+            1 for spec in self._bundle_spec.values()
+            if "gpu_memory_utilization" not in spec
+        )
+        reserved = sum(
+            float(spec.get("gpu_memory_utilization", 0.0))
+            for spec in self._bundle_spec.values()
+            if "gpu_memory_utilization" in spec
+        )
+        remaining_budget = max(0.10, 0.90 - reserved)
+        # Each unbudgeted engine gets an equal share of what's left, minus
+        # a small per-engine slack so concurrent KV-cache pre-allocation
+        # doesn't bump into total VRAM during the profile_run step.
+        per_engine_default = max(
+            0.10,
+            (remaining_budget / max(1, n_unbudgeted)) - 0.02,
+        ) if n_unbudgeted else 0.0
+
+        def _load_sync(engine_name: str, kwargs: dict):
             engine_kwargs = dict(kwargs)
+            # Inject speculative config onto the synthesizer-targeted engine.
             if engine_name == SPECULATIVE_TARGET_ENGINE and SPECULATIVE_DRAFT_MODEL:
                 engine_kwargs["speculative_config"] = {
                     "model": SPECULATIVE_DRAFT_MODEL,
                     "num_speculative_tokens": int(SPECULATIVE_NUM_TOKENS),
                 }
                 self.speculative_enabled = True
+            # Auto-budget VRAM if the bundle didn't pin a value.
+            engine_kwargs.setdefault("gpu_memory_utilization", per_engine_default)
             model = engine_kwargs.pop("model")
             from .llm_vllm import VLLMBackend
-            def _construct():
-                return VLLMBackend(
-                    model_name=model, engine_tag=engine_name, **engine_kwargs,
-                )
-            return engine_name, await asyncio.to_thread(_construct)
+            return VLLMBackend(
+                model_name=model, engine_tag=engine_name, **engine_kwargs,
+            )
 
-        tasks = [
-            _load_one(name, kwargs)
-            for name, kwargs in self._bundle_spec.items()
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
-        for engine_name, llm in results:
+        print(f"[router] loading bundle {self.bundle_name!r} "
+              f"({n_engines} engines, ~{per_engine_default:.2f} VRAM each "
+              f"for unbudgeted engines)")
+        for engine_name, kwargs in self._bundle_spec.items():
+            print(f"[router] loading engine {engine_name} ({kwargs.get('model')})")
+            # to_thread keeps the asyncio loop responsive (warmup notifications,
+            # progress ticks, etc.) but only one engine constructs at a time.
+            llm = await asyncio.to_thread(_load_sync, engine_name, kwargs)
             self.engines[engine_name] = llm
-        print(f"[router] bundle: {self.bundle_name}")
+        print(f"[router] bundle {self.bundle_name!r} fully loaded "
+              f"({len(self.engines)} engines)")
         for engine_name, llm in self.engines.items():
             print(f"[router] engine {engine_name}: {getattr(llm, 'name', '?')}")
 

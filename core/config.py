@@ -12,7 +12,13 @@ from typing import Optional
 # Force the Colab path on a non-Colab host with COLAB=1.
 
 def _detect_colab_tier():
-    """Return one of ('t4', 'l4', 'a100_40', 'a100_80', 'unknown') or None."""
+    """Return one of ('t4', 'l4', 'a100_40', 'a100_80', 'h100', 'blackwell', 'unknown') or None.
+
+    'blackwell' covers both consumer Blackwell (RTX 50-series, sm_120) and
+    datacenter Blackwell (B100/B200, sm_100). The distinction doesn't matter
+    for our purposes — both need FlashInfer disabled when paired with
+    CUDA < 12.9 (the common Colab state as of 2026-Q2).
+    """
     forced = bool(os.environ.get("COLAB", "").strip() not in ("", "0", "false", "False"))
     try:
         import torch
@@ -20,12 +26,33 @@ def _detect_colab_tier():
             return "unknown" if forced else None
         name = torch.cuda.get_device_name(0).lower()
         mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        # Name-based detection first (fast, deterministic).
         if "a100" in name:
             return "a100_80" if mem_gb > 60 else "a100_40"
+        if "h100" in name or "h200" in name:
+            return "h100"
+        if "b100" in name or "b200" in name or "blackwell" in name:
+            return "blackwell"
         if "l4" in name:
             return "l4"
         if "t4" in name:
             return "t4"
+        # Compute-capability fallback for unrecognized names. Major sm version
+        # maps to architecture: 7 = Volta, 7.5 = Turing (T4), 8.0 = Ampere
+        # (A100), 8.9 = Ada (L4/RTX 40xx), 9.0 = Hopper (H100/H200),
+        # 10.x = Blackwell datacenter (B100/B200), 12.x = Blackwell consumer
+        # (RTX 50-series).
+        try:
+            major, _minor = torch.cuda.get_device_capability(0)
+        except Exception:
+            major = None
+        if major is not None:
+            if major >= 10:
+                return "blackwell"
+            if major == 9:
+                return "h100"
+            if major == 8 and mem_gb > 30:
+                return "a100_80" if mem_gb > 60 else "a100_40"
         return "unknown" if forced else None
     except Exception:
         return "unknown" if forced else None
@@ -37,21 +64,25 @@ _TIER = _detect_colab_tier()
 # pathology lives there and the base agent's _SCRATCHPAD_RE is a partial
 # mitigation, not a fix. Plain -Instruct variants are cleaner.
 _MODEL_BY_TIER = {
-    "t4":      "Qwen/Qwen2.5-7B-Instruct",
-    "l4":      "Qwen/Qwen2.5-14B-Instruct",
+    "t4":        "Qwen/Qwen2.5-7B-Instruct",
+    "l4":        "Qwen/Qwen2.5-14B-Instruct",
     # A100 runs 32B fp16. max_model_len=4096 (Phase 1B) + enforce_eager=False
     # let the 32B path fit on a100_80 without per-call truncation.
-    "a100_40": "Qwen/Qwen2.5-32B-Instruct",
-    "a100_80": "Qwen/Qwen2.5-32B-Instruct",
-    "unknown": "Qwen/Qwen2.5-7B-Instruct",
+    "a100_40":   "Qwen/Qwen2.5-32B-Instruct",
+    "a100_80":   "Qwen/Qwen2.5-32B-Instruct",
+    "h100":      "Qwen/Qwen2.5-32B-Instruct",
+    "blackwell": "Qwen/Qwen2.5-32B-Instruct",
+    "unknown":   "Qwen/Qwen2.5-7B-Instruct",
 }
 
 _DTYPE_BY_TIER = {
-    "t4":      "float16",
-    "l4":      "float16",
-    "a100_40": "bfloat16",
-    "a100_80": "bfloat16",
-    "unknown": "float16",
+    "t4":        "float16",
+    "l4":        "float16",
+    "a100_40":   "bfloat16",
+    "a100_80":   "bfloat16",
+    "h100":      "bfloat16",
+    "blackwell": "float16",   # Blackwell + older CUDA on Colab; fp16 is safer than bf16
+    "unknown":   "float16",
 }
 
 # Chat-template identifiers per model. vLLM picks up the HF chat template
@@ -184,27 +215,33 @@ CHUNKS_PER_SCOUT_MAX = 4*2
 # _TIER is not None.
 
 _POP_BY_TIER = {
-    "t4":       {"scouts": 6,  "foragers": 6,  "critics": 3, "haters": 2, "validators": 2},
-    "l4":       {"scouts": 8,  "foragers": 8,  "critics": 4, "haters": 3, "validators": 2},
-    "a100_40":  {"scouts": 10, "foragers": 10, "critics": 4, "haters": 4, "validators": 3},
-    "a100_80":  {"scouts": 12, "foragers": 12, "critics": 5, "haters": 4, "validators": 3},
-    "unknown":  {"scouts": 6,  "foragers": 6,  "critics": 3, "haters": 2, "validators": 2},
+    "t4":        {"scouts": 6,  "foragers": 6,  "critics": 3, "haters": 2, "validators": 2},
+    "l4":        {"scouts": 8,  "foragers": 8,  "critics": 4, "haters": 3, "validators": 2},
+    "a100_40":   {"scouts": 10, "foragers": 10, "critics": 4, "haters": 4, "validators": 3},
+    "a100_80":   {"scouts": 12, "foragers": 12, "critics": 5, "haters": 4, "validators": 3},
+    "h100":      {"scouts": 12, "foragers": 12, "critics": 5, "haters": 4, "validators": 3},
+    "blackwell": {"scouts": 12, "foragers": 12, "critics": 5, "haters": 4, "validators": 3},
+    "unknown":   {"scouts": 6,  "foragers": 6,  "critics": 3, "haters": 2, "validators": 2},
 }
 
 _ITER_BY_TIER = {
-    "t4":      10,
-    "l4":      8,
-    "a100_40": 8,
-    "a100_80": 6,
-    "unknown": 10,
+    "t4":        10,
+    "l4":        8,
+    "a100_40":   8,
+    "a100_80":   6,
+    "h100":      6,
+    "blackwell": 6,
+    "unknown":   10,
 }
 
 _CHUNKS_BY_TIER = {
-    "t4":      4,
-    "l4":      3,
-    "a100_40": 3,
-    "a100_80": 2,
-    "unknown": 4,
+    "t4":        4,
+    "l4":        3,
+    "a100_40":   3,
+    "a100_80":   2,
+    "h100":      2,
+    "blackwell": 2,
+    "unknown":   4,
 }
 
 if _TIER is not None:
@@ -230,7 +267,7 @@ if _TIER is not None:
     # bump) so per-cluster synthesizer calls can produce richer paragraphs
     # without bumping the input ceiling. Smaller tiers (t4/l4) keep tighter
     # caps because their KV cache cannot absorb the larger generations.
-    if _TIER in ("a100_40", "a100_80"):
+    if _TIER in ("a100_40", "a100_80", "h100", "blackwell"):
         MAX_TOKENS_SCOUT       = 200
         MAX_TOKENS_FORAGER     = 300
         MAX_TOKENS_CRITIC      = 200

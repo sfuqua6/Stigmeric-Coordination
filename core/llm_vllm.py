@@ -31,8 +31,17 @@ try:
 except Exception:
     _CONFIG_TIER = None
 if _CONFIG_TIER == "blackwell":
+    # Blackwell sm_100 / sm_120 needs CUDA 12.9 for FlashInfer JIT to build
+    # sampling kernels. Colab's CUDA stack is still on 12.x < 12.9 as of
+    # 2026-Q2 → force the Triton sampler + Triton attention so vLLM never
+    # touches FlashInfer. Without this the engine-core subprocess dies at
+    # profile_run with "FlashInfer requires GPUs with sm75 or higher" (a
+    # misleading message — the real issue is FlashInfer can't query a
+    # newer arch with an older toolkit).
     os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
+    print("[llm-vllm] Blackwell detected: forcing VLLM_USE_FLASHINFER_SAMPLER=0 "
+          "and VLLM_ATTENTION_BACKEND=TRITON_ATTN")
 
 try:
     from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams  # type: ignore

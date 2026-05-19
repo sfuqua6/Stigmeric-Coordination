@@ -48,11 +48,13 @@ def _default_gpu_budget() -> str:
     except Exception:
         _TIER = None
     return {
-        "t4":      "13GiB",
-        "l4":      "20GiB",
-        "a100_40": "36GiB",
-        "a100_80": "76GiB",
-        "unknown": "13GiB",
+        "t4":        "13GiB",
+        "l4":        "20GiB",
+        "a100_40":   "36GiB",
+        "a100_80":   "76GiB",
+        "h100":      "76GiB",
+        "blackwell": "76GiB",
+        "unknown":   "13GiB",
     }.get(_TIER, "5000MiB")
 
 
@@ -147,7 +149,7 @@ def _build_cascade(base_model: str, base_dtype: str,
             "kv_cache_dtype": "fp8_e5m2",
             "enable_chunked_prefill": False,
         })
-    elif tier in ("a100_40", "a100_80"):
+    elif tier in ("a100_40", "a100_80", "h100", "blackwell"):
         # max_model_len bumped 4096 -> 8192 (a100_40) / 16384 (a100_80) so
         # longer prompts fit without truncation. vLLM uses paged KV cache —
         # blocks are allocated dynamically, so a higher per-request ceiling
@@ -164,9 +166,12 @@ def _build_cascade(base_model: str, base_dtype: str,
         primary_kwargs.update({
             "gpu_memory_utilization": 0.90,
             "max_num_seqs": 32,
-            "max_model_len": 16384 if tier == "a100_80" else 8192,
-            "enforce_eager": False,
-            "enable_chunked_prefill": True,
+            "max_model_len": 16384 if tier in ("a100_80", "h100", "blackwell") else 8192,
+            # Blackwell + older Colab CUDA must keep eager mode and skip
+            # chunked prefill (Inductor compile triggers FlashInfer JIT
+            # which needs CUDA >= 12.9 to build sm_120 kernels).
+            "enforce_eager": tier == "blackwell",
+            "enable_chunked_prefill": tier != "blackwell",
         })
     elif tier == "l4":
         primary_kwargs.update({

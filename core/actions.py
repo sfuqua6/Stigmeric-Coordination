@@ -140,15 +140,47 @@ _PARENT_LINE_RE = _re.compile(r"^\s*PARENT\s*[:=]\s*([A-Za-z0-9_\-]+)",
                               _re.IGNORECASE | _re.MULTILINE)
 _SCORE_RE = _re.compile(r"score\s*[:=]\s*([+-]?(?:\d+\.?\d*|\.\d+))",
                         _re.IGNORECASE)
-_STRIP_RE = _re.compile(r"^\s*(?:TYPE|PARENT)\s*[:=].*$",
-                        _re.IGNORECASE | _re.MULTILINE)
+# Drop these lines wholesale — they're internal protocol or pure metadata.
+_DROP_LINE_RE = _re.compile(
+    r"^\s*(?:TYPE|PARENT|SCORE|CONFIDENCE)\s*[:=].*$",
+    _re.IGNORECASE | _re.MULTILINE,
+)
+
+# Strip only the LABEL prefix for these — the content that follows on the
+# same line is the actual substance ("CRITIQUE: claim is well-supported"
+# becomes "claim is well-supported"). Without this, the substance gets
+# eaten by either the full-line drop or the junk filter's template-leak
+# pattern at filters.py.
+_LABEL_PREFIX_RE = _re.compile(
+    r"^\s*(?:CRITIQUE|OBJECTION|DEVELOPMENT|REFINEMENT|CLAIM|OBSERVATION|"
+    r"ANSWER|RESPONSE|REASONING|NOTE)\s*[:=]\s*",
+    _re.IGNORECASE | _re.MULTILINE,
+)
 
 _DYNAMIC_TYPES = {INITIAL, SUPPORT, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE,
                   OBJECTION}
 
 
 def _strip_meta_lines(text: str) -> str:
-    return _STRIP_RE.sub("", text).strip()
+    """Remove protocol lines AND strip prompt-scaffold label prefixes.
+
+    Two distinct operations:
+      - TYPE / PARENT / SCORE / CONFIDENCE: full line dropped (metadata only).
+      - CRITIQUE / OBJECTION / DEVELOPMENT / ...: LABEL stripped, substance
+        on the same line is preserved.
+
+    Why this matters: each action prompt instructs the LLM to format its
+    response as "CRITIQUE: <text>\\nSCORE: <num>". The model complies, then
+    the junk filter's _TEMPLATE_LEAK_PATTERNS matches the echoed label as
+    template leakage and rejects the deposit — that was CRITIQUE share = 0%
+    across every continuous-pool run.
+    """
+    if not text:
+        return text
+    cleaned = _DROP_LINE_RE.sub("", text)
+    cleaned = _LABEL_PREFIX_RE.sub("", cleaned)
+    cleaned = _re.sub(r"\n{2,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def _parse_type(text: str) -> Optional[str]:
@@ -366,8 +398,42 @@ def object_parse(raw: str) -> ParsedDeposit:
 # VALIDATE — external grounding via search_tool
 # ---------------------------------------------------------------------------
 
+# Task profiles that should use the non-factual ("engages/quality") prompt.
+# These match SURVIVAL_TASK_PROFILES.requires_verification=False in
+# core/config.py; kept duplicated here so this module stays import-light.
+_NON_FACTUAL_TASKS = {"debate", "analysis", "problem_solving", "creative"}
+
+
 def validate_prompt(task_prompt: str, target: Signal,
-                    external_snippet: str) -> str:
+                    external_snippet: str,
+                    task_type: Optional[str] = None) -> str:
+    """Build the validator prompt.
+
+    Factual tasks (default, coding) ask "does the source support the claim?".
+    Non-factual tasks (debate / analysis / problem_solving / creative) ask
+    "does the source engage substantively with the topic?" because no web
+    source will *confirm* an interpretive claim — sources present arguments,
+    not corroboration, and asking for corroboration produces
+    `supports: false` with high confidence and a verification score of 0.
+    """
+    if task_type in _NON_FACTUAL_TASKS:
+        return (
+            f"TASK: {task_prompt}\n\n"
+            f"Assess whether the external snippet substantively engages with "
+            f"the topic of this claim. You are NOT asked to confirm or deny "
+            f"the claim — only to judge whether the snippet brings relevant "
+            f"evidence, argument, or scholarly context that bears on it.\n\n"
+            f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
+            f"---EXTERNAL SNIPPET---\n{external_snippet}\n---END SNIPPET---\n\n"
+            f"Reply with EXACTLY this JSON object (no other text):\n"
+            f'{{"engages": true|false, "quality": <number in [0,1]>, '
+            f'"reasoning": "<one short sentence>"}}\n\n'
+            f"`engages` is true if the snippet meaningfully addresses the "
+            f"claim's topic (even from a different angle or with different "
+            f"conclusions). `quality` rates the snippet's substantive depth "
+            f"and source credibility (0 = thin/irrelevant, 1 = rigorous "
+            f"and on-topic)."
+        )
     return (
         f"TASK: {task_prompt}\n\n"
         f"Verify this claim against the external snippet.\n\n"
@@ -381,12 +447,16 @@ def validate_prompt(task_prompt: str, target: Signal,
     )
 
 
-def validate_parse(raw: str) -> ParsedDeposit:
-    """Parse the validator's JSON; fall back to legacy SCORE regex.
+def validate_parse(raw: str, task_type: Optional[str] = None) -> ParsedDeposit:
+    """Parse the validator's JSON. Schema is task-aware.
 
-    Returns a VERIFICATION deposit. Strength encodes the combined supports +
-    confidence: supports=True → conf, supports=False → 1-conf clamped to
-    avoid the 0.5 dead zone.
+    Factual: {supports: bool, confidence: 0..1}
+      → score = confidence if supports else max(0, 1 - confidence)
+    Non-factual: {engages: bool, quality: 0..1}
+      → score = quality if engages else 0.2
+      A relevant-but-thin snippet still scores 0.2 (a real signal — the
+      topic was at least addressed), so non-factual clusters can
+      accumulate verification > 0 instead of getting pinned to 0.0.
     """
     text = (raw or "").strip()
     score = 0.5
@@ -395,12 +465,25 @@ def validate_parse(raw: str) -> ParsedDeposit:
     if json_match:
         try:
             parsed = json.loads(json_match.group(0))
-            supports = bool(parsed.get("supports", False))
-            conf = float(parsed.get("confidence", 0.5))
-            conf = max(0.0, min(1.0, conf))
-            score = conf if supports else max(0.0, 1.0 - conf)
-            note = str(parsed.get("reasoning",
-                                  parsed.get("note", ""))).strip() or text
+            if task_type in _NON_FACTUAL_TASKS and (
+                "engages" in parsed or "quality" in parsed
+            ):
+                engages = bool(parsed.get("engages", False))
+                qual = float(parsed.get("quality", 0.5))
+                qual = max(0.0, min(1.0, qual))
+                # Engaged snippet scores its quality; non-engaged scores
+                # a floor of 0.2 (not 0.0) — the validator showed up and
+                # the topic was at least visible in the source.
+                score = qual if engages else 0.2
+                note = str(parsed.get("reasoning",
+                                      parsed.get("note", ""))).strip() or text
+            else:
+                supports = bool(parsed.get("supports", False))
+                conf = float(parsed.get("confidence", 0.5))
+                conf = max(0.0, min(1.0, conf))
+                score = conf if supports else max(0.0, 1.0 - conf)
+                note = str(parsed.get("reasoning",
+                                      parsed.get("note", ""))).strip() or text
         except (ValueError, TypeError):
             pass
     else:

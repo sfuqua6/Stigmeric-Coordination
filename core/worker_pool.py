@@ -87,10 +87,13 @@ COLD_START_INITIAL_FLOOR = 8
 COLD_START_ACTIONS = {SCOUT: 0.7, DEVELOP: 0.3}
 
 # Base weights when no cold-start / share pressure is active.
+# CHAIN bumped 0.8 -> 1.1 because depth regressed (support_depth_max 4 -> 3)
+# when share fell to 16% — CHAIN now competes more strongly with DEVELOP for
+# turns once chains exist (share floor / ceiling still bound the long-term mix).
 _BASE_WEIGHTS = {
     SCOUT:    1.0,
     DEVELOP:  1.5,
-    CHAIN:    0.8,
+    CHAIN:    1.1,
     CRITIQUE: 1.0,
     OBJECT:   0.7,
     VALIDATE: 1.2,
@@ -103,7 +106,9 @@ ACTION_SHARE_TARGETS = {
     CRITIQUE: {"min": 0.10, "max": 0.30},
     OBJECT:   {"min": 0.05, "max": 0.20},
     VALIDATE: {"min": 0.10, "max": 0.25},
-    CHAIN:    {"min": 0.05, "max": 0.20},
+    # CHAIN ceiling raised 0.20 -> 0.30 so it can deepen lineage without
+    # bumping into the soft ceiling at 20% share.
+    CHAIN:    {"min": 0.05, "max": 0.30},
     REFINE:   {"min": 0.05, "max": 0.20},
 }
 
@@ -405,9 +410,13 @@ class Worker:
         if action == VALIDATE:
             _log_validator_raw(self.agent_id, query or "", raw or "")
 
-        # Parse
+        # Parse. validate_parse is task-aware (engages/quality schema for
+        # non-factual tasks); other parsers take only `raw`.
         try:
-            parsed = spec.parse(raw)
+            if action == VALIDATE:
+                parsed = spec.parse(raw, task_type=self.task_type)
+            else:
+                parsed = spec.parse(raw)
         except Exception as exc:
             print(f"[worker {self.agent_id}] parse failed for {action}: "
                   f"{type(exc).__name__}: {exc}")
@@ -688,7 +697,8 @@ class Worker:
             return A.object_prompt(self.task_prompt, reps)
         if action == VALIDATE:
             external = getattr(self, "_validate_external", "")
-            return A.validate_prompt(self.task_prompt, target, external)
+            return A.validate_prompt(self.task_prompt, target, external,
+                                     task_type=self.task_type)
         if action == REFINE:
             return A.refine_prompt(self.task_prompt, target)
         return None
@@ -771,8 +781,18 @@ async def run_pool(store: SignalStore, llm, task_prompt: str,
 # ---------------------------------------------------------------------------
 
 async def decay_loop(store: SignalStore, stop_event: asyncio.Event,
-                     interval_s: float = 30.0) -> int:
-    """Periodically decay + prune until stop_event fires. Returns prune count."""
+                     interval_s: float = 60.0) -> int:
+    """Periodically decay + prune until stop_event fires. Returns prune count.
+
+    Interval raised 30 s -> 60 s after the depth-regression diagnosis: at 30 s
+    cadence with DELTA_DECAY=-0.10 (-0.12 on Colab), an unrefreshed SUPPORT
+    signal at strength 0.6 drops below PRUNE_THRESHOLD=0.30 within ~5 minutes
+    and is removed. That cut chain bases out from under CHAIN faster than
+    CHAIN could rebuild them, capping support_depth_max in the 3-4 range.
+
+    At 60 s the same signal survives ~10 minutes — long enough for a chain
+    to deepen before the base is pruned.
+    """
     total_pruned = 0
     while not stop_event.is_set():
         try:

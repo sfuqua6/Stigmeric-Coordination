@@ -12,6 +12,10 @@ Flags:
     --corpus={real,placeholder}    Default: real. Use placeholder to skip retrieval.
     --ignore-kb                    Disable knowledge base for this run.
     --reset-kb                     Quarantine existing KB entries before run.
+    --small                        Use smaller 3B-class models. Selects the
+                                   'small'/'small_coding' bundle (continuous pool),
+                                   configs/heterogeneous_small.json (--heterogeneous),
+                                   or Qwen2.5-3B-Instruct (--legacy-rounds).
 
 Set MOCK_LLM=1 to run without loading the model.
 
@@ -1571,9 +1575,11 @@ def main():
     # emergent-swarm rewrite). Opt back to the round/phase scheduler with
     # --legacy-rounds for A/B comparison or to repro old artifacts.
     legacy_rounds = "--legacy-rounds" in args
+    small = "--small" in args
     args = [a for a in args if a not in (
         "--use-kb", "--ignore-kb", "--reset-kb",
         "--show-partition-overlap", "--heterogeneous", "--legacy-rounds",
+        "--small",
     )]
     # --workers=N for the continuous pool size
     workers = _CONTINUOUS_DEFAULT_WORKERS
@@ -1703,6 +1709,27 @@ def main():
         sys.exit(1)
     task_type = args[0]
     user_prompt = " ".join(args[1:])
+
+    if small:
+        if heterogeneous:
+            # GGUF per-role path (used with --legacy-rounds or --isolated):
+            # point the router at the small assignment file.
+            config.HETEROGENEOUS_CONFIG_FILE = "heterogeneous_small.json"
+            print("[pipeline] --small --heterogeneous: "
+                  "using configs/heterogeneous_small.json "
+                  "(Qwen2.5-3B + Phi-3.5-mini)")
+        elif not legacy_rounds and run_mode != "baseline":
+            # Default continuous-pool path: select the task-matched small bundle.
+            _small_bundle = config.TASK_TO_BUNDLE_SMALL.get(task_type, "small")
+            if bundle is None:
+                bundle = _small_bundle
+            config.USE_MODEL_BUNDLES = True
+            print(f"[pipeline] --small: continuous pool using bundle {bundle!r} "
+                  f"(Qwen2.5-3B-Instruct + Phi-3.5-mini)")
+        else:
+            # Legacy-rounds single-model path or baseline.
+            config.MODEL_NAME = config.SMALL_MODEL
+            print(f"[pipeline] --small: model overridden to {config.MODEL_NAME!r}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     # P0.1: mock runs go in a separate directory so they cannot be mistaken

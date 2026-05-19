@@ -483,6 +483,14 @@ if _TIER == "t4" and USE_HETEROGENEOUS:
 # Models directory. Override with SWARM_MODELS_DIR env var.
 MODELS_DIR = _Path(os.environ.get("SWARM_MODELS_DIR", "models")).resolve()
 
+# Config file for heterogeneous routing. Mutated at runtime by --small so
+# the router picks up the small assignment without an env var.
+HETEROGENEOUS_CONFIG_FILE: str = "heterogeneous.json"
+
+# Compact single model used by --small on the single-model path and as the
+# backbone of the small vLLM bundles.
+SMALL_MODEL: str = "Qwen/Qwen2.5-3B-Instruct"
+
 # Default heterogeneous assignment. Loaded from configs/heterogeneous.json
 # at startup when --heterogeneous is passed. Keep these path fragments —
 # the loader joins them with MODELS_DIR.
@@ -566,6 +574,25 @@ MODEL_BUNDLES = {
         "tertiary":  {"model": "mistralai/Mistral-Nemo-Instruct-2407", "dtype": "float16",
                       "gpu_memory_utilization": 0.30},
     },
+    # --small bundles: 3B-class models that fit on a T4 (16 GB) or any L4/A100.
+    # Two engine slots (primary=Qwen2.5-3B, fast=Phi-3.5-mini) preserve
+    # family diversity at <6 GB combined VRAM weight.
+    "small": {
+        "primary": {"model": "Qwen/Qwen2.5-3B-Instruct",        "dtype": "float16",
+                    "max_num_seqs": 48, "max_model_len": 2048,
+                    "gpu_memory_utilization": 0.55},
+        "fast":    {"model": "microsoft/Phi-3.5-mini-instruct",  "dtype": "float16",
+                    "max_num_seqs": 64, "max_model_len": 2048,
+                    "gpu_memory_utilization": 0.30},
+    },
+    "small_coding": {
+        "primary": {"model": "Qwen/Qwen2.5-Coder-3B-Instruct",  "dtype": "float16",
+                    "max_num_seqs": 48, "max_model_len": 2048,
+                    "gpu_memory_utilization": 0.55},
+        "fast":    {"model": "microsoft/Phi-3.5-mini-instruct",  "dtype": "float16",
+                    "max_num_seqs": 64, "max_model_len": 2048,
+                    "gpu_memory_utilization": 0.30},
+    },
 }
 
 # Maps task_type → bundle name. Unknown task types fall back to
@@ -577,6 +604,14 @@ TASK_TO_BUNDLE = {
     "problem_solving": "debate_analysis",
     "creative":        "creative",
     "coding":          "coding",
+}
+
+TASK_TO_BUNDLE_SMALL = {
+    "debate":          "small",
+    "analysis":        "small",
+    "problem_solving": "small",
+    "creative":        "small",
+    "coding":          "small_coding",
 }
 
 # Role → engine routing. Each entry maps a role name to:
@@ -620,6 +655,24 @@ ROLE_TO_ENGINE = {
         "critic":      "secondary",
         "hater":       "tertiary",
         "validator":   "primary",
+        "synthesizer": "primary",
+    },
+    "small": {
+        "scout":       "primary",
+        "forager":     "fast",
+        "developer":   "fast",
+        "critic":      "fast",
+        "hater":       "primary",   # different family from critic for adversarial diversity
+        "validator":   "fast",
+        "synthesizer": "primary",
+    },
+    "small_coding": {
+        "scout":       "primary",
+        "forager":     "primary",
+        "developer":   "primary",
+        "critic":      "fast",
+        "hater":       "fast",
+        "validator":   "fast",
         "synthesizer": "primary",
     },
 }

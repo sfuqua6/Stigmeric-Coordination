@@ -71,10 +71,13 @@ from .config import (
 def _load_assignment() -> dict:
     """Resolve the role->model-path map at runtime.
 
-    Reads configs/heterogeneous.json if present; falls back to the
-    Python default. Returns paths joined with MODELS_DIR.
+    Reads configs/<HETEROGENEOUS_CONFIG_FILE> if present; falls back to the
+    Python default. Reads the config name at call time so --small can mutate
+    config.HETEROGENEOUS_CONFIG_FILE in main() before the router is created.
     """
-    cfg_path = Path(__file__).parent.parent / "configs" / "heterogeneous.json"
+    from . import config as _cfg  # runtime read — not cached at import
+    cfg_file = getattr(_cfg, "HETEROGENEOUS_CONFIG_FILE", "heterogeneous.json")
+    cfg_path = Path(__file__).parent.parent / "configs" / cfg_file
     if cfg_path.exists():
         try:
             raw = json.loads(cfg_path.read_text(encoding="utf-8"))

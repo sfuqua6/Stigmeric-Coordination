@@ -648,6 +648,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                     prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
                     prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
                     output_dir=output_dir,
+                    task_type=task_type,
                 )
         else:
             synth = SynthesizerClass(llm, task_prompt)
@@ -657,6 +658,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
                 prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
                 output_dir=output_dir,
+                task_type=task_type,
             )
     except Exception as exc:
         print(f"[pipeline] synthesis failed ({type(exc).__name__}: {exc})")
@@ -959,6 +961,7 @@ async def run_continuous_pipeline(
             prior_rejections=kb.prior_rejections(current_topic_hash) if not ignore_kb else None,
             prior_consensus=kb.prior_consensus(current_topic_hash) if not ignore_kb else None,
             output_dir=output_dir,
+            task_type=task_type,
         )
     except Exception as exc:
         print(f"[pipeline] synthesis failed ({type(exc).__name__}: {exc})")

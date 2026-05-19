@@ -97,6 +97,64 @@ def _rank_clusters(clusters: list) -> list:
     return sorted(clusters, key=_cluster_priority, reverse=True)
 
 
+# Minimum embedding-cosine distance between two clusters picked into the
+# Section-1 render set. Pure top-N by priority routinely picked 5
+# near-duplicates from the same conceptual cluster family — the post-mortem
+# showed all 5 paragraphs restating "the debate over free will...". MMR-style
+# diversity-aware selection: each new pick must be at least DIVERSITY_MIN_DIST
+# from every already-picked cluster. 0.35 ≈ "topically distinct".
+_SECTION_1_DIVERSITY_MIN_DIST = 0.35
+
+
+def _select_diverse_clusters(
+    clusters: list, store, k: int,
+    min_dist: float = _SECTION_1_DIVERSITY_MIN_DIST,
+) -> tuple[list, list]:
+    """Pick up to `k` clusters ranked by priority but spread by embedding distance.
+
+    Greedy MMR: take the highest-priority cluster; for each subsequent slot
+    pick the next-highest-priority cluster whose representative embedding is
+    >= `min_dist` from EVERY already-picked cluster's representative.
+    Clusters skipped for distance reasons are returned in the second list
+    (Section-3 tail).
+
+    Falls back to a pure top-N when embeddings aren't available — same
+    behavior as before, but the tail list still gets populated so Section 3
+    is correct.
+    """
+    ranked = _rank_clusters(clusters)
+    if not ranked:
+        return [], []
+    picked: list = []
+    picked_embs: list = []
+    tail: list = []
+    for cp in ranked:
+        if len(picked) >= k:
+            tail.append(cp)
+            continue
+        emb = store.get_embedding(cp.representative_id)
+        if emb is None:
+            # No embedding — take it unconditionally if there's a slot,
+            # otherwise drop to tail.
+            picked.append(cp)
+            picked_embs.append(None)
+            continue
+        too_close = False
+        for prev_emb in picked_embs:
+            if prev_emb is None:
+                continue
+            sim = sum(a * b for a, b in zip(emb, prev_emb))
+            if (1.0 - sim) < min_dist:
+                too_close = True
+                break
+        if too_close:
+            tail.append(cp)
+            continue
+        picked.append(cp)
+        picked_embs.append(emb)
+    return picked, tail
+
+
 def _detect_inter_cluster_contradictions(
     clusters: list, store: SignalStore
 ) -> list[tuple]:
@@ -152,18 +210,23 @@ class Synthesizer:
         prior_rejections: Optional[list] = None,
         prior_consensus: Optional[list] = None,
         output_dir: Optional[Path] = None,
+        task_type: Optional[str] = None,
     ) -> tuple[str, dict, str]:
         """Run Layer 1 then Layer 2.
 
         output_dir: when provided, renderer_audit.json is written there.
+        task_type: drives the survival profile + position-taking variants
+        in the per-cluster renderer prompts.
         Returns (answer_text, citations_dict, lineage_dot_str).
         """
+        self._task_type = task_type
         # Layer 1: pure-Python DAG projection
         projection = build_projection(
             store,
             has_validators=has_validators,
             prior_rejections=prior_rejections,
             prior_consensus=prior_consensus,
+            task_type=task_type,
         )
 
         # Layer 2: structured multi-call renderer
@@ -223,9 +286,15 @@ class Synthesizer:
         # the projection happens to surface many clusters; the tail falls
         # through to Section 3.
         # ------------------------------------------------------------------
-        ranked_surviving = _rank_clusters(projection.surviving) if projection.surviving else []
-        rendered_surviving = ranked_surviving[:_SECTION_1_RENDER_CAP]
-        section1_tail = ranked_surviving[_SECTION_1_RENDER_CAP:]
+        if projection.surviving:
+            # Diversity-aware selection: don't render 5 paragraphs all
+            # restating the same conceptual cluster.
+            rendered_surviving, section1_tail = _select_diverse_clusters(
+                projection.surviving, store, _SECTION_1_RENDER_CAP,
+            )
+        else:
+            rendered_surviving = []
+            section1_tail = []
         if rendered_surviving:
             fragments: list[str] = []
             for cp in rendered_surviving:
@@ -445,13 +514,31 @@ class Synthesizer:
     async def _render_cluster_position(
         self, cp: ClusterProjection, store: SignalStore
     ) -> str:
-        """Render a one-paragraph position statement for one surviving cluster."""
+        """Render a one-paragraph position statement for one surviving cluster.
+
+        Prompt is anti-parametric: it forbids framing introductions (the
+        "the debate over X..." pathology where every paragraph restates the
+        same setup) and forces the paragraph to LEAD with the cluster's
+        specific claim. On non-factual tasks (debate / analysis /
+        problem_solving) it also explicitly asks the renderer to characterize
+        which way the supplied evidence actually points rather than hedging
+        with "remains contentious."
+        """
         rep = store.get(cp.representative_id)
         if rep is None:
             return ""
 
         content = _truncate(rep.content, _REPRESENTATIVE_CHARS)
-        unver_note = " (not externally verified)" if cp.unverified else ""
+        # Only annotate "not externally verified" on factual tasks. For debate
+        # / analysis / problem_solving the projection no longer flags unverified
+        # for absent web confirmation (sources don't corroborate interpretive
+        # claims) — appending the phrase would just be reflexive hedging.
+        task_type = getattr(self, "_task_type", None)
+        is_non_factual = task_type in {"debate", "analysis", "problem_solving", "creative"}
+        unver_note = (
+            " (not externally verified)"
+            if (cp.unverified and not is_non_factual) else ""
+        )
 
         # Gather support excerpts (up to 3)
         support_lines: list[str] = []
@@ -492,12 +579,40 @@ class Synthesizer:
                     f"at the end of the paragraph.\n"
                 )
 
+        # Position-taking instruction varies by task type. Non-factual tasks
+        # need an actual stance on the supplied evidence; factual tasks need
+        # to stick to what's verifiable. Both forbid the "the debate over X"
+        # framing intro that produced 5 near-duplicate paragraphs.
+        if is_non_factual:
+            stance_instruction = (
+                f"Open the paragraph with the specific position this cluster "
+                f"advances — do NOT begin with framing prose like 'The debate "
+                f"over...', 'The question of...', 'X is a contested issue...'. "
+                f"State what the supplied evidence ACTUALLY argues, then trace "
+                f"why the supporting signals back it up. If the evidence leans "
+                f"toward one side, say so; do NOT default to 'remains contentious' "
+                f"unless the supplied signals themselves are split."
+            )
+        else:
+            stance_instruction = (
+                f"Open the paragraph with the specific claim — do NOT begin "
+                f"with framing prose ('The debate over...', 'X has long been...'). "
+                f"State the claim directly and trace why the supporting "
+                f"signals back it up."
+            )
+
         prompt = (
             f"TASK: {self.task_prompt}\n\n"
-            f"Write one clear paragraph synthesizing the following surviving claim "
-            f"and its supporting evidence. Cite [{cp.representative_id}] inline. "
-            f"Do not introduce claims not present in the input. "
-            f"If the claim is marked 'not externally verified', keep that phrase.\n\n"
+            f"Synthesize the following surviving claim into one focused "
+            f"paragraph. Cite [{cp.representative_id}] inline.\n\n"
+            f"HARD RULES (failure to follow = the paragraph is unusable):\n"
+            f"  1. Use ONLY the supplied claim, supporting evidence, and "
+            f"counter-position below. Do NOT introduce concepts, examples, "
+            f"theories, or arguments not present in the input (no parametric "
+            f"knowledge bleed — no quantum-physics gestures, no thinkers not "
+            f"already cited).\n"
+            f"  2. {stance_instruction}\n"
+            f"  3. Do not repeat the task framing across paragraphs.\n\n"
             f"Claim [{cp.representative_id}]: {content}{unver_note}\n"
             f"support_diversity={cp.support_diversity}  "
             f"verification_score={cp.verification_score:.2f}\n"

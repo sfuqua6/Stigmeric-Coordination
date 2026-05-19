@@ -621,11 +621,11 @@ class Synthesizer:
             print(f"[synthesizer] prompt-interpret call failed: "
                   f"{type(exc).__name__}: {exc}")
             return self._fallback_contract(user_prompt)
-        match = re.search(r"\{[\s\S]*\}", raw or "")
-        if not match:
+        block = _extract_json_block(raw or "")
+        if block is None:
             return self._fallback_contract(user_prompt)
         try:
-            contract = json.loads(match.group(0))
+            contract = json.loads(_repair_json(block))
         except Exception:
             return self._fallback_contract(user_prompt)
         # Coerce / sanitize fields. Anything missing gets a default.
@@ -766,12 +766,12 @@ class Synthesizer:
         self, raw: str, candidates: list, store: SignalStore,
     ) -> dict:
         """Parse the planner JSON. Falls back to legacy selection on failure."""
-        match = re.search(r"\{[\s\S]*\}", raw or "")
-        if not match:
+        block = _extract_json_block(raw or "")
+        if block is None:
             print(f"[synthesizer] plan parse: no JSON block; using fallback")
             return self._fallback_plan(candidates, store)
         try:
-            plan = json.loads(match.group(0))
+            plan = json.loads(_repair_json(block))
         except Exception as exc:
             print(f"[synthesizer] plan JSON parse error: {exc}; using fallback")
             return self._fallback_plan(candidates, store)
@@ -1798,6 +1798,48 @@ def _build_lineage_dot(
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+
+def _extract_json_block(text: str) -> Optional[str]:
+    """Return the first complete {...} block from text using brace counting.
+
+    The greedy regex r"\{[\s\S]*\}" fails when the model appends a comment,
+    a trailing explanation, or a second JSON object after the real one —
+    it grabs from the first '{' to the LAST '}', producing an invalid span.
+    This function stops at the matching closing brace of the FIRST '{'.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text[start:], start):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _repair_json(s: str) -> str:
+    """Fix the most common LLM JSON formatting mistakes before parsing."""
+    # Trailing commas before } or ] — the most frequent failure mode.
+    s = re.sub(r",\s*([}\]])", r"\1", s)
+    return s
+
 
 def _truncate(text: str, max_chars: int = _REPRESENTATIVE_CHARS) -> str:
     text = text.replace("\n", " ").strip()

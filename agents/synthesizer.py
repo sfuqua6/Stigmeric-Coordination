@@ -594,22 +594,27 @@ class Synthesizer:
             f"action plan, analysis).\n"
             f"  - optimization: a correct answer or class of correct "
             f"answers exists (code, math, formal proof).\n\n"
-            f"---USER PROMPT---\n{user_prompt}\n---END USER PROMPT---\n\n"
-            f"Reply with EXACTLY this JSON object (no other text):\n"
-            f'{{"regime": "exploration" | "optimization",\n'
-            f'  "form": "<short label, e.g. haiku | short_story | slogan | '
-            f'argument | function | action_plan | analysis>",\n'
-            f'  "structural": ["<hard constraint>", ...],\n'
-            f'  "soft":       ["<style/theme cue>", ...],\n'
-            f'  "length_hint": "short" | "medium" | "long",\n'
-            f'  "audience":   "<one short phrase>"}}\n\n'
             f"Hard constraints are things you can VERIFY post-hoc (line "
             f"count, syllable structure, function signature, presence of "
             f"a section, language requirement). Soft cues are stylistic "
             f"directions (tone, voice, themes) that the renderer must "
             f"interpret. If the prompt is vague, infer the most likely "
             f"form rather than listing nothing.\n\n"
-            f"CONTRACT:"
+            f"EXAMPLE — prompt 'Write a haiku about AI':\n"
+            f'{{"regime": "exploration", "form": "haiku",\n'
+            f'  "structural": ["3 lines", "5-7-5 syllable pattern"],\n'
+            f'  "soft": ["AI or technology theme", "evocative imagery"],\n'
+            f'  "length_hint": "short", "audience": "general"}}\n\n'
+            f"EXAMPLE — prompt 'Implement binary search in Python':\n"
+            f'{{"regime": "optimization", "form": "function",\n'
+            f'  "structural": ["Python function", "O(log n) complexity", '
+            f'"returns index or -1"],\n'
+            f'  "soft": ["clean idiomatic Python"],\n'
+            f'  "length_hint": "medium", "audience": "developers"}}\n\n'
+            f"Now extract the contract for this prompt. Write real values — "
+            f"never output angle-bracket placeholders like <short label>.\n\n"
+            f"---USER PROMPT---\n{user_prompt}\n---END USER PROMPT---\n\n"
+            f"CONTRACT (JSON only):"
         )
         try:
             raw = await self.llm.generate(
@@ -721,6 +726,12 @@ class Synthesizer:
             )
         digest = "\n".join(lines)
 
+        # Pull the first two real IDs for the schema example so the model
+        # sees the exact ID format and cannot reproduce angle-bracket placeholders.
+        _ex = [cp.representative_id for cp in candidates[:2]]
+        ex0 = _ex[0] if len(_ex) > 0 else "INITIAL_00001"
+        ex1 = _ex[1] if len(_ex) > 1 else "INITIAL_00002"
+
         prompt = (
             f"TASK: {self.task_prompt}\n\n"
             f"You are planning the structure of a synthesis. You see ONLY a "
@@ -743,11 +754,16 @@ class Synthesizer:
             f"will render exactly what you list. Prefer a slightly smaller, "
             f"sharper set over a larger noisy one.\n\n"
             f"---DIGEST---\n{digest}\n---END DIGEST---\n\n"
-            f"Reply with EXACTLY this JSON object (no other text):\n"
-            f'{{"render_full":   ["<cluster_id>", ...],\n'
-            f'  "section3_only": ["<cluster_id>", ...],\n'
-            f'  "merge_groups":  [["<cluster_id>", "<cluster_id>"], ...],\n'
-            f'  "notes": "<one sentence overview of the plan>"}}\n\n'
+            f"Reply with a JSON object in exactly this shape. The IDs in the "
+            f"example below are from your digest — use the REAL IDs you see "
+            f"above. Never output angle-bracket placeholders.\n\n"
+            f"EXAMPLE OUTPUT (IDs are from YOUR digest — adjust the lists to "
+            f"match your actual plan):\n"
+            f'{{"render_full":   ["{ex0}", "{ex1}"],\n'
+            f'  "section3_only": [],\n'
+            f'  "merge_groups":  [],\n'
+            f'  "notes": "Two distinct positions selected for full render."}}\n\n'
+            f"Your plan (JSON only, no other text):\n\n"
             f"PLAN:"
         )
 

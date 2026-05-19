@@ -26,6 +26,7 @@ Key concepts
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -443,7 +444,9 @@ def _aggregate_cluster(
         weighted_dissent = sum(s.strength * _ts_weight(s) for s in dissent_sigs)
         weighted_support = sum(s.strength * _ts_weight(s) for s in support_sigs)
 
-    dissent_pressure = weighted_dissent / max(_EPS, weighted_support)
+    dissent_pressure = math.log1p(
+        weighted_dissent / max(_EPS, weighted_support)
+    )
 
     strategy_names: set[str] = set()
     for sid in all_support:

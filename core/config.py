@@ -360,7 +360,12 @@ SURVIVAL_CONTEST_MIN = 0.5
 # support_depth >= credibility_chain_depth counts as a credibility signal,
 # and the verification requirement is dropped entirely.
 SURVIVAL_TASK_PROFILES = {
-    "coding":          {"requires_verification": True,  "credibility_chain_depth": 999},
+    # coding: requires external test verification (ground truth exists).
+    # support_diversity_min=2 because only DEVELOP+CHAIN action types naturally
+    # appear for code — the global default of 3 trapped 86% of clusters at the
+    # weakly_supported gate in a 319-iteration run that produced zero output.
+    "coding":          {"requires_verification": True,  "credibility_chain_depth": 999,
+                        "support_diversity_min": 2},
     "debate":          {"requires_verification": False, "credibility_chain_depth": 3},
     "analysis":        {"requires_verification": False, "credibility_chain_depth": 3},
     "problem_solving": {"requires_verification": False, "credibility_chain_depth": 3},

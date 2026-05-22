@@ -561,7 +561,13 @@ def _apply_survival_filter(cp: ClusterProjection, has_validators: bool,
         cp.status = "rejected_by_field"
         return
 
-    if cp.support_diversity < SURVIVAL_MIN_SUPPORT_DIVERSITY:
+    # task_profile may override the global minimum for tasks where the natural
+    # action-type pool is smaller (e.g. coding only produces DEVELOP+CHAIN).
+    min_diversity = (
+        task_profile.get("support_diversity_min", SURVIVAL_MIN_SUPPORT_DIVERSITY)
+        if task_profile else SURVIVAL_MIN_SUPPORT_DIVERSITY
+    )
+    if cp.support_diversity < min_diversity:
         cp.status = "weakly_supported"
         return
 

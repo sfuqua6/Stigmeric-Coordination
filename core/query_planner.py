@@ -193,6 +193,28 @@ def _fingerprint(text: str) -> str:
     return " ".join(sorted(keep))
 
 
+# Code/garbage fragment detector. A fragment that matches any of these
+# patterns is almost certainly a code snippet, a method name, a corrupted
+# web snippet, or a mixed-encoding string — not a usable English query.
+_CODE_JUNK_RE = re.compile(
+    r'[/\\{};()\[\]]'     # code punctuation
+    r'|\.[a-zA-Z]'        # dot-method calls (.onClickListener, .ceptor)
+    r'|[a-zA-Z]\d{2,}'   # camelCase-digit runs (ceptor00, criminals050)
+    r'|\d{2,}[a-zA-Z]'   # digit-letter runs
+    r'|[A-Z]{4,}'         # ALL_CAPS identifiers (not acronyms)
+)
+
+
+def _is_clean_fragment(text: str) -> bool:
+    """Return True if text looks like natural English, not code or garbled output."""
+    if not text or len(text.split()) < 3:
+        return False
+    if _CODE_JUNK_RE.search(text):
+        return False
+    # Require at least 60% alphabetic characters — garbled strings fail this.
+    return sum(c.isalpha() for c in text) / max(1, len(text)) >= 0.60
+
+
 def _extract_sentence_fragment(text: str, max_words: int = FRAGMENT_MAX_WORDS) -> str:
     """Pull a natural-language fragment from text, preserving stop-words.
 
@@ -331,7 +353,7 @@ def plan_scout_query(
     fragments: list[str] = []
     for sig in initials:
         frag = _extract_sentence_fragment(sig.content)
-        if frag and len(frag.split()) >= 3:
+        if _is_clean_fragment(frag):
             fragments.append(frag)
 
     candidates = _build_candidates(base, task_type, fragments)
@@ -360,7 +382,7 @@ def plan_develop_query(target_content: str, served_queries: dict[str, int],
     fall-backs used only after the bare fragment is duplicate-served.
     """
     fragment = _extract_sentence_fragment(target_content or "", max_words=12)
-    if not fragment or len(fragment.split()) < 3:
+    if not _is_clean_fragment(fragment):
         return ""
     # First try the bare fragment — cleanest signal to DDG.
     if not _is_dup_of_existing(fragment, served_queries):

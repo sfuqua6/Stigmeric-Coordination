@@ -565,12 +565,18 @@ class MultiEngineRouter:
             try:
                 self._load_all_engines()
                 return  # success
-            except RuntimeError as exc:
+            except (RuntimeError, ValueError) as exc:
                 msg = str(exc).lower()
                 is_oom = any(kw in msg for kw in (
                     "cuda out of memory", "out of memory",
                     "kv_cache", "cudamemory", "device-side assert",
                     "cannot allocate memory",
+                    # vLLM v1: the engine-core subprocess crashes and wraps
+                    # the root cause (kv-cache OOM / ValueError) in this
+                    # RuntimeError that surfaces in the parent process.
+                    "engine core initialization failed",
+                    "failed core proc",
+                    "no available memory",
                 ))
                 if not is_oom:
                     raise  # non-OOM error: propagate immediately

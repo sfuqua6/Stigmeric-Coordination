@@ -19,6 +19,7 @@ role treats signals as code artifacts rather than prose claims.
 from __future__ import annotations
 
 import ast
+import py_compile
 import re
 import subprocess
 import sys
@@ -49,6 +50,55 @@ def _extract_code(text: str) -> str:
     """Extract the first fenced Python block from text."""
     m = _FENCED_RE.search(text)
     return m.group(1).strip() if m else ""
+
+
+def _has_unbound_self_refs(code: str) -> bool:
+    """Return True if code uses self.* outside a class method.
+
+    This catches common fragment outputs like top-level `def get(self): ...`
+    or `self.map` references in code that compiles fine but cannot stand alone.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return True
+
+    class SelfRefChecker(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.in_class = False
+            self.invalid = False
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            prev = self.in_class
+            self.in_class = True
+            self.generic_visit(node)
+            self.in_class = prev
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if not self.in_class and node.args.args:
+                first_arg = node.args.args[0].arg
+                if first_arg == "self":
+                    self.invalid = True
+                    return
+            self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if not self.in_class and node.args.args:
+                first_arg = node.args.args[0].arg
+                if first_arg == "self":
+                    self.invalid = True
+                    return
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if isinstance(node.value, ast.Name) and node.value.id == "self" and not self.in_class:
+                self.invalid = True
+                return
+            self.generic_visit(node)
+
+    checker = SelfRefChecker()
+    checker.visit(tree)
+    return checker.invalid
 
 
 # ---------------------------------------------------------------------------
@@ -571,24 +621,47 @@ class CodeSynthesizer(Synthesizer):
             assembled = "\n\n".join(code_blocks)
             full_code = f"# Assembled by CodeSynthesizer\n\n{assembled}\n"
 
-            # Validate: py_compile the assembled result
-            import py_compile, io
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".py", delete=False, encoding="utf-8"
-                ) as f:
-                    f.write(full_code)
-                    fname = f.name
-                py_compile.compile(fname, doraise=True)
-                os.unlink(fname)
+            def _compile_and_validate(code_text: str) -> bool:
+                fname = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".py", delete=False, encoding="utf-8"
+                    ) as f:
+                        f.write(code_text)
+                        fname = f.name
+                    py_compile.compile(fname, doraise=True)
+                    if fname:
+                        os.unlink(fname)
+                    return not _has_unbound_self_refs(code_text)
+                except Exception:
+                    if fname:
+                        try:
+                            os.unlink(fname)
+                        except OSError:
+                            pass
+                    return False
+
+            valid = _compile_and_validate(full_code)
+            if not valid and alt_blocks:
+                extended = "\n\n".join(code_blocks + alt_blocks[:4])
+                extended_code = f"# Assembled by CodeSynthesizer\n\n{extended}\n"
+                if _compile_and_validate(extended_code):
+                    full_code = extended_code
+                    valid = True
+
+            if valid:
                 answer = f"```python\n{full_code}```\n"
-            except py_compile.PyCompileError as e:
-                # Fall back to strongest single SUPPORT
-                os.unlink(fname)
-                best_code = alt_blocks[0] if alt_blocks else "# (no valid code)"
+            else:
+                best_code = "# (no valid code)"
+                for alt in alt_blocks:
+                    if not _has_unbound_self_refs(alt):
+                        best_code = alt
+                        break
+                if best_code == "# (no valid code)" and alt_blocks:
+                    best_code = alt_blocks[0]
                 answer = (
-                    f"# Assembly failed to compile: {e}\n"
-                    f"# Falling back to strongest SUPPORT signal.\n\n"
+                    f"# Assembly failed to produce a self-contained implementation.\n"
+                    f"# Falling back to the strongest SUPPORT signal that looks complete.\n\n"
                     f"```python\n{best_code}\n```\n"
                 )
 

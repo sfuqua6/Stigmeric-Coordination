@@ -17,7 +17,7 @@ os.environ.setdefault("MOCK_LLM", "1")
 
 from core.signal_store import SignalStore, _NULL_EMBEDDER
 from core.signal_types import INITIAL, SUPPORT, CRITIQUE_POSITIVE, CRITIQUE_NEGATIVE, VERIFICATION
-from agents.coding_roles import StaticCritic, _extract_code
+from agents.coding_roles import StaticCritic, _extract_code, _has_unbound_self_refs
 from core.role_registry import get_role_classes
 from core.sampling import strategy_for_forager, strategy_for_critic, strategy_for_validator
 
@@ -39,6 +39,10 @@ class TestExtractCode(unittest.TestCase):
         text = "```\ndef bar(): pass\n```"
         code = _extract_code(text)
         self.assertIn("def bar", code)
+
+    def test_detects_top_level_method_fragment(self):
+        code = "def get(self, key: int) -> int:\n    return self.map[key]"
+        self.assertTrue(_has_unbound_self_refs(code))
 
 
 class TestStaticCritic(unittest.TestCase):

@@ -77,13 +77,17 @@ _EXTERNAL_CHARS = 400  # Wikipedia snippet injected into Section 1 calls
 # normally chooses the render set itself based on a structural digest that
 # carries no signal content — see _plan_synthesis below. The cap only fires
 # when the planner call fails or yields zero valid cluster IDs.
-_SECTION_1_FALLBACK_CAP = 5
+_SECTION_1_FALLBACK_CAP = 6
 # Hard cap on Section 3 entries (after merging tail-of-surviving, unverified,
 # rejected_by_field, and weakly_supported). Was 5; raised because we now
 # route more buckets through this section.
 _SECTION_3_RENDER_CAP = 10
 # Threshold above which the run-end summary prints a faithfulness warning.
 _AUDIT_WARNING_THRESHOLD = 20
+
+# Feature flag for robust synthesizer logic: retry prompt interpretation,
+# sanitize planner output, and trim excessive render sets.
+_SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK = True
 
 # Planner is a single LLM call ahead of per-cluster rendering. Its prompt
 # carries STRUCTURAL metadata only (cluster IDs, support / dissent / ver
@@ -147,6 +151,16 @@ def _rank_clusters(clusters: list) -> list:
 # from every already-picked cluster. 0.35 ≈ "topically distinct".
 _SECTION_1_DIVERSITY_MIN_DIST = 0.35
 
+# Hard ceiling on the number of clusters the synthesizer renders in full.
+# If the planner returns more than this, the set is trimmed to the most
+# diverse, highest-priority clusters.
+_SECTION_1_MAX_RENDER_FULL = 6
+
+# Retries for the prompt interpreter and planner when the LLM returns
+# malformed or non-JSON output.
+_CONTRACT_PROMPT_RETRIES = 1
+_PLAN_PROMPT_RETRIES = 1
+
 
 def _select_diverse_clusters(
     clusters: list, store, k: int,
@@ -195,6 +209,97 @@ def _select_diverse_clusters(
         picked.append(cp)
         picked_embs.append(emb)
     return picked, tail
+
+
+def _is_valid_contract(contract: dict) -> bool:
+    if not isinstance(contract, dict):
+        return False
+    if contract.get("regime") not in ("exploration", "optimization"):
+        return False
+    form = contract.get("form")
+    if not isinstance(form, str) or not form.strip():
+        return False
+    if contract.get("length_hint", "") not in ("short", "medium", "long"):
+        return False
+    return True
+
+
+def _trim_render_full(plan: dict, candidates: list, store: SignalStore) -> dict:
+    if len(plan["render_full"]) <= _SECTION_1_MAX_RENDER_FULL:
+        return plan
+
+    id_to_cp = {cp.representative_id: cp for cp in candidates}
+    selected_candidates = [id_to_cp[cid] for cid in plan["render_full"]
+                           if cid in id_to_cp]
+    if not selected_candidates:
+        return plan
+
+    picked, tail = _select_diverse_clusters(
+        selected_candidates, store, _SECTION_1_MAX_RENDER_FULL,
+    )
+    picked_ids = [cp.representative_id for cp in picked]
+    tail_ids = [cp.representative_id for cp in tail]
+
+    section3 = list(dict.fromkeys(plan.get("section3_only", []) + tail_ids))
+    notes = str(plan.get("notes", "")).strip()
+    if notes:
+        notes += " "
+    notes += (
+        f"(render set trimmed to {_SECTION_1_MAX_RENDER_FULL} highest-priority, "
+        f"diverse clusters)"
+    )
+
+    return {
+        "render_full": picked_ids,
+        "section3_only": section3,
+        "merge_groups": plan.get("merge_groups", []),
+        "notes": notes,
+    }
+
+
+def _split_ids(ids: list[str], valid_ids: set[str]) -> list[str]:
+    return [cid for cid in ids if isinstance(cid, str) and cid in valid_ids]
+
+
+def _parse_merge_groups(raw_groups, valid_ids: set[str]) -> list[list[str]]:
+    merged: list[list[str]] = []
+    if not isinstance(raw_groups, list):
+        return merged
+    for grp in raw_groups:
+        if not isinstance(grp, list):
+            continue
+        cleaned = [cid for cid in grp if isinstance(cid, str) and cid in valid_ids]
+        if len(cleaned) >= 2:
+            merged.append(cleaned)
+    return merged
+
+
+def _sanitize_plan(raw_plan: dict, candidates: list, store: SignalStore) -> dict:
+    valid_ids = {cp.representative_id for cp in candidates}
+    if not isinstance(raw_plan, dict):
+        return {"render_full": [], "section3_only": [], "merge_groups": [], "notes": ""}
+
+    render_full = _split_ids(raw_plan.get("render_full", []), valid_ids)
+    section3_only = _split_ids(raw_plan.get("section3_only", []), valid_ids)
+    merge_groups = _parse_merge_groups(raw_plan.get("merge_groups", []), valid_ids)
+    notes = str(raw_plan.get("notes", "")).strip()
+
+    # Implicit demotion: any candidate not in render_full and not in section3
+    # is routed to section 3 so no cluster disappears silently.
+    used = set(render_full) | set(section3_only)
+    for cp in candidates:
+        if cp.representative_id not in used:
+            section3_only.append(cp.representative_id)
+
+    sanitized = {
+        "render_full": list(dict.fromkeys(render_full)),
+        "section3_only": list(dict.fromkeys(section3_only)),
+        "merge_groups": merge_groups,
+        "notes": notes,
+    }
+    if len(sanitized["render_full"]) > _SECTION_1_MAX_RENDER_FULL:
+        return _trim_render_full(sanitized, candidates, store)
+    return sanitized
 
 
 def _detect_inter_cluster_contradictions(
@@ -626,12 +731,36 @@ class Synthesizer:
             print(f"[synthesizer] prompt-interpret call failed: "
                   f"{type(exc).__name__}: {exc}")
             return self._fallback_contract(user_prompt)
+
         block = _extract_json_block(raw or "")
         if block is None:
+            # OLD:
+            # if block is None:
+            #     return self._fallback_contract(user_prompt)
+            if _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK:
+                print("[synthesizer] prompt interpreter parse failed; retrying with stricter JSON instructions")
+                try:
+                    raw = await self.llm.generate(
+                        prompt + "\nRespond with a JSON object only, no surrounding text.\nCONTRACT:",
+                        role=self.ROLE,
+                        max_tokens=_INTERPRET_MAX_TOKENS,
+                        temperature=_INTERPRET_TEMPERATURE,
+                    )
+                except Exception as exc:
+                    print(f"[synthesizer] prompt-interpret retry failed: "
+                          f"{type(exc).__name__}: {exc}")
+                    return self._fallback_contract(user_prompt)
+                block = _extract_json_block(raw or "")
+            else:
+                return self._fallback_contract(user_prompt)
+
+        if block is None:
+            print("[synthesizer] prompt interpreter failed to produce valid JSON; using heuristic fallback")
             return self._fallback_contract(user_prompt)
         try:
             contract = json.loads(_repair_json(block))
-        except Exception:
+        except Exception as exc:
+            print(f"[synthesizer] prompt interpreter JSON parse error: {exc}; using heuristic fallback")
             return self._fallback_contract(user_prompt)
         # Coerce / sanitize fields. Anything missing gets a default.
         out = {
@@ -733,6 +862,7 @@ class Synthesizer:
         ex1 = _ex[1] if len(_ex) > 1 else "INITIAL_00002"
 
         prompt = (
+            f"TASK TYPE: {getattr(self, '_task_type', 'unknown')}\n"
             f"TASK: {self.task_prompt}\n\n"
             f"You are planning the structure of a synthesis. You see ONLY a "
             f"structural digest of claim clusters: their IDs, counts of "
@@ -749,9 +879,14 @@ class Synthesizer:
             f"  4. Contested clusters are valuable — surface them.\n\n"
             f"If two clusters look like the same position by their previews, "
             f"name them in a merge_group rather than rendering both.\n\n"
+            # OLD: f"You can choose up to {len(candidates)} clusters for "
+            # OLD: f"render_full — there is NO fixed cap. The downstream renderer "
+            # OLD: f"will render exactly what you list. Prefer a slightly smaller, "
+            # OLD: f"sharper set over a larger noisy one.\n\n"
             f"You can choose up to {len(candidates)} clusters for "
-            f"render_full — there is NO fixed cap. The downstream renderer "
-            f"will render exactly what you list. Prefer a slightly smaller, "
+            f"render_full. The downstream synthesizer may trim this set to "
+            f"the {_SECTION_1_MAX_RENDER_FULL} highest-priority, diverse "
+            f"clusters if necessary. Prefer a slightly smaller, "
             f"sharper set over a larger noisy one.\n\n"
             f"---DIGEST---\n{digest}\n---END DIGEST---\n\n"
             f"Reply with a JSON object in exactly this shape. The IDs in the "
@@ -776,7 +911,11 @@ class Synthesizer:
         except Exception as exc:
             print(f"[synthesizer] plan call failed: {type(exc).__name__}: {exc}")
             return self._fallback_plan(candidates, store)
-        return self._parse_plan(raw, candidates, store)
+
+        plan = self._parse_plan(raw, candidates, store)
+        if _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK and plan and len(plan.get("render_full", [])) > _SECTION_1_MAX_RENDER_FULL:
+            plan = _trim_render_full(plan, candidates, store)
+        return plan
 
     def _parse_plan(
         self, raw: str, candidates: list, store: SignalStore,
@@ -787,43 +926,42 @@ class Synthesizer:
             print(f"[synthesizer] plan parse: no JSON block; using fallback")
             return self._fallback_plan(candidates, store)
         try:
-            plan = json.loads(_repair_json(block))
+            raw_plan = json.loads(_repair_json(block))
         except Exception as exc:
             print(f"[synthesizer] plan JSON parse error: {exc}; using fallback")
             return self._fallback_plan(candidates, store)
 
-        valid_ids = {cp.representative_id for cp in candidates}
-        render_full = [cid for cid in plan.get("render_full", []) if cid in valid_ids]
-        section3_only = [cid for cid in plan.get("section3_only", []) if cid in valid_ids]
-        merge_groups = []
-        for grp in plan.get("merge_groups", []):
-            if isinstance(grp, list):
-                cleaned = [cid for cid in grp if cid in valid_ids]
-                if len(cleaned) >= 2:
-                    merge_groups.append(cleaned)
-        notes = str(plan.get("notes", "")).strip()
+        # OLD:
+        # valid_ids = {cp.representative_id for cp in candidates}
+        # render_full = [cid for cid in raw_plan.get("render_full", []) if cid in valid_ids]
+        # section3_only = [cid for cid in raw_plan.get("section3_only", []) if cid in valid_ids]
+        # merge_groups = []
+        # for grp in raw_plan.get("merge_groups", []):
+        #     if isinstance(grp, list):
+        #         cleaned = [cid for cid in grp if cid in valid_ids]
+        #         if len(cleaned) >= 2:
+        #             merge_groups.append(cleaned)
+        # notes = str(raw_plan.get("notes", "")).strip()
+        # used = set(render_full)
+        # for grp in merge_groups:
+        #     used.update(grp)
+        # section3_set = set(section3_only)
+        # for cp in candidates:
+        #     if cp.representative_id not in used and cp.representative_id not in section3_set:
+        #         section3_set.add(cp.representative_id)
+        # plan = {
+        #     "render_full": render_full,
+        #     "section3_only": sorted(section3_set),
+        #     "merge_groups": merge_groups,
+        #     "notes": notes,
+        # }
 
-        # The plan must contain *something* renderable; if not, fall back.
-        if not render_full:
-            print(f"[synthesizer] plan empty after validation; using fallback")
+        plan = _sanitize_plan(raw_plan, candidates, store)
+        if _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK and not plan.get("render_full"):
+            print(f"[synthesizer] plan empty after sanitization; using fallback")
             return self._fallback_plan(candidates, store)
 
-        # Implicit demotion: any candidate not in render_full and not in a
-        # merge group's secondary slot drops to section3.
-        used = set(render_full)
-        for grp in merge_groups:
-            used.update(grp)
-        section3_set = set(section3_only)
-        for cp in candidates:
-            if cp.representative_id not in used and cp.representative_id not in section3_set:
-                section3_set.add(cp.representative_id)
-
-        return {
-            "render_full": render_full,
-            "section3_only": sorted(section3_set),
-            "merge_groups": merge_groups,
-            "notes": notes,
-        }
+        return plan
 
     def _fallback_plan(self, candidates: list, store: SignalStore) -> dict:
         """Legacy diversity-aware top-N selection. Used when the LLM plan fails."""

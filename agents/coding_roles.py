@@ -532,13 +532,14 @@ class CodeSynthesizer(Synthesizer):
 
     async def synthesize(self, store, has_validators=True,
                          prior_rejections=None, prior_consensus=None,
-                         output_dir=None):
+                         output_dir=None, task_type=None):
         from core.projection import build_projection
 
         projection = build_projection(
             store, has_validators=has_validators,
             prior_rejections=prior_rejections,
             prior_consensus=prior_consensus,
+            task_type=task_type,
         )
 
         code_blocks: list[str] = []

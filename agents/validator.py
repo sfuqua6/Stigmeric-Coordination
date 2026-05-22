@@ -192,7 +192,7 @@ def _wiki_lookup(query: str) -> str:
         from core.search_tool import search as _search
     except Exception:
         return f"(search tool unavailable; query was: {query!r})"
-    chunks = _search(query, max_results=2)
+    chunks = _search(query, max_results=2, task_type="analysis")
     if not chunks:
         return f"(no external snippet found for query: {query!r})"
     pieces = []

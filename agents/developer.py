@@ -130,7 +130,8 @@ class Developer(BaseAgent):
                     # the search focused on the cluster, not the global task.
                     snippet = " ".join(target[0].content.split()[:8])
                     query = f"{snippet} evidence"
-                    chunks = _search(query, max_results=3)
+                    chunks = _search(query, max_results=3,
+                                     task_type=getattr(self, "task_type", None))
                 except Exception:
                     chunks = []
                     query = ""

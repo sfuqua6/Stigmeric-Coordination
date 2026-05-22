@@ -100,7 +100,8 @@ class Scout(BaseAgent):
                 if query:
                     try:
                         from core.search_tool import search as _search, summarize_for_signal
-                        retrieved = _search(query, max_results=5)
+                        retrieved = _search(query, max_results=8,
+                                            task_type=getattr(self, "task_type", None))
                     except Exception as exc:
                         print(f"[scout {self.agent_id}] search failed: "
                               f"{type(exc).__name__}: {exc}")
@@ -233,15 +234,16 @@ class Scout(BaseAgent):
         # partition path when search returned nothing or is disabled.
         if retrieved_chunks:
             evidence_blocks = []
-            for c in retrieved_chunks[:5]:
+            for c in retrieved_chunks[:8]:
                 tag = c.source_tag[:160]
                 body = c.text[:800]
                 evidence_blocks.append(f"[{tag}]\n{body}")
             evidence_text = "\n\n".join(evidence_blocks)
             evidence_intro = (
                 "You issued an agentic search query and received the following "
-                "evidence. Other scouts have issued different queries and you "
-                "cannot see what they retrieved."
+                "unverified search leads. Use them to inform a specific claim, "
+                "but do not treat them as proven facts. Other scouts have "
+                "issued different queries and you cannot see what they retrieved."
             )
         else:
             evidence_text = self.config.partition.render(offset=chunk_offset)

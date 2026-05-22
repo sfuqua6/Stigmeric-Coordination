@@ -61,6 +61,8 @@ DEFAULT_SEARCH_BUDGET_PER_TICK = 4
 
 
 # Topic-aware stance modifiers. Keys match TASK_PROMPTS in run_swarm.py.
+# OLD: The prior template list was more generic and sometimes produced
+# keyword-soup queries that worked poorly on DuckDuckGo.
 _STANCE_BY_TASK: dict[str, list[str]] = {
     "debate": [
         "{q}",
@@ -71,6 +73,9 @@ _STANCE_BY_TASK: dict[str, list[str]] = {
         "scholarly debate on {q}",
         "competing theories on {q}",
         "what experts say about {q}",
+        "evidence and analysis of {q}",
+        "research on {q}",
+        "expert commentary on {q}",
     ],
     "analysis": [
         "{q}",
@@ -79,7 +84,9 @@ _STANCE_BY_TASK: dict[str, list[str]] = {
         "{q} effects",
         "{q} mechanisms",
         "research on {q}",
+        "statistics for {q}",
         "case studies of {q}",
+        "evidence for {q}",
         "{q} history",
     ],
     "problem_solving": [
@@ -98,6 +105,7 @@ _STANCE_BY_TASK: dict[str, list[str]] = {
         "{q} symbolism",
         "{q} in literature",
         "examples of {q}",
+        "creative uses of {q}",
         "famous works about {q}",
     ],
     "coding": [
@@ -107,8 +115,52 @@ _STANCE_BY_TASK: dict[str, list[str]] = {
         "{q} edge cases",
         "{q} python example",
         "{q} best practices",
+        "common pitfalls for {q}",
+        "production examples of {q}",
     ],
 }
+
+_FOLLOWUP_MODIFIERS_BY_TASK: dict[str, list[str]] = {
+    "debate": [
+        "expert opinions",
+        "analyst perspectives",
+        "counterarguments",
+        "policy implications",
+    ],
+    "analysis": [
+        "statistics",
+        "research findings",
+        "case studies",
+        "government reports",
+    ],
+    "problem_solving": [
+        "best practices",
+        "case studies",
+        "pilot programs",
+        "project reports",
+    ],
+    "creative": [
+        "themes",
+        "examples",
+        "symbolism",
+        "popular uses",
+    ],
+    "coding": [
+        "python example",
+        "implementation guide",
+        "best practices",
+        "common pitfalls",
+    ],
+}
+
+_FOLLOWUP_DEFAULT = [
+    "research",
+    "statistics",
+    "case studies",
+    "report",
+    "survey",
+    "expert commentary",
+]
 _STANCE_DEFAULT = _STANCE_BY_TASK["analysis"]
 
 
@@ -334,3 +386,21 @@ def plan_develop_query(target_content: str, served_queries: dict[str, int],
 def plan_validate_query(target_content: str) -> str:
     """Query for the VALIDATE action — short, factual, natural language."""
     return _extract_sentence_fragment(target_content or "", max_words=10)
+
+
+def plan_followup_query(original_query: str,
+                        task_type: Optional[str] = None) -> str:
+    """Generate a targeted follow-up query when initial search coverage is weak.
+
+    Follow-up queries append task-aware modifiers to the original query so the
+    second search pass looks for deeper evidence, statistics, reports, or expert
+    commentary rather than simply repeating the same keywords.
+    """
+    if not original_query:
+        return ""
+    modifiers = _FOLLOWUP_MODIFIERS_BY_TASK.get(task_type or "", _FOLLOWUP_DEFAULT)
+    for suffix in modifiers:
+        cand = f"{original_query} {suffix}".strip()
+        if cand.lower() != original_query.lower():
+            return cand
+    return ""

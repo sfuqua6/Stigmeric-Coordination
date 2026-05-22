@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -37,7 +38,50 @@ from .intake import CorpusChunk
 
 _DEFAULT_CACHE_DIR = "/content/swarm_search_cache"
 _MAX_CONTENT_CHARS = 2000
-_DEFAULT_MAX_RESULTS = 5
+_DEFAULT_MAX_RESULTS = 8  # raised from 5 to allow more DDG leads
+_MIN_FOLLOWUP_RESULTS = 3
+
+_FOLLOWUP_MODIFIERS_BY_TASK: dict[str, list[str]] = {
+    "debate": [
+        "expert opinions",
+        "analyst perspectives",
+        "policy implications",
+        "counterarguments",
+    ],
+    "analysis": [
+        "statistics",
+        "research findings",
+        "case studies",
+        "government reports",
+    ],
+    "problem_solving": [
+        "best practices",
+        "case studies",
+        "pilot programs",
+        "project reports",
+    ],
+    "creative": [
+        "themes",
+        "examples",
+        "symbolism",
+        "popular uses",
+    ],
+    "coding": [
+        "python example",
+        "implementation guide",
+        "best practices",
+        "common pitfalls",
+    ],
+}
+
+_FOLLOWUP_DEFAULT = [
+    "research",
+    "statistics",
+    "case studies",
+    "report",
+    "survey",
+    "expert commentary",
+]
 
 
 def _cache_dir() -> Path:
@@ -49,13 +93,66 @@ def _cache_dir() -> Path:
     return p
 
 
-def _cache_path(query: str) -> Path:
-    key = hashlib.sha1(query.encode("utf-8")).hexdigest()[:16]
+def _cache_path(query: str, max_results: int) -> Path:
+    key = hashlib.sha1(f"{query}||{max_results}".encode("utf-8")).hexdigest()[:16]
     return _cache_dir() / f"{key}.json"
 
 
-def _load_cache(query: str) -> Optional[list[CorpusChunk]]:
-    p = _cache_path(query)
+def _sanitize_query(query: str) -> str:
+    """Clean the outgoing web search query for DuckDuckGo."""
+    if not query:
+        return query
+    query = query.replace("\n", " ").replace("\r", " ")
+    query = re.sub(r"\s+", " ", query).strip()
+    # Remove prompt-like artifacts and noisy punctuation that do not help web search.
+    query = re.sub(r"(?i)\b(task|claim|evidence|answer|question|response)\b:\s*", "", query)
+    query = re.sub(r"[\"'“”‘’<>\[\]]+", "", query)
+    query = query.strip()
+    if len(query) > 150:
+        query = query[:150].rsplit(" ", 1)[0]
+    return query
+
+
+def _normalize_url(url: str) -> str:
+    if not url:
+        return ""
+    url = url.strip()
+    url = re.sub(r"^https?://", "", url, flags=re.I)
+    url = re.sub(r"^www\.", "", url, flags=re.I)
+    url = url.split("?", 1)[0].split("#", 1)[0]
+    return url.rstrip("/").lower()
+
+
+def _dedupe_chunks(chunks: list[CorpusChunk], max_results: int) -> list[CorpusChunk]:
+    seen = set()
+    deduped: list[CorpusChunk] = []
+    for c in chunks:
+        url = ""
+        if "|" in c.source_tag:
+            url = c.source_tag.rsplit("|", 1)[1].strip()
+        norm = _normalize_url(url) or c.chunk_id
+        if norm in seen:
+            continue
+        seen.add(norm)
+        deduped.append(c)
+        if len(deduped) >= max_results:
+            break
+    return deduped
+
+
+def _build_followup_query(query: str, task_type: Optional[str] = None) -> str:
+    if not query:
+        return ""
+    modifiers = _FOLLOWUP_MODIFIERS_BY_TASK.get(task_type or "", _FOLLOWUP_DEFAULT)
+    for modifier in modifiers:
+        candidate = f"{query} {modifier}".strip()
+        if candidate.lower() != query.lower():
+            return candidate
+    return ""
+
+
+def _load_cache(query: str, max_results: int) -> Optional[list[CorpusChunk]]:
+    p = _cache_path(query, max_results)
     if not p.exists():
         return None
     try:
@@ -72,10 +169,10 @@ def _load_cache(query: str) -> Optional[list[CorpusChunk]]:
         return None
 
 
-def _save_cache(query: str, chunks: list[CorpusChunk]) -> None:
+def _save_cache(query: str, chunks: list[CorpusChunk], max_results: int) -> None:
     if not chunks:
         return
-    p = _cache_path(query)
+    p = _cache_path(query, max_results)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(
@@ -142,7 +239,7 @@ def _ddg_search(query: str, max_results: int) -> list[CorpusChunk]:
             from duckduckgo_search import DDGS  # type: ignore
         except ImportError:
             return []
-    out: list[CorpusChunk] = []
+    raw: list[CorpusChunk] = []
     try:
         with DDGS(timeout=10) as ddgs:
             for i, r in enumerate(ddgs.text(query, max_results=max_results)):
@@ -154,7 +251,7 @@ def _ddg_search(query: str, max_results: int) -> list[CorpusChunk]:
                 if not body:
                     continue
                 cid = f"ddg_{i}_{hashlib.sha1(url.encode()).hexdigest()[:8]}"
-                out.append(CorpusChunk(
+                raw.append(CorpusChunk(
                     chunk_id=cid,
                     text=body,
                     source_tag=f"{title} | {url}",
@@ -162,6 +259,7 @@ def _ddg_search(query: str, max_results: int) -> list[CorpusChunk]:
     except Exception as exc:
         print(f"[search] ddg call failed: {type(exc).__name__}: {exc}")
         return []
+    out = _dedupe_chunks(raw, max_results)
     return out
 
 
@@ -212,14 +310,15 @@ def _log_primary_once() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS) -> list[CorpusChunk]:
+def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
+           task_type: Optional[str] = None) -> list[CorpusChunk]:
     """Run an agentic search. Tavily → DDG → Cohere; cached by SHA(query).
 
     Returns up to `max_results` CorpusChunks; an empty list means every
     backend failed or returned nothing.
     """
     _log_primary_once()
-    query = query.strip()
+    query = _sanitize_query(query)
     if not query:
         return []
 
@@ -238,22 +337,44 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS) -> list[CorpusCh
             for i in range(min(max_results, 3))
         ]
 
-    cached = _load_cache(query)
+    cached = _load_cache(query, max_results)
     if cached is not None:
         return cached[:max_results]
 
     started = time.time()
     chunks = _tavily_search(query, max_results)
     if chunks:
-        _save_cache(query, chunks)
+        _save_cache(query, chunks, max_results)
         print(f"[search] tavily ok: {len(chunks)} results for {query!r} "
               f"in {time.time() - started:.1f}s")
         return chunks
 
+    # OLD: direct fallback chain without any secondary search query.
+    # chunks = _ddg_search(query, max_results)
+    # if chunks: ...
+    # chunks = _cohere_search(query, max_results)
+    # return []
+
     chunks = _ddg_search(query, max_results)
-    if chunks:
-        _save_cache(query, chunks)
+    if chunks and len(chunks) >= _MIN_FOLLOWUP_RESULTS:
+        _save_cache(query, chunks, max_results)
         print(f"[search] ddg ok: {len(chunks)} results for {query!r} "
+              f"in {time.time() - started:.1f}s")
+        return chunks
+
+    if chunks:
+        followup = _build_followup_query(query, task_type)
+        if followup:
+            followup_chunks = _ddg_search(followup, max_results)
+            if followup_chunks:
+                merged = _dedupe_chunks(chunks + followup_chunks, max_results)
+                _save_cache(query, merged, max_results)
+                print(f"[search] ddg follow-up ok: {len(merged)} results for {query!r} "
+                      f"(+{len(followup_chunks)} from follow-up {followup!r}) "
+                      f"in {time.time() - started:.1f}s")
+                return merged
+        _save_cache(query, chunks, max_results)
+        print(f"[search] ddg ok (small batch): {len(chunks)} results for {query!r} "
               f"in {time.time() - started:.1f}s")
         return chunks
 
@@ -264,6 +385,17 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS) -> list[CorpusCh
         # pinned in the cache.
         print(f"[search] cohere fallback: {len(chunks)} results for {query!r}")
         return chunks
+
+    # If the first query returned nothing, try a follow-up modifier to avoid
+    # missing the same topic due to overly generic wording.
+    followup = _build_followup_query(query, task_type)
+    if followup:
+        chunks = _ddg_search(followup, max_results)
+        if chunks:
+            _save_cache(query, chunks, max_results)
+            print(f"[search] ddg follow-up only ok: {len(chunks)} results for {query!r} "
+                  f"via follow-up {followup!r} in {time.time() - started:.1f}s")
+            return chunks
 
     print(f"[search] all backends failed for {query!r}")
     return []

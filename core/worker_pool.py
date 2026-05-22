@@ -664,9 +664,11 @@ class Worker:
                 elif cached_q is not None:
                     # Cached hit — no budget needed; search_tool's on-disk
                     # cache returns instantly.
-                    retrieved = _search(query, max_results=5)
+                    retrieved = _search(query, max_results=8,
+                                        task_type=getattr(self, "task_type", None))
                 elif pool_state.try_reserve_search():
-                    retrieved = _search(query, max_results=5)
+                    retrieved = _search(query, max_results=8,
+                                        task_type=getattr(self, "task_type", None))
                 else:
                     # Budget exhausted; skip the live call this iteration.
                     retrieved = []
@@ -727,9 +729,11 @@ class Worker:
                         cached_q = find_cached_query(query, pool_state.served_queries)
                         if cached_q is not None and cached_q != query:
                             query = cached_q
-                            retrieved = _search(query, max_results=3)
+                            retrieved = _search(query, max_results=5,
+                                                task_type=getattr(self, "task_type", None))
                         elif pool_state.try_reserve_search():
-                            retrieved = _search(query, max_results=3)
+                            retrieved = _search(query, max_results=5,
+                                                task_type=getattr(self, "task_type", None))
                         else:
                             retrieved = []
                         if retrieved:
@@ -790,9 +794,9 @@ class Worker:
                     cached_q = find_cached_query(query, pool_state.served_queries)
                     if cached_q is not None and cached_q != query:
                         query = cached_q
-                        hits = _search(query, max_results=2)
+                        hits = _search(query, max_results=3)
                     elif pool_state.try_reserve_search():
-                        hits = _search(query, max_results=2)
+                        hits = _search(query, max_results=3)
                     else:
                         hits = []
                 else:

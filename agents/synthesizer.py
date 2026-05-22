@@ -1956,7 +1956,7 @@ def _build_lineage_dot(
 def _extract_json_block(text: str) -> Optional[str]:
     """Return the first complete {...} block from text using brace counting.
 
-    The greedy regex r"\{[\s\S]*\}" fails when the model appends a comment,
+    The greedy regex r"\\{[\\s\\S]*\\}" fails when the model appends a comment,
     a trailing explanation, or a second JSON object after the real one —
     it grabs from the first '{' to the LAST '}', producing an invalid span.
     This function stops at the matching closing brace of the FIRST '{'.

@@ -593,6 +593,21 @@ MODEL_BUNDLES = {
                     "max_num_seqs": 64, "max_model_len": 2048,
                     "gpu_memory_utilization": 0.30},
     },
+    # A100-80GB coding bundle: primary=Qwen2.5-Coder-32B fp8 (~32 GiB),
+    # fast=Qwen2.5-Coder-7B float16 (~14 GiB). Total budget 0.83 → 66 GB.
+    # Used automatically as fallback when the full "coding" bundle OOMs
+    # (i.e. on A100-80GB, which can't hold 32B + 16B-MoE simultaneously).
+    # The MoE secondary (DeepSeek-Coder-V2-Lite) is dropped; hater routes
+    # to the 7B fast engine instead — losing family diversity vs the H100
+    # bundle but fitting cleanly on 80 GB.
+    "a100_coding": {
+        "primary": {"model": "Qwen/Qwen2.5-Coder-32B-Instruct", "dtype": "float16",
+                    "quantization": "fp8", "max_num_seqs": 16, "max_model_len": 4096,
+                    "gpu_memory_utilization": 0.55},
+        "fast":    {"model": "Qwen/Qwen2.5-Coder-7B-Instruct",  "dtype": "float16",
+                    "max_num_seqs": 32, "max_model_len": 2048,
+                    "gpu_memory_utilization": 0.28},
+    },
 }
 
 # Maps task_type → bundle name. Unknown task types fall back to
@@ -612,6 +627,17 @@ TASK_TO_BUNDLE_SMALL = {
     "problem_solving": "small",
     "creative":        "small",
     "coding":          "small_coding",
+}
+
+# Ordered fallback chain used by MultiEngineRouter when a bundle OOMs.
+# Router walks this chain until a bundle loads successfully or the chain
+# is exhausted (in which case the original error propagates).
+BUNDLE_FALLBACKS = {
+    "coding":            "a100_coding",
+    "a100_coding":       "small_coding",
+    "debate_analysis":   "small",
+    "creative":          "small",
+    "research_ensemble": "debate_analysis",
 }
 
 # Role → engine routing. Each entry maps a role name to:
@@ -672,6 +698,15 @@ ROLE_TO_ENGINE = {
         "developer":   "primary",
         "critic":      "fast",
         "hater":       "fast",
+        "validator":   "fast",
+        "synthesizer": "primary",
+    },
+    "a100_coding": {
+        "scout":       "primary",
+        "forager":     "primary",
+        "developer":   "primary",
+        "critic":      "fast",
+        "hater":       "fast",    # no MoE secondary on A100-80; route to 7B fast
         "validator":   "fast",
         "synthesizer": "primary",
     },

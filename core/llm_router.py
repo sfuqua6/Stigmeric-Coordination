@@ -540,20 +540,18 @@ class MultiEngineRouter:
     # ------------------------------------------------------------------
 
     async def load(self) -> None:
-        """Load every engine declared in the bundle, sequentially.
+        """Load every engine in the bundle, cascading through BUNDLE_FALLBACKS on OOM.
 
-        vLLM v1 spawns a subprocess engine-core per AsyncLLMEngine. Loading
-        them concurrently races the multi-process spawn handshake AND has
-        each subprocess attempt to grab `gpu_memory_utilization` of total
-        VRAM independently — so three engines at the default 0.92 sum to
-        276% of the GPU and fail. Sequential load lets each engine pin
-        its share before the next one starts. The auto-budget below splits
-        gpu_memory_utilization across engines so they actually fit.
+        vLLM v1 spawns a subprocess engine-core per AsyncLLMEngine. Sequential
+        loading lets each engine pin its VRAM share before the next one starts.
+
+        When an OOM RuntimeError is raised during loading, we flush any partial
+        engines, look up the next bundle in BUNDLE_FALLBACKS, switch in place,
+        and retry. The cascade stops when either a bundle loads successfully or
+        the fallback chain is exhausted.
         """
-        from .config import (
-            SPECULATIVE_DRAFT_MODEL, SPECULATIVE_NUM_TOKENS,
-            SPECULATIVE_TARGET_ENGINE, USE_MOCK_LLM,
-        )
+        from .config import USE_MOCK_LLM, BUNDLE_FALLBACKS
+
         if USE_MOCK_LLM:
             from .llm import MockLLM
             for engine_name in self._bundle_spec:
@@ -562,10 +560,50 @@ class MultiEngineRouter:
                   f"{len(self.engines)} engines)")
             return
 
-        # Auto-budget VRAM across engines that don't specify their own
-        # gpu_memory_utilization. Total budget across all engines targets
-        # ~90% of VRAM with a 4% slack per engine to leave room for
-        # activations and the speculative draft (when attached).
+        visited: set = {self.bundle_name}
+        while True:
+            try:
+                self._load_all_engines()
+                return  # success
+            except RuntimeError as exc:
+                msg = str(exc).lower()
+                is_oom = any(kw in msg for kw in (
+                    "cuda out of memory", "out of memory",
+                    "kv_cache", "cudamemory", "device-side assert",
+                    "cannot allocate memory",
+                ))
+                if not is_oom:
+                    raise  # non-OOM error: propagate immediately
+
+                print(f"[router] OOM loading bundle {self.bundle_name!r}: {exc}")
+                self._cleanup_engines()
+
+                next_bundle = BUNDLE_FALLBACKS.get(self.bundle_name)
+                if next_bundle is None or next_bundle in visited:
+                    raise RuntimeError(
+                        f"OOM cascade exhausted for bundle {self.bundle_name!r}; "
+                        f"tried: {sorted(visited)}"
+                    ) from exc
+                print(f"[router] falling back from {self.bundle_name!r} "
+                      f"to {next_bundle!r}")
+                self._switch_bundle(next_bundle)
+                visited.add(next_bundle)
+
+    def _load_all_engines(self) -> None:
+        """Inner load loop for a single bundle attempt.
+
+        Raises RuntimeError (including OOM) so the caller can catch and fall back.
+        Load on the MAIN thread, not via asyncio.to_thread. vLLM v1's
+        AsyncLLMEngine spawns a subprocess engine-core via mp.spawn;
+        spawning multiprocessing from a worker thread on Linux Python 3.12
+        fails the ZMQ handshake silently. Blocking the asyncio loop for a
+        few seconds per engine is the price of correctness during warm-up.
+        """
+        from .config import (
+            SPECULATIVE_DRAFT_MODEL, SPECULATIVE_NUM_TOKENS,
+            SPECULATIVE_TARGET_ENGINE,
+        )
+
         n_engines = max(1, len(self._bundle_spec))
         n_unbudgeted = sum(
             1 for spec in self._bundle_spec.values()
@@ -577,9 +615,6 @@ class MultiEngineRouter:
             if "gpu_memory_utilization" in spec
         )
         remaining_budget = max(0.10, 0.90 - reserved)
-        # Each unbudgeted engine gets an equal share of what's left, minus
-        # a small per-engine slack so concurrent KV-cache pre-allocation
-        # doesn't bump into total VRAM during the profile_run step.
         per_engine_default = max(
             0.10,
             (remaining_budget / max(1, n_unbudgeted)) - 0.02,
@@ -587,14 +622,12 @@ class MultiEngineRouter:
 
         def _load_sync(engine_name: str, kwargs: dict):
             engine_kwargs = dict(kwargs)
-            # Inject speculative config onto the synthesizer-targeted engine.
             if engine_name == SPECULATIVE_TARGET_ENGINE and SPECULATIVE_DRAFT_MODEL:
                 engine_kwargs["speculative_config"] = {
                     "model": SPECULATIVE_DRAFT_MODEL,
                     "num_speculative_tokens": int(SPECULATIVE_NUM_TOKENS),
                 }
                 self.speculative_enabled = True
-            # Auto-budget VRAM if the bundle didn't pin a value.
             engine_kwargs.setdefault("gpu_memory_utilization", per_engine_default)
             model = engine_kwargs.pop("model")
             from .llm_vllm import VLLMBackend
@@ -607,20 +640,34 @@ class MultiEngineRouter:
               f"for unbudgeted engines)")
         for engine_name, kwargs in self._bundle_spec.items():
             print(f"[router] loading engine {engine_name} ({kwargs.get('model')})")
-            # Load on the MAIN thread, not via asyncio.to_thread. vLLM v1's
-            # AsyncLLMEngine spawns a subprocess engine-core via mp.spawn;
-            # spawning multiprocessing from a worker thread on Linux
-            # Python 3.12 fails the ZMQ handshake silently ("Engine core
-            # initialization failed. Failed core proc(s): {}"). Blocking
-            # the asyncio loop for a few seconds per engine load is the
-            # price of correctness here — nothing else runs during the
-            # one-time bundle warm-up.
             llm = _load_sync(engine_name, kwargs)
             self.engines[engine_name] = llm
         print(f"[router] bundle {self.bundle_name!r} fully loaded "
               f"({len(self.engines)} engines)")
         for engine_name, llm in self.engines.items():
             print(f"[router] engine {engine_name}: {getattr(llm, 'name', '?')}")
+
+    def _cleanup_engines(self) -> None:
+        """Free partial engine handles and flush CUDA cache after an OOM."""
+        self.engines.clear()
+        try:
+            gc.collect()
+            import torch  # type: ignore
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _switch_bundle(self, bundle_name: str) -> None:
+        """Reinitialise in-place for a different bundle (OOM fallback)."""
+        from .config import MODEL_BUNDLES, ROLE_TO_ENGINE
+        self.bundle_name = bundle_name
+        self._bundle_spec = MODEL_BUNDLES[bundle_name]
+        self._role_to_engine = ROLE_TO_ENGINE.get(bundle_name, {})
+        self.disabled_roles = {
+            role for role, eng in self._role_to_engine.items() if eng is None
+        }
+        self._round_robin_state.clear()
 
     # ------------------------------------------------------------------
     # Per-call routing

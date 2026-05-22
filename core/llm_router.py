@@ -540,17 +540,22 @@ class MultiEngineRouter:
     # ------------------------------------------------------------------
 
     async def load(self) -> None:
-        """Load every engine in the bundle, cascading through BUNDLE_FALLBACKS on OOM.
+        """Load every engine declared in the bundle, sequentially.
 
-        vLLM v1 spawns a subprocess engine-core per AsyncLLMEngine. Sequential
-        loading lets each engine pin its VRAM share before the next one starts.
+        vLLM v1 spawns a subprocess engine-core per AsyncLLMEngine. Loading
+        them concurrently races the multi-process spawn handshake AND has
+        each subprocess attempt to grab `gpu_memory_utilization` of total
+        VRAM independently. Sequential load lets each engine pin its share
+        before the next one starts.
 
-        When an OOM RuntimeError is raised during loading, we flush any partial
-        engines, look up the next bundle in BUNDLE_FALLBACKS, switch in place,
-        and retry. The cascade stops when either a bundle loads successfully or
-        the fallback chain is exhausted.
+        If loading fails (OOM or otherwise), a clear message is printed
+        suggesting the appropriate --bundle flag and the exception is
+        re-raised. Recovery is not attempted here because already-loaded
+        vLLM engine subprocesses cannot be torn down by clearing Python
+        references alone — pick the right bundle upfront via --bundle=NAME
+        (or rely on the tier-aware auto-selection in make_bundle_router).
         """
-        from .config import USE_MOCK_LLM, BUNDLE_FALLBACKS
+        from .config import USE_MOCK_LLM
 
         if USE_MOCK_LLM:
             from .llm import MockLLM
@@ -560,40 +565,23 @@ class MultiEngineRouter:
                   f"{len(self.engines)} engines)")
             return
 
-        visited: set = {self.bundle_name}
-        while True:
-            try:
-                self._load_all_engines()
-                return  # success
-            except (RuntimeError, ValueError) as exc:
-                msg = str(exc).lower()
-                is_oom = any(kw in msg for kw in (
-                    "cuda out of memory", "out of memory",
-                    "kv_cache", "cudamemory", "device-side assert",
-                    "cannot allocate memory",
-                    # vLLM v1: the engine-core subprocess crashes and wraps
-                    # the root cause (kv-cache OOM / ValueError) in this
-                    # RuntimeError that surfaces in the parent process.
-                    "engine core initialization failed",
-                    "failed core proc",
-                    "no available memory",
-                ))
-                if not is_oom:
-                    raise  # non-OOM error: propagate immediately
-
-                print(f"[router] OOM loading bundle {self.bundle_name!r}: {exc}")
-                self._cleanup_engines()
-
-                next_bundle = BUNDLE_FALLBACKS.get(self.bundle_name)
-                if next_bundle is None or next_bundle in visited:
-                    raise RuntimeError(
-                        f"OOM cascade exhausted for bundle {self.bundle_name!r}; "
-                        f"tried: {sorted(visited)}"
-                    ) from exc
-                print(f"[router] falling back from {self.bundle_name!r} "
-                      f"to {next_bundle!r}")
-                self._switch_bundle(next_bundle)
-                visited.add(next_bundle)
+        try:
+            self._load_all_engines()
+        except Exception as exc:
+            from .config import TASK_TO_BUNDLE_SMALL, MODEL_BUNDLES
+            # Suggest a smaller bundle the user can pass via --bundle=NAME.
+            # make_bundle_router already picks tier-aware defaults, so this
+            # path is only hit if something went wrong despite that.
+            smaller = TASK_TO_BUNDLE_SMALL.get(self.task_type or "")
+            if smaller and smaller != self.bundle_name and smaller in MODEL_BUNDLES:
+                suggestion = f" Try re-running with --bundle={smaller}"
+            else:
+                suggestion = " Try re-running with a smaller --bundle."
+            print(
+                f"\n[router] FATAL: failed to load bundle {self.bundle_name!r}."
+                f"{suggestion}\n"
+            )
+            raise
 
     def _load_all_engines(self) -> None:
         """Inner load loop for a single bundle attempt.
@@ -652,28 +640,6 @@ class MultiEngineRouter:
               f"({len(self.engines)} engines)")
         for engine_name, llm in self.engines.items():
             print(f"[router] engine {engine_name}: {getattr(llm, 'name', '?')}")
-
-    def _cleanup_engines(self) -> None:
-        """Free partial engine handles and flush CUDA cache after an OOM."""
-        self.engines.clear()
-        try:
-            gc.collect()
-            import torch  # type: ignore
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-
-    def _switch_bundle(self, bundle_name: str) -> None:
-        """Reinitialise in-place for a different bundle (OOM fallback)."""
-        from .config import MODEL_BUNDLES, ROLE_TO_ENGINE
-        self.bundle_name = bundle_name
-        self._bundle_spec = MODEL_BUNDLES[bundle_name]
-        self._role_to_engine = ROLE_TO_ENGINE.get(bundle_name, {})
-        self.disabled_roles = {
-            role for role, eng in self._role_to_engine.items() if eng is None
-        }
-        self._round_robin_state.clear()
 
     # ------------------------------------------------------------------
     # Per-call routing
@@ -782,15 +748,32 @@ def make_bundle_router(task_type: str,
                        ) -> MultiEngineRouter:
     """Pick the right bundle for a task and return an unloaded router.
 
+    Selection priority (highest to lowest):
+      1. override_bundle — explicit --bundle=NAME from the CLI
+      2. TASK_TO_BUNDLE_TIER_OVERRIDE[_TIER][task_type] — tier-aware default
+         (e.g. a100_80 coding → a100_coding instead of the full coding bundle)
+      3. TASK_TO_BUNDLE[task_type] — static per-task default
+      4. "debate_analysis" — final fallback for unknown task types
+
     Caller must `await router.load()` before issuing generate() calls.
     """
-    from .config import TASK_TO_BUNDLE, MODEL_BUNDLES
-    bundle = override_bundle or TASK_TO_BUNDLE.get(task_type)
+    from .config import TASK_TO_BUNDLE, TASK_TO_BUNDLE_TIER_OVERRIDE, MODEL_BUNDLES, _TIER
+
+    if override_bundle:
+        bundle = override_bundle
+    else:
+        tier_overrides = TASK_TO_BUNDLE_TIER_OVERRIDE.get(_TIER or "", {})
+        bundle = tier_overrides.get(task_type) or TASK_TO_BUNDLE.get(task_type)
+        if tier_overrides.get(task_type):
+            print(f"[router] tier={_TIER!r}: auto-selecting bundle "
+                  f"{bundle!r} for task {task_type!r} "
+                  f"(override with --bundle=NAME)")
+
     if bundle is None:
-        # Unknown task type — pick the most general bundle.
         bundle = "debate_analysis"
         print(f"[router] no TASK_TO_BUNDLE entry for {task_type!r}; "
-              f"falling back to {bundle!r}")
+              f"using {bundle!r}")
+
     if bundle not in MODEL_BUNDLES:
         raise ValueError(
             f"requested bundle {bundle!r} not in MODEL_BUNDLES "

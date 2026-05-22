@@ -629,15 +629,25 @@ TASK_TO_BUNDLE_SMALL = {
     "coding":          "small_coding",
 }
 
-# Ordered fallback chain used by MultiEngineRouter when a bundle OOMs.
-# Router walks this chain until a bundle loads successfully or the chain
-# is exhausted (in which case the original error propagates).
-BUNDLE_FALLBACKS = {
-    "coding":            "a100_coding",
-    "a100_coding":       "small_coding",
-    "debate_analysis":   "small",
-    "creative":          "small",
-    "research_ensemble": "debate_analysis",
+# Tier-aware bundle overrides. Consulted by make_bundle_router() before
+# TASK_TO_BUNDLE so the right bundle is selected upfront — before any
+# engine is loaded — rather than attempting an in-process cascade after
+# a partial OOM (at which point the already-loaded engine's VRAM cannot
+# be reclaimed). Explicit --bundle=NAME on the CLI always wins.
+#
+# A100-80GB: the full 'coding' bundle (32B fp8 + 16B-MoE + 7B) OOMs
+# because the MoE secondary needs ~29 GiB on top of the already-loaded
+# 32B primary (~32 GiB). 'a100_coding' drops the MoE and fits in ~66 GB.
+TASK_TO_BUNDLE_TIER_OVERRIDE: dict = {
+    "a100_80": {
+        "coding": "a100_coding",
+    },
+    "a100_40": {
+        "coding":          "small_coding",
+        "debate":          "small",
+        "analysis":        "small",
+        "problem_solving": "small",
+    },
 }
 
 # Role → engine routing. Each entry maps a role name to:

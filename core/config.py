@@ -11,14 +11,30 @@ from typing import Optional
 # CPU dev), or "t4" | "l4" | "a100_40" | "a100_80" | "unknown" on Colab.
 # Force the Colab path on a non-Colab host with COLAB=1.
 
+_VALID_TIERS = ("t4", "l4", "a100_40", "a100_80", "h100", "blackwell", "unknown")
+
+
 def _detect_colab_tier():
     """Return one of ('t4', 'l4', 'a100_40', 'a100_80', 'h100', 'blackwell', 'unknown') or None.
+
+    SWARM_TIER env var overrides auto-detection entirely. Set it in a Colab
+    cell when the GPU name doesn't match the expected patterns:
+        import os; os.environ["SWARM_TIER"] = "a100_80"
 
     'blackwell' covers both consumer Blackwell (RTX 50-series, sm_120) and
     datacenter Blackwell (B100/B200, sm_100). The distinction doesn't matter
     for our purposes — both need FlashInfer disabled when paired with
     CUDA < 12.9 (the common Colab state as of 2026-Q2).
     """
+    # Manual override — highest priority.
+    forced_tier = os.environ.get("SWARM_TIER", "").strip().lower()
+    if forced_tier:
+        if forced_tier in _VALID_TIERS:
+            print(f"[config] SWARM_TIER override: tier={forced_tier!r}")
+            return forced_tier
+        print(f"[config] WARNING: SWARM_TIER={forced_tier!r} is not a recognised tier "
+              f"({_VALID_TIERS}); ignoring and auto-detecting.")
+
     forced = bool(os.environ.get("COLAB", "").strip() not in ("", "0", "false", "False"))
     try:
         import torch

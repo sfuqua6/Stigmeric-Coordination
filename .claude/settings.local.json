@@ -1,39 +1,22 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m unittest tests.test_projection -v)",
-      "Bash(python -m unittest tests.test_projection tests.test_knowledge_base -v)",
-      "Bash(set MOCK_LLM=1)",
-      "Bash(python run_swarm.py debate \"Climate action is necessary\")",
-      "Bash(python -c \"import os; os.environ['MOCK_LLM']='1'; import asyncio; import sys; sys.path.insert\\(0, '.'\\); from run_swarm import run_pipeline; from pathlib import Path; result = asyncio.run\\(run_pipeline\\('debate', 'Climate action is necessary', Path\\('outputs_mock/test_run'\\)\\)\\)\")",
-      "Bash(python -c ' *)",
+      "Bash(git push:*)",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\agsse\\\\Downloads\\\\ai_swarm_mechanics-main \\(4\\)\\\\ai_swarm_mechanics-main\\\\Attempt At Cleaning\" -Recurse -Force)",
       "Bash(Select-Object FullName)",
       "Bash(Sort-Object FullName)",
-      "Bash(python -m pytest tests/ -v --tb=short)",
-      "Bash(python -m unittest discover tests/ -v)",
-      "PowerShell(cd \"C:\\\\Users\\\\agsse\\\\Downloads\\\\ai_swarm_mechanics-main \\(4\\)\\\\ai_swarm_mechanics-main\\\\Attempt At Cleaning\"; $env:MOCK_LLM=\"1\"; python run_swarm.py debate \"Climate action is necessary\" --ignore-kb 2>&1 | Select-String -Pattern \"\\\\[pipeline\\\\]|\\\\[round|\\\\[synthesiz|FINAL ANSWER|Error|Traceback\" | Select-Object -First 40)",
-      "Bash(python kb_migrate.py)",
-      "Bash(python -m unittest tests.test_strip_reasoning -v)",
-      "Bash(python -m unittest tests.test_junk_filter -v)",
-      "Bash(python -m unittest tests.test_junk_filter tests.test_kb_migration tests.test_contradiction_tracking -v)",
-      "Bash(python -m unittest tests.test_junk_filter tests.test_strip_reasoning tests.test_kb_migration tests.test_contradiction_tracking -v)",
-      "Bash(python -m unittest tests.test_knowledge_base tests.test_projection -v)",
-      "Bash(python -m unittest tests.test_knowledge_base tests.test_projection tests.test_junk_filter tests.test_strip_reasoning tests.test_kb_migration tests.test_contradiction_tracking)",
-      "Bash(python -c \"import run_swarm; import core.sampling; import core.knowledge_base; import core.projection; import agents.synthesizer; import agents.base; print\\('All imports OK'\\)\")",
-      "Bash(git init *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\agsse\\\\Downloads\\\\ai_swarm_mechanics-main \\(4\\)\\\\ai_swarm_mechanics-main\\\\Attempt At Cleaning\" -Recurse | Where-Object { !$_.PSIsContainer } | ForEach-Object { $_.FullName })",
       "Bash(git add *)",
-      "Bash(git commit *)",
-      "Bash(python -m unittest discover tests -v)",
-      "Bash(python -m unittest tests.test_coding_roles -v)",
-      "Bash(python -m unittest tests.test_retrieval -v)",
-      "Bash(python -m unittest tests.test_baseline_mode -v)",
-      "Bash(python -m unittest discover tests)",
-      "Bash(python -m unittest tests.test_coding_roles)",
-      "Bash(python -c \"import tests.test_coding_roles\")",
-      "Bash(python -m unittest tests.test_no_leak_real_patterns tests.test_renderer_audit_coverage -v)",
-      "Bash(python -m unittest tests.test_renderer_audit_coverage -v)",
-      "Bash(python -m unittest tests.test_renderer_audit_coverage tests.test_no_leak_real_patterns -v)"
-    ]
+      "Bash(git commit -m ' *)",
+      "Bash(python -c ' *)",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git fetch *)",
+      "Bash(git rebase *)",
+      "Bash(git stash *)",
+      "Bash(git commit *)"
+    ],
+    "deny": [],
+    "ask": []
   }
 }

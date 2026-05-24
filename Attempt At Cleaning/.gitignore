@@ -36,12 +36,3 @@ test_swarm_data/
 timing_stats.json
 *.current_batch
 ablation_results/
-
-# Model weights (too large for git)
-*.gguf
-*.gguf.metadata
-models/
-**/models/
-outputs_mock/
-**/outputs_mock/
-**/outputs/

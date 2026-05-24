@@ -1,0 +1,35 @@
+# Colab dependency set for the stigmergic swarm.
+#
+# Install once per session:
+#     pip install -r requirements-colab.txt
+#
+# vllm is the main heavy dep; it brings its own torch+CUDA wheel.
+# cohere + datasets + faiss-cpu power the primary retrieval path
+# (CohereCorpusRetriever — pre-computed Wikipedia embeddings).
+# The wikipedia / duckduckgo-search / requests / beautifulsoup4 set is
+# the secondary fallback chain when Cohere is unavailable.
+
+vllm
+sentence-transformers
+
+# bnb 4-bit for the HF fallback path in core/llm.py (when the vLLM cascade
+# exhausts all attempts and RealLLM takes over). 0.46.1 is the first
+# release with the Blackwell sm_120 kernels, so pin >= that.
+bitsandbytes>=0.46.1
+
+# Primary retrieval: Cohere pre-computed embeddings + FAISS
+# Requires COHERE_API_KEY env var at runtime (free key at cohere.com).
+cohere
+datasets
+faiss-cpu
+
+# Fallback retrieval: Wikipedia HTTP + DuckDuckGo
+# `ddgs` is the maintained rename of `duckduckgo-search`; the old package
+# stopped getting fixes and started returning 0-result lists on the live API.
+wikipedia
+ddgs
+requests
+beautifulsoup4
+
+tqdm
+huggingface_hub

@@ -1,0 +1,387 @@
+[
+  {
+    "schema_version": 2,
+    "cluster_hash": "a1b6be7e2adf8617",
+    "representative_content": "Reading partition e44af1, one observation stands out as a candidate claim. The evidence in chunk e44af1 suggests an initial pattern worth tracking. From this slice (e44af1), a tentative hypothesis emerges.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00001"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00001",
+      "CRITIQUE_POSITIVE_00021",
+      "OBJECTION_00011",
+      "OBJECTION_00016"
+    ],
+    "partition_origins": [
+      "partition_2"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 2.964,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-15T16:00:22.505292",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-15T16:00:22.505292",
+    "last_seen": "2026-05-17T19:12:59.322250",
+    "decay_strength": 1.0,
+    "run_count": 21,
+    "originating_run": {
+      "timestamp": "2026-05-15T16:00:22.505292",
+      "task_type": "debate",
+      "user_prompt": "Homogeneous baseline test"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "4a91ca64d9710bbd",
+      "user_prompt_excerpt": "Homogeneous baseline test"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "49819b05b49cb4f1",
+    "representative_content": "From this slice (296548), a tentative hypothesis emerges. The evidence in chunk 296548 suggests an initial pattern worth tracking. Reading partition 296548, one observation stands out as a candidate claim.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00025"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00025",
+      "OBJECTION_00028",
+      "OBJECTION_00027",
+      "OBJECTION_00030"
+    ],
+    "partition_origins": [
+      "partition_1"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 1775808556.1014,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-15T16:00:22.505292",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-15T16:00:22.505292",
+    "last_seen": "2026-05-17T13:10:39.906996",
+    "decay_strength": 0.7350918906249998,
+    "run_count": 8,
+    "originating_run": {
+      "timestamp": "2026-05-15T16:00:22.505292",
+      "task_type": "debate",
+      "user_prompt": "Homogeneous baseline test"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "4a91ca64d9710bbd",
+      "user_prompt_excerpt": "Homogeneous baseline test"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "17336935620b48a9",
+    "representative_content": "From this slice (fc0aa8), a tentative hypothesis emerges. Reading partition fc0aa8, one observation stands out as a candidate claim. The evidence in chunk fc0aa8 suggests an initial pattern worth tracking.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00000"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00000",
+      "SUPPORT_00010",
+      "OBJECTION_00031",
+      "OBJECTION_00032",
+      "OBJECTION_00023",
+      "OBJECTION_00022",
+      "OBJECTION_00034",
+      "OBJECTION_00035",
+      "VERIFICATION_00009"
+    ],
+    "partition_origins": [
+      "partition_0"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 3.5944,
+    "verification_score": 0.3911,
+    "run_timestamp": "2026-05-15T16:02:21.049641",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-15T16:02:21.049641",
+    "last_seen": "2026-05-17T19:01:42.933577",
+    "decay_strength": 0.8145062499999999,
+    "run_count": 13,
+    "originating_run": {
+      "timestamp": "2026-05-15T16:02:21.049641",
+      "task_type": "debate",
+      "user_prompt": "Cross-model test"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "4906743b4ce5331c",
+      "user_prompt_excerpt": "Cross-model test"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "b36f45ea89c7d759",
+    "representative_content": "Reading partition b59c67, one observation stands out as a candidate claim. From this slice (b59c67), a tentative hypothesis emerges. The evidence in chunk b59c67 suggests an initial pattern worth tracking.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00002"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00002",
+      "CRITIQUE_NEGATIVE_00013",
+      "CRITIQUE_NEGATIVE_00015"
+    ],
+    "partition_origins": [
+      "partition_3"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 888019243.892,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-15T16:02:21.049641",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-15T16:02:21.049641",
+    "last_seen": "2026-05-17T19:12:47.694578",
+    "decay_strength": 0.95,
+    "run_count": 11,
+    "originating_run": {
+      "timestamp": "2026-05-15T16:02:21.049641",
+      "task_type": "debate",
+      "user_prompt": "Cross-model test"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "4906743b4ce5331c",
+      "user_prompt_excerpt": "Cross-model test"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "4c0aa68085c10ac0",
+    "representative_content": "The evidence in chunk 14281d suggests an initial pattern worth tracking. From this slice (14281d), a tentative hypothesis emerges. Reading partition 14281d, one observation stands out as a candidate claim.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00005"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00005",
+      "CRITIQUE_NEGATIVE_00019"
+    ],
+    "partition_origins": [
+      "partition_0"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 419344439.5825,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-15T16:02:49.046880",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-15T16:02:49.046880",
+    "last_seen": "2026-05-17T19:12:59.322250",
+    "decay_strength": 1.0,
+    "run_count": 13,
+    "originating_run": {
+      "timestamp": "2026-05-15T16:02:49.046880",
+      "task_type": "debate",
+      "user_prompt": "Homogeneous cross-model test"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "06d2763c4247d518",
+      "user_prompt_excerpt": "Homogeneous cross-model test"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "69ce33dc17f98e69",
+    "representative_content": "From this slice (8a93c1), a tentative hypothesis emerges. The evidence in chunk 8a93c1 suggests an initial pattern worth tracking. Reading partition 8a93c1, one observation stands out as a candidate claim.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00003"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00003",
+      "OBJECTION_00014",
+      "OBJECTION_00024",
+      "OBJECTION_00013",
+      "OBJECTION_00028",
+      "OBJECTION_00026",
+      "OBJECTION_00029"
+    ],
+    "partition_origins": [
+      "partition_3"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 3507942403.2164,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-15T16:05:11.762830",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-15T16:05:11.762830",
+    "last_seen": "2026-05-16T12:50:45.842266",
+    "decay_strength": 0.35848592240854177,
+    "run_count": 3,
+    "originating_run": {
+      "timestamp": "2026-05-15T16:05:11.762830",
+      "task_type": "debate",
+      "user_prompt": "Cloud validator stub test"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "a57503ef103c0610",
+      "user_prompt_excerpt": "Cloud validator stub test"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "91ec6518767cabb1",
+    "representative_content": "The evidence in chunk 8448ba suggests an initial pattern worth tracking. Reading partition 8448ba, one observation stands out as a candidate claim. From this slice (8448ba), a tentative hypothesis emerges.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00006"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00006",
+      "CRITIQUE_NEGATIVE_00015"
+    ],
+    "partition_origins": [
+      "partition_2"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 493634066.9799,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-15T16:05:11.762830",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-15T16:05:11.762830",
+    "last_seen": "2026-05-17T19:12:47.694578",
+    "decay_strength": 0.95,
+    "run_count": 19,
+    "originating_run": {
+      "timestamp": "2026-05-15T16:05:11.762830",
+      "task_type": "debate",
+      "user_prompt": "Cloud validator stub test"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "a57503ef103c0610",
+      "user_prompt_excerpt": "Cloud validator stub test"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "588757834f5f6d0f",
+    "representative_content": "The evidence in chunk 0f4a97 suggests an initial pattern worth tracking. From this slice (0f4a97), a tentative hypothesis emerges. Reading partition 0f4a97, one observation stands out as a candidate claim.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00030"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00030",
+      "OBJECTION_00033",
+      "OBJECTION_00034"
+    ],
+    "partition_origins": [
+      "partition_2"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 1180725471.7556,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-15T16:41:09.773567",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-15T16:41:09.773567",
+    "last_seen": "2026-05-17T13:11:36.292301",
+    "decay_strength": 0.7737809374999999,
+    "run_count": 4,
+    "originating_run": {
+      "timestamp": "2026-05-15T16:41:09.773567",
+      "task_type": "debate",
+      "user_prompt": "Test thesis"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "859f9fa9b09d9361",
+      "user_prompt_excerpt": "Test thesis"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "6aa9931bca8e076f",
+    "representative_content": "The evidence in chunk 850021 suggests an initial pattern worth tracking. From this slice (850021), a tentative hypothesis emerges. Reading partition 850021, one observation stands out as a candidate claim.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00001"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00001",
+      "CRITIQUE_POSITIVE_00014",
+      "OBJECTION_00028",
+      "OBJECTION_00021",
+      "OBJECTION_00022",
+      "OBJECTION_00035",
+      "OBJECTION_00034",
+      "OBJECTION_00029"
+    ],
+    "partition_origins": [
+      "partition_1"
+    ],
+    "support_diversity": 1,
+    "dissent_pressure": 7.3848,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-17T12:55:36.024868",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-17T12:55:36.024868",
+    "last_seen": "2026-05-17T19:12:47.694578",
+    "decay_strength": 0.95,
+    "run_count": 2,
+    "originating_run": {
+      "timestamp": "2026-05-17T12:55:36.024868",
+      "task_type": "debate",
+      "user_prompt": "Test thesis"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "859f9fa9b09d9361",
+      "user_prompt_excerpt": "Test thesis"
+    },
+    "contradicts": []
+  },
+  {
+    "schema_version": 2,
+    "cluster_hash": "cf8f06220d292f5d",
+    "representative_content": "From this slice (8806e4), a tentative hypothesis emerges. The evidence in chunk 8806e4 suggests an initial pattern worth tracking. Reading partition 8806e4, one observation stands out as a candidate claim.",
+    "representative_embedding": null,
+    "member_signal_ids": [
+      "INITIAL_00000"
+    ],
+    "lineage_signal_ids": [
+      "INITIAL_00000",
+      "CRITIQUE_NEGATIVE_00022",
+      "CRITIQUE_NEGATIVE_00023"
+    ],
+    "partition_origins": [
+      "partition_0"
+    ],
+    "support_diversity": 0,
+    "dissent_pressure": 761924905.309,
+    "verification_score": 0.0,
+    "run_timestamp": "2026-05-17T12:59:02.870118",
+    "status": "rejected_by_field",
+    "first_seen": "2026-05-17T12:59:02.870118",
+    "last_seen": "2026-05-17T12:59:02.870118",
+    "decay_strength": 0.6983372960937497,
+    "run_count": 1,
+    "originating_run": {
+      "timestamp": "2026-05-17T12:59:02.870118",
+      "task_type": "debate",
+      "user_prompt": "Test thesis for the smoke run"
+    },
+    "task_context": {
+      "task_type": "debate",
+      "topic_hash": "52ccb369125e44f3",
+      "user_prompt_excerpt": "Test thesis for the smoke run"
+    },
+    "contradicts": []
+  }
+]

@@ -1,0 +1,9 @@
+{
+    "scout":        "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+    "forager":      "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "developer":    "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "critic":       "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "hater":        "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+    "validator":    "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "synthesizer":  "Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+}

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git push:*)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\agsse\\\\Downloads\\\\ai_swarm_mechanics-main \\(4\\)\\\\ai_swarm_mechanics-main\\\\Attempt At Cleaning\" -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(Sort-Object FullName)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\agsse\\\\Downloads\\\\ai_swarm_mechanics-main \\(4\\)\\\\ai_swarm_mechanics-main\\\\Attempt At Cleaning\" -Recurse | Where-Object { !$_.PSIsContainer } | ForEach-Object { $_.FullName })",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(python -c ' *)",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git fetch *)",
+      "Bash(git rebase *)",
+      "Bash(git stash *)",
+      "Bash(git commit *)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

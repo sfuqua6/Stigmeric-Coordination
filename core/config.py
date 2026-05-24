@@ -697,13 +697,13 @@ ROLE_TO_ENGINE = {
         "synthesizer": "primary",
     },
     "creative": {
-        "scout":       "primary",
+        "scout":       "primary",   # Mistral-Nemo: creative generation
         "forager":     "primary",
         "developer":   "primary",
-        "critic":      "primary",
-        "hater":       None,           # disabled for creative
-        "validator":   None,           # disabled for creative
-        "synthesizer": "primary",
+        "critic":      "fast",      # Qwen2.5-7B: different family for genuine eval diversity
+        "hater":       "fast",      # Qwen2.5-7B: craft-focused adversarial (clichés, broken lines)
+        "validator":   None,        # disabled: no external facts to verify in poetry
+        "synthesizer": "primary",   # Mistral-Nemo: creative synthesis
     },
     "research_ensemble": {
         "scout":       ["primary", "secondary", "tertiary"],  # round-robin across families

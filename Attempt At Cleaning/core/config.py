@@ -770,8 +770,8 @@ ROLE_TO_ENGINE = {
         "forager":     "primary",
         "developer":   "primary",
         "critic":      "fast",      # Qwen2.5-7B: different family for genuine eval diversity
-        "hater":       None,        # disabled for creative
-        "validator":   None,        # disabled for creative
+        "hater":       "fast",      # Qwen2.5-7B: craft-focused adversarial (clichés, broken lines)
+        "validator":   None,        # disabled: no external facts to verify in poetry
         "synthesizer": "primary",   # Mistral-Nemo: creative synthesis
     },
     "research_ensemble": {

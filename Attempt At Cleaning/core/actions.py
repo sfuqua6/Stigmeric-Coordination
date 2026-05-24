@@ -368,20 +368,36 @@ def critique_parse(raw: str) -> ParsedDeposit:
 # OBJECT — adversarial challenge to a cluster (Hater equivalent)
 # ---------------------------------------------------------------------------
 
-def object_prompt(task_prompt: str, representatives: list[Signal]) -> str:
+def object_prompt(task_prompt: str, representatives: list[Signal],
+                  task_type: Optional[str] = None) -> str:
     rep_lines = "\n".join(
         f"  - [{s.id}] strength={s.strength:.2f}: {s.content}"
         for s in representatives
     )
+    if task_type == "creative":
+        challenge_instruction = (
+            "Find a craft-level weakness that applies to the CLUSTER AS A "
+            "WHOLE — not any individual signal. Is the cluster anchoring on "
+            "an obvious literary reference or cliché without earning it "
+            "through the actual language? Do any of the representative lines "
+            "have grammatical errors or broken rhythm? Is this consensus "
+            "forming because the theme is genuinely resonant, or because it "
+            "appeared first and went unchallenged? "
+            "One or two sentences naming the specific weakness."
+        )
+    else:
+        challenge_instruction = (
+            "Find a structural weakness that applies to the CLUSTER AS A "
+            "WHOLE — not to any individual signal. What shared assumption do "
+            "these signals make that might be wrong? What kind of evidence "
+            "would they all collectively miss? One or two sentences."
+        )
     return (
         f"TASK: {task_prompt}\n\n"
         f"You see a consensus cluster forming in the shared signal store, "
         f"represented by {len(representatives)} signal(s):\n\n"
         f"{rep_lines}\n\n"
-        f"Find a structural weakness that applies to the CLUSTER AS A "
-        f"WHOLE — not to any individual signal. What shared assumption do "
-        f"these signals make that might be wrong? What kind of evidence "
-        f"would they all collectively miss? One or two sentences.\n\n"
+        f"{challenge_instruction}\n\n"
         f"{_type_parent_instruction()}\n"
         f"OBJECTION:"
     )

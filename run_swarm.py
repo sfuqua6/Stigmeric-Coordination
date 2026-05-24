@@ -122,7 +122,7 @@ TASK_PROMPTS = {
 ROLES_FOR_TASK = {
     "debate":          {"critic", "hater", "validator"},
     "analysis":        {"critic", "hater", "validator"},
-    "creative":        {"critic"},                       # no hater, no validator
+    "creative":        {"critic", "hater"},               # hater with craft-focused prompt; no validator (no external facts)
     "problem_solving": {"critic", "hater"},              # no validator
     "coding":          {"critic", "hater", "validator"}, # all roles, domain-specific classes
 }
@@ -522,7 +522,8 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 task_prompt=task_prompt,
             ))
         haters = [
-            HaterClass(agent_id=f"hater_R{round_num}_{i}", llm=llm, task_prompt=task_prompt)
+            HaterClass(agent_id=f"hater_R{round_num}_{i}", llm=llm, task_prompt=task_prompt,
+                       task_type=task_type)
             for i in range(n_haters)
         ]
 

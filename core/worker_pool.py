@@ -864,7 +864,7 @@ class Worker:
             reps = getattr(self, "_object_reps", [target])
             if not reps:
                 return None
-            return A.object_prompt(self.task_prompt, reps)
+            return A.object_prompt(self.task_prompt, reps, task_type=self.task_type)
         if action == VALIDATE:
             external = getattr(self, "_validate_external", "")
             return A.validate_prompt(self.task_prompt, target, external,

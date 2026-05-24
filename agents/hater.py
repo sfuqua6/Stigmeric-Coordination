@@ -40,10 +40,12 @@ class Hater(BaseAgent):
     # Without this cap both haters burn all 8 iterations producing paraphrased dissent.
     MAX_DEPOSITS_PER_ROUND = 1
 
-    def __init__(self, agent_id: str, llm, task_prompt: str, target_type: str = INITIAL):
+    def __init__(self, agent_id: str, llm, task_prompt: str, target_type: str = INITIAL,
+                 task_type: str = ""):
         super().__init__(agent_id, llm)
         self.task_prompt = task_prompt
         self.target_type = target_type
+        self.task_type = task_type
         self._last_rep_ids: list[str] = []
         self._used_dbscan = False
 
@@ -90,6 +92,26 @@ class Hater(BaseAgent):
             f"  - [{s.id}] strength={s.strength:.2f}: {s.content}"
             for s in samples
         )
+        if self.task_type == "creative":
+            challenge_instruction = (
+                "Find a craft-level weakness that applies to the CLUSTER AS "
+                "A WHOLE — not any individual signal. Is the cluster "
+                "anchoring on an obvious literary reference or cliché "
+                "without earning it through the actual language? Do any of "
+                "the representative lines have grammatical errors or broken "
+                "rhythm? Is this consensus forming because the theme is "
+                "genuinely resonant, or because it appeared first and went "
+                "unchallenged? One or two sentences naming the specific "
+                "weakness."
+            )
+        else:
+            challenge_instruction = (
+                "Find a structural weakness that applies to the CLUSTER AS "
+                "A WHOLE — not to any individual signal. What shared "
+                "assumption do these signals make that might be wrong? "
+                "What kind of evidence would they all collectively miss? "
+                "One or two sentences."
+            )
         return (
             f"TASK: {self.task_prompt}\n\n"
             f"{count_hint}"
@@ -97,11 +119,7 @@ class Hater(BaseAgent):
             f"store. The cluster is {cluster_desc}, represented by "
             f"{len(samples)} signal(s):\n\n"
             f"{rep_lines}\n\n"
-            f"Find a structural weakness that applies to the CLUSTER AS "
-            f"A WHOLE — not to any individual signal. What shared "
-            f"assumption do these signals make that might be wrong? "
-            f"What kind of evidence would they all collectively miss? "
-            f"One or two sentences.\n\n"
+            f"{challenge_instruction}\n\n"
             f"{type_parent_instruction()}\n"
             f"OBJECTION:"
         )

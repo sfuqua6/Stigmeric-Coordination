@@ -63,7 +63,7 @@ After `NUM_ROUNDS` rounds, the `Synthesizer` reads the surviving signal DAG and 
 
 ### Role activation (`ROLES_FOR_TASK` in `run_swarm.py`)
 
-Task type gates which roles run. `creative` intentionally suppresses Hater and Validator (a haiku has no "shared assumption" to challenge or external fact to verify); `problem_solving` suppresses Validator; `debate`/`analysis` activate the full pipeline. Scout, Forager, and Synthesizer always run. The `coding` task swaps in `agents/coding_roles.py` (RequirementsScout, StaticCritic, ...) via `core/role_registry.py`.
+Task type gates which roles run. `creative` suppresses only Validator (no external facts to verify in poetry) but runs Hater with a craft-focused prompt — challenging derivative references, unearned allusions, grammatical breakage, and convergence without earned resonance. Without adversarial pressure, creative runs produce more clusters but with zero verification and collective agreement rather than genuine field pressure. `problem_solving` suppresses Validator; `debate`/`analysis` activate the full pipeline. Scout, Forager, and Synthesizer always run. The `coding` task swaps in `agents/coding_roles.py` (RequirementsScout, StaticCritic, ...) via `core/role_registry.py`.
 
 ### Signal store (`core/signal_store.py`)
 

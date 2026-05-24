@@ -910,7 +910,10 @@ async def run_continuous_pipeline(
     # MockLLM / HF, the asyncio.Semaphore inside the LLM throttles real
     # concurrency to 1 — workers still queue cleanly.
     print(f"\n[pipeline] continuous pool — task={task_type!r} prompt={user_prompt!r}")
-    print(f"[pipeline] llm backend: {llm.name}")
+    if router is not None:
+        print(f"[pipeline] llm backend: bundle:{router.bundle_name} ({len(router.engines)} engines)")
+    else:
+        print(f"[pipeline] llm backend: {llm.name}")
     print(f"[pipeline] n_workers={n_workers}")
 
     detector = ConvergenceDetector(store, task_type=task_type)
@@ -1620,8 +1623,19 @@ def main():
                   "is the intended path here.")
         else:
             # Mutate module attribute so run_pipeline's `config.USE_HETEROGENEOUS`
-            # read picks up the flag.
+            # read picks up the flag (legacy-rounds path).
             config.USE_HETEROGENEOUS = True
+            # Continuous pool (default): --heterogeneous maps to the bundle
+            # path. MultiEngineRouter loads all engines resident; USE_HETEROGENEOUS
+            # is only read by the legacy run_pipeline() scheduler. Without this,
+            # run_continuous_pipeline() falls through to make_llm() and loads
+            # a single model, silently ignoring the flag.
+            if not legacy_rounds:
+                config.USE_MODEL_BUNDLES = True
+                print(
+                    "[pipeline] --heterogeneous: continuous pool → bundle path activated "
+                    "(auto-selects from TASK_TO_BUNDLE; override with --bundle=NAME)"
+                )
 
     # --corpus={real,placeholder}
     corpus_mode = "real"

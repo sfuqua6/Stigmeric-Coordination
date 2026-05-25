@@ -103,6 +103,16 @@ _AUDIT_WARNING_THRESHOLD = 20
 # sanitize planner output, and trim excessive render sets.
 _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK = True
 
+# Calibrated abstention gate (improvement 5.8). Fires when surviving clusters
+# exist but none clear a credibility bar: max verification_score is too low,
+# max support_diversity is too low, AND at least one cluster is heavily
+# contested. Conservative defaults — only fire on obviously broken field states.
+# Set _SYNTHESIZER_USE_CALIBRATED_ABSTENTION = False to disable while tuning.
+_SYNTHESIZER_USE_CALIBRATED_ABSTENTION = True
+_ABSTAIN_VER_THRESHOLD = 0.15    # max verification_score must exceed this
+_ABSTAIN_DIVERSITY_THRESHOLD = 2  # max support_diversity must exceed this
+_ABSTAIN_DISSENT_THRESHOLD = 1.2  # max dissent_pressure trigger
+
 # Planner is a single LLM call ahead of per-cluster rendering. Its prompt
 # carries STRUCTURAL metadata only (cluster IDs, support / dissent / ver
 # counts, scores) — never Signal.content — so the synthesizer can decide
@@ -454,6 +464,57 @@ class Synthesizer:
                 f"field. You can re-synthesize with different filter thresholds "
                 f"via `python synthesize.py <run_dir>`."
             )
+
+        # ------------------------------------------------------------------
+        # Partial-convergence abstention gate (improvement 5.8).
+        # Fires when surviving clusters exist but none clear the credibility
+        # bar: low verification, low support diversity, and heavy dissent.
+        # Only applies when validators actually ran (proxied by whether any
+        # surviving cluster has non-empty verification_set).
+        # ------------------------------------------------------------------
+        if (
+            _SYNTHESIZER_USE_CALIBRATED_ABSTENTION
+            and projection.surviving
+            and any(cp.verification_set for cp in projection.surviving)
+        ):
+            max_ver = max(cp.verification_score for cp in projection.surviving)
+            max_div = max(cp.support_diversity for cp in projection.surviving)
+            max_dis = max(cp.dissent_pressure for cp in projection.surviving)
+            if (max_ver < _ABSTAIN_VER_THRESHOLD
+                    and max_div < _ABSTAIN_DIVERSITY_THRESHOLD
+                    and max_dis > _ABSTAIN_DISSENT_THRESHOLD):
+                ranked = _rank_clusters(projection.surviving)
+                fragments: list[str] = []
+                for cp in ranked[:3]:
+                    rep = store.get(cp.representative_id)
+                    if rep:
+                        fragments.append(
+                            f"[{cp.representative_id}] "
+                            f"(ver={cp.verification_score:.2f}, "
+                            f"div={cp.support_diversity}, "
+                            f"dissent={cp.dissent_pressure:.2f}): "
+                            f"{_truncate(rep.content, 200)}"
+                        )
+                if output_dir is not None:
+                    _write_no_consensus_audit(output_dir)
+                frag_block = "\n\n".join(fragments) if fragments else "(none)"
+                print(
+                    f"[synthesizer] ABSTAINING: max_ver={max_ver:.2f} < "
+                    f"{_ABSTAIN_VER_THRESHOLD}, max_div={max_div} < "
+                    f"{_ABSTAIN_DIVERSITY_THRESHOLD}, max_dis={max_dis:.2f} > "
+                    f"{_ABSTAIN_DISSENT_THRESHOLD}"
+                )
+                return (
+                    f"The signal field did not reach credible convergence. "
+                    f"Abstaining from synthesis.\n\n"
+                    f"Abstention criteria: "
+                    f"max_verification_score={max_ver:.2f} < {_ABSTAIN_VER_THRESHOLD}, "
+                    f"max_support_diversity={max_div} < {_ABSTAIN_DIVERSITY_THRESHOLD}, "
+                    f"max_dissent_pressure={max_dis:.2f} > {_ABSTAIN_DISSENT_THRESHOLD}.\n\n"
+                    f"Strongest surviving fragments (unrendered):\n\n{frag_block}\n\n"
+                    f"Consult signals.json for the full field state. Consider re-running "
+                    f"with a larger corpus or more iterations."
+                )
 
         # ------------------------------------------------------------------
         # Stage 1: interpret the user's prompt into a structural contract.

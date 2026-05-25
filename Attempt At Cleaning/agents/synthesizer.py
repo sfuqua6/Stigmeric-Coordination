@@ -108,6 +108,13 @@ _REVISION_CRITIC_MAX_TOKENS = 600
 _REVISION_REVISE_MAX_TOKENS = 3000
 _REVISION_TEMPERATURE = 0.2
 
+# Decomposed edge-graph composition (improvement 5.4). Stage B composes
+# the independently-rendered Section-1 paragraphs using typed inter-cluster
+# edges as transition scaffolding. Adds one LLM call per sectioned synthesis
+# when edges are present. Set to False to skip and use bare paragraph join.
+_SYNTHESIZER_USE_EDGE_COMPOSITION = True
+_EDGE_COMPOSE_MAX_TOKENS = 2000
+
 # Feature flag for robust synthesizer logic: retry prompt interpretation,
 # sanitize planner output, and trim excessive render sets.
 _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK = True
@@ -640,9 +647,25 @@ class Synthesizer:
                         fragment += "."
                     fragments.append(fragment)
             if fragments:
-                sections.append(
-                    "## 1. POSITION SYNTHESIS\n\n" + "\n\n".join(fragments)
-                )
+                # Stage B (improvement 5.4): compose paragraphs along the
+                # typed edge graph. Falls back to plain join when no edges
+                # touch the rendered cluster set or the call fails.
+                if (
+                    _SYNTHESIZER_USE_EDGE_COMPOSITION
+                    and len(fragments) > 1
+                    and getattr(projection, "inter_cluster_edges", [])
+                ):
+                    try:
+                        composed = await self._compose_with_edges(
+                            fragments, rendered_surviving, projection, store,
+                        )
+                    except Exception as exc:
+                        print(f"[synthesizer] _compose_with_edges crashed: "
+                              f"{type(exc).__name__}: {exc}; plain join")
+                        composed = "\n\n".join(fragments)
+                else:
+                    composed = "\n\n".join(fragments)
+                sections.append("## 1. POSITION SYNTHESIS\n\n" + composed)
 
         # ------------------------------------------------------------------
         # Section 2: Open questions and dissent — per contested cluster AND
@@ -1280,6 +1303,21 @@ class Synthesizer:
         materials = self._gather_raw_materials(projection, store, render_ids)
         materials_block = self._format_materials_block(materials)
 
+        # Edge-graph cues (improvement 5.4): tell the integration call how
+        # threads relate so it can choose transitions deliberately.
+        render_ids_set = set(render_ids)
+        rendered_clusters = [
+            cp for cp in projection.surviving + projection.contested
+            if cp.representative_id in render_ids_set
+        ]
+        edge_block = self._build_edge_cue_block(rendered_clusters, projection)
+        edge_section = (
+            f"\n{edge_block}\n\nUse these relationships to guide transitions "
+            f"between threads — contrast alternatives, weave complements, "
+            f"name tensions explicitly.\n"
+            if edge_block else ""
+        )
+
         form = contract.get("form", "free_response")
         structural = contract.get("structural", []) or ["(none explicit)"]
         soft = contract.get("soft", []) or ["(none explicit)"]
@@ -1303,7 +1341,7 @@ class Synthesizer:
             f"These are NOT meant to be quoted verbatim; they are the kernels "
             f"of ideas you should integrate, transform, or build on. The "
             f"final artifact should USE these ideas, not list them.\n\n"
-            f"{materials_block}\n\n"
+            f"{materials_block}{edge_section}\n"
             f"RULES:\n"
             f"  1. Produce the artifact itself — no preface, no 'Here is...', "
             f"no meta-commentary, no markdown headers unless the form demands them.\n"
@@ -1341,6 +1379,22 @@ class Synthesizer:
         materials = self._gather_raw_materials(projection, store, render_ids)
         materials_block = self._format_materials_block(materials)
 
+        # Edge-graph cues (improvement 5.4): tell the integration call which
+        # approaches are alternatives (pick the better), complements (merge),
+        # or superseded (prefer the successor).
+        render_ids_set_opt = set(render_ids)
+        rendered_clusters_opt = [
+            cp for cp in projection.surviving + projection.contested
+            if cp.representative_id in render_ids_set_opt
+        ]
+        edge_block_opt = self._build_edge_cue_block(rendered_clusters_opt, projection)
+        edge_section_opt = (
+            f"\nAPPROACH RELATIONSHIPS:\n{edge_block_opt}\n\n"
+            f"Use these to decide: prefer the superseding approach; merge "
+            f"complements into one solution; pick the stronger alternative.\n"
+            if edge_block_opt else ""
+        )
+
         form = contract.get("form", "function")
         structural = contract.get("structural", []) or ["(none explicit)"]
         soft = contract.get("soft", []) or ["(none explicit)"]
@@ -1362,7 +1416,7 @@ class Synthesizer:
             f"CANDIDATE APPROACHES — surviving threads from the swarm's "
             f"exploration. Pick the strongest, or merge compatible ideas. "
             f"Do NOT include every approach — produce ONE solution.\n\n"
-            f"{materials_block}\n\n"
+            f"{materials_block}{edge_section_opt}\n"
             f"RULES:\n"
             f"  1. Output the code/solution itself — no preface, no 'Here is...', "
             f"no English commentary outside docstrings/comments.\n"
@@ -1492,6 +1546,140 @@ class Synthesizer:
             current = revised
 
         return current
+
+    # -----------------------------------------------------------------------
+    # Stage B: edge-graph composition of Section 1 (improvement 5.4)
+    # -----------------------------------------------------------------------
+
+    def _build_edge_cue_block(
+        self,
+        clusters: list,
+        projection: SynthesisProjection,
+    ) -> str:
+        """Build transition cues from the typed inter-cluster edge graph.
+
+        Returns an empty string when no edges touch the rendered cluster set —
+        callers gate on this to skip the composition call entirely.
+        """
+        rendered_ids = {cp.representative_id for cp in clusters}
+        _RELATION_INSTRUCTION = {
+            "alternatives": (
+                "contrast these positions; acknowledge both as distinct "
+                "directions the evidence supports"
+            ),
+            "complements": (
+                "weave these together; show how each reinforces the other"
+            ),
+            "tension": (
+                "name this tension explicitly: one position is directly "
+                "challenged by evidence supporting the other"
+            ),
+            "supersedes": (
+                "foreground the first cluster; mention the second as a prior "
+                "or narrower position it builds on"
+            ),
+            "shared_evidence": (
+                "transition smoothly — both draw on overlapping evidence"
+            ),
+            "co_contested": (
+                "both face similar objections; acknowledge this when relevant"
+            ),
+        }
+        lines: list[str] = []
+        for e in getattr(projection, "inter_cluster_edges", []):
+            if e.source not in rendered_ids or e.target not in rendered_ids:
+                continue
+            instruction = _RELATION_INSTRUCTION.get(
+                e.relation, f"note the {e.relation} relationship"
+            )
+            lines.append(
+                f"  [{e.source}] —[{e.relation}]→ [{e.target}]: {instruction}"
+            )
+        return (
+            "INTER-CLUSTER RELATIONSHIPS (use to guide transitions):\n"
+            + "\n".join(lines)
+            if lines else ""
+        )
+
+    async def _compose_with_edges(
+        self,
+        paragraphs: list[str],
+        clusters: list,
+        projection: SynthesisProjection,
+        store: SignalStore,
+    ) -> str:
+        """Stage B: compose rendered paragraphs using typed inter-cluster edges.
+
+        Inserts ONE bridge sentence between pairs of paragraphs where a typed
+        edge relationship exists. Paragraphs are preserved verbatim; only
+        bridges are added (and optional reordering to put related clusters
+        adjacent). Falls back to a plain join on any failure.
+
+        No-leak rule: the composition call sees rendered paragraph text
+        (already derived from Signal.content) and edge-type labels. No
+        raw signal content or ancestry metadata is introduced here.
+        """
+        if len(paragraphs) <= 1:
+            return "\n\n".join(paragraphs)
+
+        edge_cue_block = self._build_edge_cue_block(clusters, projection)
+        if not edge_cue_block:
+            return "\n\n".join(paragraphs)
+
+        labeled_paras = [
+            f"PARAGRAPH [{cp.representative_id}]:\n{para}"
+            for cp, para in zip(clusters, paragraphs)
+        ]
+        labeled_block = "\n\n".join(labeled_paras)
+
+        prompt = (
+            f"TASK: {self.task_prompt}\n\n"
+            f"You are composing a POSITION SYNTHESIS section from the "
+            f"cluster paragraphs below. Each paragraph was independently "
+            f"rendered for one surviving cluster. Your job:\n"
+            f"  1. Reorder paragraphs if edge relationships suggest a "
+            f"     better reading order (alternatives side by side; "
+            f"     superseded cluster after its successor).\n"
+            f"  2. Insert ONE bridge sentence between paragraph pairs where "
+            f"     a typed edge exists (see INTER-CLUSTER RELATIONSHIPS).\n"
+            f"  3. Preserve all paragraphs verbatim — do NOT rewrite, "
+            f"     summarize, or merge them. Only add bridges.\n\n"
+            f"{edge_cue_block}\n\n"
+            f"Bridge sentence vocabulary:\n"
+            f"  · alternatives  → 'In contrast,...' / 'A competing direction...'\n"
+            f"  · complements   → 'Complementing this,...' / 'Reinforcing this...'\n"
+            f"  · tension       → 'This position is directly challenged by...'\n"
+            f"  · supersedes    → 'Superseding the earlier position...' / "
+            f"'Building on and extending...'\n"
+            f"  · shared_evidence → 'Drawing on similar evidence,...'\n\n"
+            f"PARAGRAPHS TO COMPOSE:\n\n{labeled_block}\n\n"
+            f"RULES:\n"
+            f"  1. Preserve all [SIGNAL_ID] citation tags exactly as written.\n"
+            f"  2. Do not produce markdown headers — output ONLY the composed "
+            f"paragraphs and bridge sentences as prose.\n"
+            f"  3. Do not introduce content not present in the paragraphs.\n\n"
+            f"COMPOSED OUTPUT:"
+        )
+
+        try:
+            raw = await self.llm.generate(
+                prompt, role=self.ROLE,
+                max_tokens=_EDGE_COMPOSE_MAX_TOKENS,
+                temperature=_RENDERER_TEMPERATURE,
+            )
+        except Exception as exc:
+            print(f"[synthesizer] edge composition call failed: "
+                  f"{type(exc).__name__}: {exc}; falling back to plain join")
+            return "\n\n".join(paragraphs)
+
+        result = strip_reasoning((raw or "").strip())
+        plain = "\n\n".join(paragraphs)
+        if not result or len(result) < len(plain) * 0.4:
+            print(f"[synthesizer] edge composition output implausibly short; "
+                  f"falling back to plain join")
+            return plain
+
+        return result
 
     # -----------------------------------------------------------------------
     # Per-cluster render helpers

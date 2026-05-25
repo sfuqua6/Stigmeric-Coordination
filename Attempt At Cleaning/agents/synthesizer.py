@@ -768,16 +768,22 @@ class Synthesizer:
                 else:
                     # Debate frame failed: fall back to per-cluster rendering.
                     for cp in grp:
-                        fragment = await self._render_cluster_position(cp, store)
+                        fragment = await self._render_cluster_position(
+                            cp, store, projection=projection,
+                        )
                         if fragment:
                             if fragment[-1] not in ".!?\")'":
                                 fragment += "."
                             fragments.append(fragment)
             # Render remaining clusters (not in any debate group).
+            # Pass projection so the renderer can inject adjacency context
+            # (improvement 5.10) without importing neighboring content.
             for cp in rendered_surviving:
                 if cp.representative_id in debate_cluster_ids:
                     continue
-                fragment = await self._render_cluster_position(cp, store)
+                fragment = await self._render_cluster_position(
+                    cp, store, projection=projection,
+                )
                 if fragment:
                     # Ensure paragraph ends with terminal punctuation.
                     if fragment and fragment[-1] not in ".!?\")'":
@@ -1119,11 +1125,15 @@ class Synthesizer:
         if not candidates:
             return {"render_full": [], "section3_only": [], "merge_groups": [], "notes": ""}
 
-        # Build the digest. ID + short preview + structural metrics.
+        # Build the digest. ID + 200-char representative + structural metrics.
+        # 200 chars is enough for content-based merge detection (two clusters
+        # rephrasing the same claim in different surface language look similar
+        # at 200 chars but are indistinguishable at 80). Still a tight budget —
+        # full content lives in the per-cluster renderer, not here.
         lines: list[str] = []
         for cp in candidates:
             rep = store.get(cp.representative_id)
-            preview = _truncate(rep.content, 80) if rep else "(no rep)"
+            preview = _truncate(rep.content, 200) if rep else "(no rep)"
             lines.append(
                 f"- {cp.representative_id}  status={cp.status}  "
                 f"n_supports={len(cp.support_set)}  "
@@ -1133,7 +1143,7 @@ class Synthesizer:
                 f"support_depth={cp.support_depth}  "
                 f"verification_score={cp.verification_score:.2f}  "
                 f"dissent_pressure={cp.dissent_pressure:.2f}  "
-                f"preview=\"{preview}\""
+                f"representative=\"{preview}\""
             )
         digest = "\n".join(lines)
 
@@ -1159,12 +1169,12 @@ class Synthesizer:
         prompt = (
             f"TASK TYPE: {getattr(self, '_task_type', 'unknown')}\n"
             f"TASK: {self.task_prompt}\n\n"
-            f"You are planning the structure of a synthesis. You see ONLY a "
+            f"You are planning the structure of a synthesis. You see a "
             f"structural digest of claim clusters: their IDs, counts of "
-            f"supporting / dissenting / verifying signals, scores, an "
-            f"80-character preview, and a typed inter-cluster edge graph. "
-            f"You do NOT see the underlying signals' content — that gets "
-            f"rendered in a separate pass per cluster.\n\n"
+            f"supporting / dissenting / verifying signals, scores, a "
+            f"200-character representative excerpt, and a typed inter-cluster "
+            f"edge graph. You do NOT see the full underlying signals' content "
+            f"— that gets rendered in a separate pass per cluster.\n\n"
             f"Your job: decide which clusters deserve a full paragraph in "
             f"Section 1 (POSITION SYNTHESIS) and which can be demoted to "
             f"Section 3 (CONSIDERED AND FILTERED). Pick clusters that are:\n"
@@ -1181,7 +1191,8 @@ class Synthesizer:
             f"  - tension edges mean source's position is contested by target's "
             f"    dissent — worth flagging in section3_only notes.\n"
             f"  - supersedes: prefer the source cluster; demote the target.\n\n"
-            f"If two clusters look like the same position by their previews "
+            f"If two clusters appear to make the same claim in different "
+            f"surface language (look at their 200-char representatives) "
             f"or share shared_evidence edges, name them in a merge_group.\n\n"
             f"You can choose up to {len(candidates)} clusters for "
             f"render_full. The downstream synthesizer may trim this set to "
@@ -2164,7 +2175,10 @@ class Synthesizer:
     # -----------------------------------------------------------------------
 
     async def _render_cluster_position(
-        self, cp: ClusterProjection, store: SignalStore
+        self,
+        cp: ClusterProjection,
+        store: SignalStore,
+        projection: Optional[SynthesisProjection] = None,
     ) -> str:
         """Render a one-paragraph position statement for one surviving cluster.
 
@@ -2275,6 +2289,46 @@ class Synthesizer:
             if traj_parts:
                 traj_block = f"\nField trajectory: {'; '.join(traj_parts)}.\n"
 
+        # Adjacency context (improvement 5.10): structural metrics of clusters
+        # connected to this one via the typed edge graph. The renderer sees
+        # ONLY metrics (support_diversity, verification_score, relation type),
+        # never the neighboring cluster's content — enough to orient the prose
+        # without importing cross-cluster material. Skipped when projection is
+        # None (backward compat) or no adjacent clusters are in the render set.
+        adj_block = ""
+        if projection is not None:
+            adj_lines: list[str] = []
+            all_proj_cps = {
+                c.representative_id: c
+                for c in projection.surviving + projection.contested
+            }
+            for e in getattr(projection, "inter_cluster_edges", []):
+                if e.relation not in ("complements", "alternatives",
+                                      "tension", "supersedes"):
+                    continue
+                neighbour_id = None
+                if e.source == cp.representative_id and e.target in all_proj_cps:
+                    neighbour_id = e.target
+                    direction = "this cluster →"
+                elif e.target == cp.representative_id and e.source in all_proj_cps:
+                    neighbour_id = e.source
+                    direction = "→ this cluster"
+                if neighbour_id is None:
+                    continue
+                neighbour_cp = all_proj_cps[neighbour_id]
+                adj_lines.append(
+                    f"  [{e.relation}] [{neighbour_id}] "
+                    f"(support_diversity={neighbour_cp.support_diversity}, "
+                    f"ver={neighbour_cp.verification_score:.2f}, "
+                    f"dissent={neighbour_cp.dissent_pressure:.2f})"
+                )
+            if adj_lines:
+                adj_block = (
+                    "\nAdjacent cluster relationships (structural only — "
+                    "use to orient your prose, not to import their content):\n"
+                    + "\n".join(adj_lines) + "\n"
+                )
+
         # Position-taking instruction varies by task type. Non-factual tasks
         # need an actual stance on the supplied evidence; factual tasks need
         # to stick to what's verifiable. Both forbid the "the debate over X"
@@ -2315,6 +2369,7 @@ class Synthesizer:
             f"{support_block}"
             f"{dissent_block}"
             f"{traj_block}"
+            f"{adj_block}"
             f"{ext_block}"
             f"{partition_note}\n\n"
             f"PARAGRAPH:"

@@ -89,6 +89,26 @@ class ClusterProjection:
 
 
 @dataclass
+class InterClusterEdge:
+    """Typed directed edge between two clusters in the inter-cluster graph.
+
+    source, target: representative_id strings.
+    relation: one of —
+        shared_evidence  non-empty support_set intersection (symmetric)
+        co_contested     non-empty dissent_set intersection (symmetric)
+        complements      repr-repr cosine in [0.50, 0.84]; related but distinct
+        alternatives     repr-repr cosine in [0.25, 0.64] + comparable priority
+        supersedes       repr-repr cosine >= 0.85; source subsumes target
+        tension          support of source vs dissent of target cosine > τ
+    weight: cosine similarity or overlap fraction, in [0, 1].
+    """
+    source: str
+    target: str
+    relation: str
+    weight: float = 1.0
+
+
+@dataclass
 class SynthesisProjection:
     surviving: list[ClusterProjection] = field(default_factory=list)
     contested: list[ClusterProjection] = field(default_factory=list)
@@ -101,6 +121,10 @@ class SynthesisProjection:
     unverified: list[ClusterProjection] = field(default_factory=list)
     partition_coverage: dict = field(default_factory=dict)  # partition_tag -> count
     no_consensus: bool = False
+    # Typed inter-cluster edges. Built by _build_inter_cluster_edges after
+    # the survival filter runs. Empty when no surviving/contested clusters
+    # exist or when the lattice has only one cluster.
+    inter_cluster_edges: list = field(default_factory=list)  # list[InterClusterEdge]
 
 
 @dataclass
@@ -121,6 +145,120 @@ class SynthesisPlan:
     held_clusters: list[str]
     demoted_clusters: list[str]
     planner_notes: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Inter-cluster edge graph
+# ---------------------------------------------------------------------------
+
+# Thresholds for edge classification. Calibrated against all-MiniLM-L6-v2
+# on the laptop (4-bit quantized) embedding distribution; re-tune once
+# empirical runs are available.
+_EDGE_TENSION_THRESHOLD = 0.65      # cosine(support_of_A, dissent_of_B)
+_EDGE_SUPERSEDE_SIM_MIN = 0.85      # repr-repr cosine for supersedes
+_EDGE_COMPLEMENT_SIM_MIN = 0.50     # repr-repr cosine floor for complements
+_EDGE_ALTERNATIVE_SIM_MIN = 0.25    # repr-repr cosine floor for alternatives
+_EDGE_ALTERNATIVE_SIM_MAX = 0.64    # repr-repr cosine ceiling for alternatives
+_EDGE_ALTERNATIVE_PRIORITY_RATIO = 0.5  # min/max priority ratio for alternatives
+
+
+def _cp_priority(cp: "ClusterProjection") -> float:
+    """Priority score for edge classification (same formula as synthesizer._cluster_priority)."""
+    return (cp.support_diversity * max(0.01, cp.verification_score)
+            / max(0.01, cp.dissent_pressure))
+
+
+def _max_tension(
+    sup_set: list, dis_set: list, store: "SignalStore",
+) -> float:
+    """Return max cosine between any (support, dissent) pair, limited to top-3 each."""
+    best = 0.0
+    for sid in sup_set[:3]:
+        emb_s = store.get_embedding(sid)
+        if emb_s is None:
+            continue
+        for did in dis_set[:3]:
+            emb_d = store.get_embedding(did)
+            if emb_d is None:
+                continue
+            best = max(best, _cosine_sim(emb_s, emb_d))
+    return best
+
+
+def _build_inter_cluster_edges(
+    clusters: list,
+    store: "SignalStore",
+) -> list:
+    """Compute typed inter-cluster edges from surviving/contested clusters.
+
+    Pure Python; uses signal IDs and cached embeddings already in the store.
+    No LLM calls. O(n²) in cluster count; fast for n <= 20.
+
+    Set-based relations are always computed; embedding-based ones are skipped
+    gracefully when embeddings are unavailable.
+    """
+    edges: list = []
+
+    for i, ca in enumerate(clusters):
+        for cb in clusters[i + 1:]:
+            # --- Set-based (no embeddings) ---
+            shared_sup = set(ca.support_set) & set(cb.support_set)
+            if shared_sup:
+                w = len(shared_sup) / max(1, min(len(ca.support_set), len(cb.support_set)))
+                edges.append(InterClusterEdge(
+                    ca.representative_id, cb.representative_id,
+                    "shared_evidence", round(w, 3),
+                ))
+
+            shared_dis = set(ca.dissent_set) & set(cb.dissent_set)
+            if shared_dis:
+                w = len(shared_dis) / max(1, min(len(ca.dissent_set), len(cb.dissent_set)))
+                edges.append(InterClusterEdge(
+                    ca.representative_id, cb.representative_id,
+                    "co_contested", round(w, 3),
+                ))
+
+            # --- Embedding-based ---
+            emb_a = store.get_embedding(ca.representative_id)
+            emb_b = store.get_embedding(cb.representative_id)
+            if emb_a is not None and emb_b is not None:
+                sim = _cosine_sim(emb_a, emb_b)
+                pa, pb = _cp_priority(ca), _cp_priority(cb)
+
+                if sim >= _EDGE_SUPERSEDE_SIM_MIN:
+                    src, tgt = (ca, cb) if pa >= pb else (cb, ca)
+                    edges.append(InterClusterEdge(
+                        src.representative_id, tgt.representative_id,
+                        "supersedes", round(sim, 3),
+                    ))
+                elif sim >= _EDGE_COMPLEMENT_SIM_MIN:
+                    edges.append(InterClusterEdge(
+                        ca.representative_id, cb.representative_id,
+                        "complements", round(sim, 3),
+                    ))
+                elif sim >= _EDGE_ALTERNATIVE_SIM_MIN:
+                    if (pa > 0 and pb > 0
+                            and min(pa, pb) / max(pa, pb) >= _EDGE_ALTERNATIVE_PRIORITY_RATIO):
+                        edges.append(InterClusterEdge(
+                            ca.representative_id, cb.representative_id,
+                            "alternatives", round(sim, 3),
+                        ))
+
+                # Tension (directional)
+                t_ab = _max_tension(ca.support_set, cb.dissent_set, store)
+                if t_ab >= _EDGE_TENSION_THRESHOLD:
+                    edges.append(InterClusterEdge(
+                        ca.representative_id, cb.representative_id,
+                        "tension", round(t_ab, 3),
+                    ))
+                t_ba = _max_tension(cb.support_set, ca.dissent_set, store)
+                if t_ba >= _EDGE_TENSION_THRESHOLD:
+                    edges.append(InterClusterEdge(
+                        cb.representative_id, ca.representative_id,
+                        "tension", round(t_ba, 3),
+                    ))
+
+    return edges
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +339,12 @@ def build_projection(
             proj.partition_coverage[pt] = proj.partition_coverage.get(pt, 0) + 1
 
     proj.no_consensus = len(proj.surviving) + len(proj.contested) == 0
+
+    # Build typed inter-cluster edge graph from surviving + contested clusters.
+    active = proj.surviving + proj.contested
+    if len(active) >= 2:
+        proj.inter_cluster_edges = _build_inter_cluster_edges(active, store)
+
     return proj
 
 

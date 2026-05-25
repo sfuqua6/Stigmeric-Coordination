@@ -357,6 +357,31 @@ def _detect_inter_cluster_contradictions(
     return contradictions
 
 
+def _contradictions_from_projection(
+    projection: "SynthesisProjection",
+    store: "SignalStore",
+) -> list[tuple]:
+    """Return (ca, cb) contradiction pairs for Section 2.
+
+    Prefers typed 'tension' edges from the inter-cluster graph when
+    available — these are principled (embedding-based) rather than
+    heuristic. Falls back to _detect_inter_cluster_contradictions when
+    the edge graph has no tension edges (e.g. embeddings unavailable).
+    """
+    id_to_cp = {cp.representative_id: cp
+                for cp in projection.surviving + projection.contested}
+    tension_pairs = [
+        (id_to_cp[e.source], id_to_cp[e.target])
+        for e in getattr(projection, "inter_cluster_edges", [])
+        if e.relation == "tension"
+        and e.source in id_to_cp
+        and e.target in id_to_cp
+    ]
+    if tension_pairs:
+        return tension_pairs
+    return _detect_inter_cluster_contradictions(projection.surviving, store)
+
+
 class Synthesizer:
     ROLE = "synthesizer"
 
@@ -552,11 +577,9 @@ class Synthesizer:
         # ------------------------------------------------------------------
         # Section 2: Open questions and dissent — per contested cluster AND
         # per surviving cluster that attracted any dissent.
-        # Also flags inter-cluster contradictions detected above.
+        # Also flags inter-cluster contradictions / tension edges.
         # ------------------------------------------------------------------
-        contradictions = _detect_inter_cluster_contradictions(
-            projection.surviving, store
-        )
+        contradictions = _contradictions_from_projection(projection, store)
         dissent_candidates: list[ClusterProjection] = list(projection.contested)
         dissent_candidates += [
             cp for cp in projection.surviving if cp.dissent_set
@@ -869,6 +892,19 @@ class Synthesizer:
             )
         digest = "\n".join(lines)
 
+        # Edge graph digest: summarise typed inter-cluster relations so the
+        # planner can use them for merge and surface decisions.
+        edge_lines: list[str] = []
+        for e in getattr(projection, "inter_cluster_edges", []):
+            edge_lines.append(
+                f"  {e.source} --[{e.relation}]--> {e.target} (weight={e.weight:.2f})"
+            )
+        edge_block = (
+            "INTER-CLUSTER EDGES:\n" + "\n".join(edge_lines)
+            if edge_lines
+            else "INTER-CLUSTER EDGES: (none detected)"
+        )
+
         # Pull the first two real IDs for the schema example so the model
         # sees the exact ID format and cannot reproduce angle-bracket placeholders.
         _ex = [cp.representative_id for cp in candidates[:2]]
@@ -880,9 +916,10 @@ class Synthesizer:
             f"TASK: {self.task_prompt}\n\n"
             f"You are planning the structure of a synthesis. You see ONLY a "
             f"structural digest of claim clusters: their IDs, counts of "
-            f"supporting / dissenting / verifying signals, scores, and an "
-            f"80-character preview. You do NOT see the underlying signals' "
-            f"content — that gets rendered in a separate pass per cluster.\n\n"
+            f"supporting / dissenting / verifying signals, scores, an "
+            f"80-character preview, and a typed inter-cluster edge graph. "
+            f"You do NOT see the underlying signals' content — that gets "
+            f"rendered in a separate pass per cluster.\n\n"
             f"Your job: decide which clusters deserve a full paragraph in "
             f"Section 1 (POSITION SYNTHESIS) and which can be demoted to "
             f"Section 3 (CONSIDERED AND FILTERED). Pick clusters that are:\n"
@@ -891,18 +928,23 @@ class Synthesizer:
             f"  2. Well-supported (high support_diversity, support_depth >= 2).\n"
             f"  3. Verified where possible (verification_score > 0.3).\n"
             f"  4. Contested clusters are valuable — surface them.\n\n"
-            f"If two clusters look like the same position by their previews, "
-            f"name them in a merge_group rather than rendering both.\n\n"
-            # OLD: f"You can choose up to {len(candidates)} clusters for "
-            # OLD: f"render_full — there is NO fixed cap. The downstream renderer "
-            # OLD: f"will render exactly what you list. Prefer a slightly smaller, "
-            # OLD: f"sharper set over a larger noisy one.\n\n"
+            f"Use the INTER-CLUSTER EDGES to inform your plan:\n"
+            f"  - shared_evidence / co_contested pairs likely discuss the same "
+            f"    topic — consider merging them.\n"
+            f"  - alternatives pairs represent genuinely different approaches — "
+            f"    surface both when distinct.\n"
+            f"  - tension edges mean source's position is contested by target's "
+            f"    dissent — worth flagging in section3_only notes.\n"
+            f"  - supersedes: prefer the source cluster; demote the target.\n\n"
+            f"If two clusters look like the same position by their previews "
+            f"or share shared_evidence edges, name them in a merge_group.\n\n"
             f"You can choose up to {len(candidates)} clusters for "
             f"render_full. The downstream synthesizer may trim this set to "
             f"the {_SECTION_1_MAX_RENDER_FULL} highest-priority, diverse "
             f"clusters if necessary. Prefer a slightly smaller, "
             f"sharper set over a larger noisy one.\n\n"
             f"---DIGEST---\n{digest}\n---END DIGEST---\n\n"
+            f"---{edge_block}---\n\n"
             f"Reply with a JSON object in exactly this shape. The IDs in the "
             f"example below are from your digest — use the REAL IDs you see "
             f"above. Never output angle-bracket placeholders.\n\n"

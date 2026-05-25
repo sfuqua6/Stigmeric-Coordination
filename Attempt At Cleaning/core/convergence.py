@@ -36,6 +36,11 @@ from .config import SURVIVAL_TASK_PROFILES, SURVIVAL_DEFAULT_PROFILE
 MIN_ITERATIONS = 50
 MIN_TIME_S = 60.0
 MIN_INITIALS_FOR_HALT = 6
+# Require at least this many inter-cluster edges before halting. Prevents
+# premature halt when clusters exist but haven't been cross-referenced by
+# the field (which typically happens within a few iterations of the first
+# surviving cluster forming). 0 disables the floor.
+MIN_INTER_CLUSTER_EDGES = 1
 
 # Quality gate thresholds.
 QUALITY_SUPPORT_DIV = 4
@@ -62,6 +67,7 @@ class DetectorState:
     iterations_since_quality: int = 0
     iterations_since_new_surviving: int = 0
     n_surviving_last: int = 0
+    n_inter_cluster_edges_last: int = 0  # from last tick; used for MIN_INTER_CLUSTER_EDGES floor
     strength_history: deque = field(default_factory=lambda: deque(maxlen=SAT_WINDOW))
     reason: str = ""
 
@@ -121,6 +127,7 @@ class ConvergenceDetector:
         else:
             self.state.iterations_since_new_surviving += 1
         self.state.n_surviving_last = n_surviving
+        self.state.n_inter_cluster_edges_last = len(proj.inter_cluster_edges)
 
         # Quality gate
         prev_quality = self.state.quality_met
@@ -194,6 +201,12 @@ class ConvergenceDetector:
             )
             if n_initials < self.min_initials_for_halt:
                 return False
+
+        # Inter-cluster edge floor: ensure the field has had enough cross-cluster
+        # activity to populate at least one typed edge before halting.
+        if (MIN_INTER_CLUSTER_EDGES > 0
+                and self.state.n_inter_cluster_edges_last < MIN_INTER_CLUSTER_EDGES):
+            return False
 
         # Quality halt (preferred outcome)
         if (self.state.quality_met

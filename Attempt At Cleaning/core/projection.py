@@ -65,6 +65,24 @@ _EPS = 1e-9
 # ---------------------------------------------------------------------------
 
 @dataclass
+class TrajectoryFeatures:
+    """Temporal evolution of a cluster's signal field across pool iterations.
+
+    All iter_* values are 0 and has_trajectory is False when
+    Signal.iter_at_deposit was not set (legacy round-based path or tests
+    that don't call store.set_iteration()). Always check has_trajectory
+    before building trajectory-dependent prose in the renderer.
+    """
+    iter_first_support: int = 0
+    iter_first_dissent: int = 0
+    iter_first_verification: int = 0
+    support_growth_rate: float = 0.0   # supports deposited per elapsed iteration
+    dissent_response_lag: int = 0      # iters from first dissent to first response
+    objection_survival: int = 0        # OBJECTIONs with no subsequent support
+    has_trajectory: bool = False
+
+
+@dataclass
 class ClusterProjection:
     representative_id: str
     member_ids: list[str]
@@ -86,6 +104,9 @@ class ClusterProjection:
     # depth of this tree. Exposed to the synthesizer for trajectory features
     # and decomposed integration (see docs/SYNTHESIZER_OVERHAUL.md §5.4, §5.6).
     support_tree: dict = field(default_factory=dict)
+    # Temporal trajectory across pool iterations. has_trajectory=False when
+    # iter_at_deposit is 0 for all signals (legacy / test path).
+    trajectory: TrajectoryFeatures = field(default_factory=TrajectoryFeatures)
 
 
 @dataclass
@@ -150,6 +171,61 @@ class SynthesisPlan:
 # ---------------------------------------------------------------------------
 # Inter-cluster edge graph
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Trajectory features
+# ---------------------------------------------------------------------------
+
+def _compute_trajectory(
+    support_sigs: list,
+    dissent_sigs: list,
+    ver_sigs: list,
+) -> TrajectoryFeatures:
+    """Compute temporal trajectory from cluster-level signal lists.
+
+    Reads Signal.iter_at_deposit. Returns a zero-valued TrajectoryFeatures
+    (has_trajectory=False) when no signal has iter_at_deposit > 0, so the
+    synthesizer can skip trajectory-dependent prose without branching.
+    """
+    sup_iters = [s.iter_at_deposit for s in support_sigs if s.iter_at_deposit > 0]
+    dis_iters = [s.iter_at_deposit for s in dissent_sigs if s.iter_at_deposit > 0]
+    ver_iters = [s.iter_at_deposit for s in ver_sigs if s.iter_at_deposit > 0]
+
+    if not (sup_iters or dis_iters or ver_iters):
+        return TrajectoryFeatures()
+
+    iter_first_support = min(sup_iters) if sup_iters else 0
+    iter_first_dissent = min(dis_iters) if dis_iters else 0
+    iter_first_verification = min(ver_iters) if ver_iters else 0
+
+    if len(sup_iters) > 1:
+        growth_rate = len(sup_iters) / max(1, max(sup_iters) - min(sup_iters) + 1)
+    else:
+        growth_rate = float(len(sup_iters))
+
+    lag = 0
+    if iter_first_dissent > 0 and sup_iters:
+        after = [x for x in sup_iters if x > iter_first_dissent]
+        if after:
+            lag = min(after) - iter_first_dissent
+
+    objection_survival = 0
+    for s in dissent_sigs:
+        if s.iter_at_deposit == 0 or s.type != OBJECTION:
+            continue
+        if not any(x > s.iter_at_deposit for x in sup_iters):
+            objection_survival += 1
+
+    return TrajectoryFeatures(
+        iter_first_support=iter_first_support,
+        iter_first_dissent=iter_first_dissent,
+        iter_first_verification=iter_first_verification,
+        support_growth_rate=round(growth_rate, 3),
+        dissent_response_lag=lag,
+        objection_survival=objection_survival,
+        has_trajectory=True,
+    )
+
 
 # Thresholds for edge classification. Calibrated against all-MiniLM-L6-v2
 # on the laptop (4-bit quantized) embedding distribution; re-tune once
@@ -808,6 +884,10 @@ def _aggregate_cluster(
         default=1,
     )
 
+    # Trajectory features from cluster-level signal lists.
+    ver_sigs_for_traj = [store.get(i) for i in all_ver if store.get(i)]
+    trajectory = _compute_trajectory(support_sigs, dissent_sigs, ver_sigs_for_traj)
+
     # Merge per-member support trees into one cluster-level tree.
     merged_support_tree: dict[str, list[str]] = {}
     for mid in member_ids:
@@ -837,6 +917,7 @@ def _aggregate_cluster(
         partition_origins=all_partitions,
         support_depth=support_depth,
         support_tree=merged_support_tree,
+        trajectory=trajectory,
     )
 
 

@@ -1366,6 +1366,28 @@ class Synthesizer:
                     f"at the end of the paragraph.\n"
                 )
 
+        # Trajectory context: if iter_at_deposit data is available, tell the
+        # renderer whether this claim survived scrutiny or was never challenged.
+        traj = getattr(cp, "trajectory", None)
+        traj_block = ""
+        if traj is not None and traj.has_trajectory:
+            traj_parts = []
+            if traj.iter_first_dissent > 0 and traj.dissent_response_lag > 0:
+                traj_parts.append(
+                    f"challenged at iteration {traj.iter_first_dissent}, "
+                    f"field responded {traj.dissent_response_lag} iteration(s) later "
+                    f"— render this as a position that survived scrutiny"
+                )
+            elif traj.iter_first_dissent == 0:
+                traj_parts.append("accumulated support without direct challenge")
+            if traj.objection_survival > 0:
+                traj_parts.append(
+                    f"{traj.objection_survival} unanswered objection(s) — "
+                    f"acknowledge remaining uncertainty"
+                )
+            if traj_parts:
+                traj_block = f"\nField trajectory: {'; '.join(traj_parts)}.\n"
+
         # Position-taking instruction varies by task type. Non-factual tasks
         # need an actual stance on the supplied evidence; factual tasks need
         # to stick to what's verifiable. Both forbid the "the debate over X"
@@ -1405,6 +1427,7 @@ class Synthesizer:
             f"verification_score={cp.verification_score:.2f}\n"
             f"{support_block}"
             f"{dissent_block}"
+            f"{traj_block}"
             f"{ext_block}"
             f"{partition_note}\n\n"
             f"PARAGRAPH:"

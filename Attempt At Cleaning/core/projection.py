@@ -81,6 +81,11 @@ class ClusterProjection:
     support_depth: int = 1
     status: str = "unclassified"  # set by _apply_survival_filter
     unverified: bool = False      # True when surviving but no validator reached it
+    # SUPPORT-id -> [direct SUPPORT child IDs]. Preserves the refinement tree
+    # that CHAIN/DEVELOP actions built; the scalar support_depth is the max
+    # depth of this tree. Exposed to the synthesizer for trajectory features
+    # and decomposed integration (see docs/SYNTHESIZER_OVERHAUL.md §5.4, §5.6).
+    support_tree: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -331,13 +336,19 @@ def _compute_initial_metrics(sig, store: SignalStore) -> dict:
     # Only follow SUPPORT links so chains through critiques don't inflate
     # the metric.
     support_depth_max = 0
+    # support_tree: SUPPORT-id -> [direct SUPPORT child IDs]. Records the
+    # actual refinement tree so the synthesizer can reason about chain
+    # structure, not just the scalar depth.
+    support_tree: dict[str, list[str]] = {}
 
     visited: set[str] = set()
-    # (child_id, parent_depth) — parent_depth is the running SUPPORT-chain
-    # length at the parent. Root parent is the INITIAL with depth 0.
-    queue: list[tuple[str, int]] = [(cid, 0) for cid in store.by_parent(sig.id)]
+    # (child_id, parent_id, parent_depth) — parent_id is the direct DAG
+    # parent of child_id; used to build support_tree edges.
+    queue: list[tuple[str, str, int]] = [
+        (cid, sig.id, 0) for cid in store.by_parent(sig.id)
+    ]
     while queue:
-        child_id, parent_depth = queue.pop()
+        child_id, parent_id, parent_depth = queue.pop()
         if child_id in visited:
             continue
         visited.add(child_id)
@@ -348,6 +359,11 @@ def _compute_initial_metrics(sig, store: SignalStore) -> dict:
             support_ids.append(child_id)
             new_depth = parent_depth + 1 if child.type == SUPPORT else parent_depth
             support_depth_max = max(support_depth_max, new_depth)
+            # Build tree: record SUPPORT→SUPPORT parent-child edges only.
+            if child.type == SUPPORT:
+                parent_sig = store.get(parent_id)
+                if parent_sig is not None and parent_sig.type == SUPPORT:
+                    support_tree.setdefault(parent_id, []).append(child_id)
         elif child.type in (CRITIQUE_NEGATIVE, CRITIQUE, OBJECTION):
             dissent_ids.append(child_id)
             new_depth = parent_depth
@@ -357,7 +373,7 @@ def _compute_initial_metrics(sig, store: SignalStore) -> dict:
         else:
             new_depth = parent_depth
         for grandchild in store.by_parent(child_id):
-            queue.append((grandchild, new_depth))
+            queue.append((grandchild, child_id, new_depth))
 
     # support_diversity: count distinct "perspectives" contributing support.
     # Legacy pipeline used strategy_name parsed from agent_id like
@@ -408,6 +424,7 @@ def _compute_initial_metrics(sig, store: SignalStore) -> dict:
         "ver_score": ver_score,
         "partition_tag": partition_tag,
         "support_depth": max(1, support_depth_max),
+        "support_tree": support_tree,
     }
 
 
@@ -647,6 +664,15 @@ def _aggregate_cluster(
         default=1,
     )
 
+    # Merge per-member support trees into one cluster-level tree.
+    merged_support_tree: dict[str, list[str]] = {}
+    for mid in member_ids:
+        for parent_id, children in initial_metrics.get(mid, {}).get("support_tree", {}).items():
+            existing = merged_support_tree.setdefault(parent_id, [])
+            for cid in children:
+                if cid not in existing:
+                    existing.append(cid)
+
     # Citations audit block (Fix D): log diversity breakdown for diagnostics.
     print(
         f"[CLUSTER AUDIT] rep={rep_id} members={len(member_ids)} "
@@ -666,6 +692,7 @@ def _aggregate_cluster(
         verification_score=verification_score,
         partition_origins=all_partitions,
         support_depth=support_depth,
+        support_tree=merged_support_tree,
     )
 
 

@@ -99,6 +99,15 @@ _SECTION_3_RENDER_CAP = 10
 # Threshold above which the run-end summary prints a faithfulness warning.
 _AUDIT_WARNING_THRESHOLD = 20
 
+# Revision loop parameters (improvement 5.2). K=1 round of critic + revise
+# after sectioned rendering. Set to 0 to disable (useful when synthesis time
+# is the bottleneck; each round adds 2 LLM calls). Self-Refine literature
+# shows diminishing returns past K=2.
+_SYNTHESIZER_REVISION_ROUNDS = 1
+_REVISION_CRITIC_MAX_TOKENS = 600
+_REVISION_REVISE_MAX_TOKENS = 3000
+_REVISION_TEMPERATURE = 0.2
+
 # Feature flag for robust synthesizer logic: retry prompt interpretation,
 # sanitize planner output, and trim excessive render sets.
 _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK = True
@@ -717,6 +726,21 @@ class Synthesizer:
         # Assemble sections
         # ------------------------------------------------------------------
         answer = "\n\n".join(sections)
+
+        # Revision loop (improvement 5.2): K rounds of critic → revise.
+        # Runs after section assembly but before citation stamping so the
+        # critic sees clean prose without the Section 3/4 deterministic
+        # noise. Skipped when sections is empty (no-consensus fallback
+        # already returned above).
+        if _SYNTHESIZER_REVISION_ROUNDS > 0 and sections:
+            try:
+                answer = await self._revision_loop(
+                    answer, projection, store,
+                    max_rounds=_SYNTHESIZER_REVISION_ROUNDS,
+                )
+            except Exception as exc:
+                print(f"[synthesizer] revision loop crashed: "
+                      f"{type(exc).__name__}: {exc}; keeping original assembly")
 
         # Section 4 — Citations: deterministic stamp appended to the answer.
         # Pass merge_groups so the reader can see when the planner treated
@@ -1354,6 +1378,120 @@ class Synthesizer:
             temperature=_INTEGRATE_TEMPERATURE_OPTIMIZATION,
         )
         return strip_reasoning(raw.strip())
+
+    # -----------------------------------------------------------------------
+    # Revision loop (improvement 5.2): Self-Refine critic → revise
+    # -----------------------------------------------------------------------
+
+    async def _revision_loop(
+        self,
+        answer: str,
+        projection: SynthesisProjection,
+        store: SignalStore,
+        max_rounds: int = 1,
+    ) -> str:
+        """K rounds of critic→revise grounded in the surviving evidence.
+
+        The critic is shown the rendered answer and a compact evidence digest
+        (cluster rep content only — no reasoning chains) and asked to flag
+        three specific pathologies: unsupported claims, vague hedges when the
+        evidence leans one way, and parametric bleed (training knowledge not
+        in the evidence). The reviser fixes only the flagged paragraphs.
+
+        No-leak rule: critic and reviser see Signal.content only, never other
+        agents' ancestry text. Falls back to the original on any failure.
+        """
+        evidence_lines: list[str] = []
+        for cp in (_rank_clusters(projection.surviving) + projection.contested)[:6]:
+            rep = store.get(cp.representative_id)
+            if rep:
+                evidence_lines.append(
+                    f"[{cp.representative_id}] "
+                    f"(diversity={cp.support_diversity}, "
+                    f"ver={cp.verification_score:.2f}, "
+                    f"dissent={cp.dissent_pressure:.2f}): "
+                    f"{_truncate(rep.content, 300)}"
+                )
+        evidence_block = "\n".join(evidence_lines) or "(no surviving clusters)"
+
+        current = answer
+        for round_i in range(max_rounds):
+            # Critic call: identify faithfulness issues grounded in evidence.
+            critic_prompt = (
+                f"TASK: {self.task_prompt}\n\n"
+                f"You are a faithfulness critic. Below is a synthesis answer "
+                f"and the surviving cluster evidence it was derived from. "
+                f"Identify specific issues with individual paragraphs:\n\n"
+                f"  1. UNSUPPORTED: a paragraph cites a cluster ID but says "
+                f"     something the evidence does not support.\n"
+                f"  2. VAGUE_HEDGE: the paragraph defaults to 'remains "
+                f"     contentious' or 'there is debate' when the evidence "
+                f"     actually leans one way.\n"
+                f"  3. PARAMETRIC_BLEED: the paragraph introduces named "
+                f"     entities, examples, or arguments not present in the "
+                f"     evidence (model used training knowledge instead of "
+                f"     supplied evidence).\n\n"
+                f"For each issue: ISSUE TYPE | cited cluster ID | one-sentence "
+                f"description. Only report issues you can ground in the "
+                f"evidence block — do NOT flag based on your own prior "
+                f"knowledge.\n\n"
+                f"---EVIDENCE---\n{evidence_block}\n---END EVIDENCE---\n\n"
+                f"---ANSWER TO REVIEW---\n{current[:3000]}\n---END ANSWER---\n\n"
+                f"ISSUES (bullet list, or 'NO ISSUES' if none found):"
+            )
+            try:
+                critic_raw = await self.llm.generate(
+                    critic_prompt, role=self.ROLE,
+                    max_tokens=_REVISION_CRITIC_MAX_TOKENS,
+                    temperature=_REVISION_TEMPERATURE,
+                )
+            except Exception as exc:
+                print(f"[synthesizer] revision critic failed (round {round_i}): "
+                      f"{type(exc).__name__}: {exc}")
+                break
+
+            critic_text = strip_reasoning((critic_raw or "").strip())
+            if not critic_text or "NO ISSUES" in critic_text.upper()[:40]:
+                print(f"[synthesizer] revision round {round_i}: critic found no issues")
+                break
+
+            print(f"[synthesizer] revision round {round_i}: "
+                  f"critic flagged issues; revising")
+
+            # Revise call: fix only the flagged paragraphs.
+            revise_prompt = (
+                f"TASK: {self.task_prompt}\n\n"
+                f"Fix ONLY the faithfulness issues below in the synthesis "
+                f"answer. Do not change paragraphs the critic did not flag. "
+                f"Do not introduce content not in the original answer or the "
+                f"evidence block. Keep all section headers and citation IDs "
+                f"exactly as-is.\n\n"
+                f"ISSUES TO FIX:\n{critic_text}\n\n"
+                f"EVIDENCE AVAILABLE:\n{evidence_block}\n\n"
+                f"ORIGINAL ANSWER:\n{current[:3000]}\n\n"
+                f"REVISED ANSWER:"
+            )
+            try:
+                revised_raw = await self.llm.generate(
+                    revise_prompt, role=self.ROLE,
+                    max_tokens=_REVISION_REVISE_MAX_TOKENS,
+                    temperature=_REVISION_TEMPERATURE,
+                )
+            except Exception as exc:
+                print(f"[synthesizer] revision revise failed (round {round_i}): "
+                      f"{type(exc).__name__}: {exc}")
+                break
+
+            revised = strip_reasoning((revised_raw or "").strip())
+            if not revised or len(revised) < len(current) * 0.3:
+                print(f"[synthesizer] revision round {round_i}: "
+                      f"revised too short ({len(revised)} vs {len(current)}); "
+                      f"keeping original")
+                break
+
+            current = revised
+
+        return current
 
     # -----------------------------------------------------------------------
     # Per-cluster render helpers

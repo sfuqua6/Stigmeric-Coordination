@@ -126,6 +126,20 @@ _BEST_OF_N_COHESIVE = 3
 _BEST_OF_N_EXPLORATION_TEMPS = [0.3, 0.5, 0.7]
 _BEST_OF_N_OPTIMIZATION_TEMPS = [0.15, 0.25, 0.35]
 
+# Debate frame for `alternatives` cluster sets (improvement 5.5).
+# When ≥2 surviving clusters are connected by an `alternatives` edge and
+# are within _DEBATE_PRIORITY_RATIO of each other's priority score, replace
+# their Section-1 rendering with a 3-round debate: Round 1 each generates a
+# position; Round 2 each responds to the strongest sibling; Round 3 a judge
+# identifies the unresolved empirical question. Gate on _SYNTHESIZER_USE_DEBATE
+# (False by default — adds 3+ LLM calls per alternatives set; enable only
+# when compute budget permits).
+_SYNTHESIZER_USE_DEBATE = False  # enable to activate debate frame
+_DEBATE_PRIORITY_RATIO = 0.8     # alternatives within 20% of each other's priority
+_DEBATE_ROUND_MAX_TOKENS = 800
+_DEBATE_JUDGE_MAX_TOKENS = 600
+_DEBATE_TEMPERATURE = 0.4
+
 # Feature flag for robust synthesizer logic: retry prompt interpretation,
 # sanitize planner output, and trim excessive render sets.
 _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK = True
@@ -685,8 +699,38 @@ class Synthesizer:
             rendered_surviving = []
             section1_tail = []
         if rendered_surviving:
+            # Identify debate-eligible alternatives groups (improvement 5.5).
+            # Clusters in a debate group get _render_debate_frame instead of
+            # per-cluster _render_cluster_position calls.
+            debate_groups: list[list] = []
+            debate_cluster_ids: set[str] = set()
+            if _SYNTHESIZER_USE_DEBATE and getattr(projection, "inter_cluster_edges", []):
+                debate_groups = self._identify_debate_clusters(
+                    rendered_surviving, projection,
+                )
+                for grp in debate_groups:
+                    debate_cluster_ids.update(
+                        cp.representative_id for cp in grp
+                    )
+
             fragments: list[str] = []
+            # Render debate groups first so they appear before normal clusters.
+            for grp in debate_groups:
+                debate_text = await self._render_debate_frame(grp, store)
+                if debate_text:
+                    fragments.append(debate_text)
+                else:
+                    # Debate frame failed: fall back to per-cluster rendering.
+                    for cp in grp:
+                        fragment = await self._render_cluster_position(cp, store)
+                        if fragment:
+                            if fragment[-1] not in ".!?\")'":
+                                fragment += "."
+                            fragments.append(fragment)
+            # Render remaining clusters (not in any debate group).
             for cp in rendered_surviving:
+                if cp.representative_id in debate_cluster_ids:
+                    continue
                 fragment = await self._render_cluster_position(cp, store)
                 if fragment:
                     # Ensure paragraph ends with terminal punctuation.
@@ -1786,6 +1830,214 @@ class Synthesizer:
             return plain
 
         return result
+
+    # -----------------------------------------------------------------------
+    # Debate frame for `alternatives` cluster sets (improvement 5.5)
+    # -----------------------------------------------------------------------
+
+    def _identify_debate_clusters(
+        self,
+        rendered_clusters: list,
+        projection: SynthesisProjection,
+    ) -> list[list]:
+        """Find groups of `alternatives` clusters comparable enough to debate.
+
+        Returns a list of groups. Each group is a list of ClusterProjection
+        objects that are mutually connected by `alternatives` edges and within
+        _DEBATE_PRIORITY_RATIO of each other's _cluster_priority score.
+        Groups with < 2 members are excluded.
+        """
+        rendered_ids = {cp.representative_id for cp in rendered_clusters}
+        id_to_cp = {cp.representative_id: cp for cp in rendered_clusters}
+
+        # Build adjacency: only `alternatives` edges between rendered clusters.
+        neighbours: dict[str, set[str]] = {
+            cp.representative_id: set() for cp in rendered_clusters
+        }
+        for e in getattr(projection, "inter_cluster_edges", []):
+            if (e.relation == "alternatives"
+                    and e.source in rendered_ids
+                    and e.target in rendered_ids):
+                neighbours[e.source].add(e.target)
+                neighbours[e.target].add(e.source)
+
+        # Find connected components among `alternatives` neighbours.
+        visited: set[str] = set()
+        groups: list[list] = []
+        for cid in rendered_ids:
+            if cid in visited:
+                continue
+            component: list[str] = []
+            queue = [cid]
+            while queue:
+                node = queue.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                component.append(node)
+                queue.extend(neighbours[node] - visited)
+            if len(component) < 2:
+                continue
+            # Priority-filter: keep only clusters within _DEBATE_PRIORITY_RATIO
+            # of the highest-priority member.
+            cps = [id_to_cp[c] for c in component]
+            max_prio = max(_cluster_priority(cp) for cp in cps)
+            close = [
+                cp for cp in cps
+                if _cluster_priority(cp) >= max_prio * _DEBATE_PRIORITY_RATIO
+            ]
+            if len(close) >= 2:
+                groups.append(close)
+        return groups
+
+    async def _render_debate_frame(
+        self,
+        debate_group: list,
+        store: SignalStore,
+    ) -> str:
+        """Three-round debate between `alternatives` cluster positions.
+
+        Round 1: each cluster generates a position paragraph.
+        Round 2: each cluster responds to the strongest sibling Round-1 para.
+        Round 3: a judge call reads all positions + responses and names the
+                 unresolved empirical question that distinguishes the alternatives.
+
+        Returns the Round-3 judge output (the debate-rendered Section-1 block).
+        Falls back to empty string on any failure so the caller can fall back
+        to standard `_render_cluster_position` rendering.
+        """
+        if not debate_group:
+            return ""
+
+        # Round 1: per-cluster position
+        round1: list[tuple[str, str]] = []  # (cluster_id, position_paragraph)
+        for cp in debate_group:
+            rep = store.get(cp.representative_id)
+            if rep is None:
+                continue
+            content = _truncate(rep.content, _REPRESENTATIVE_CHARS)
+            support_lines = []
+            for sid in cp.support_set[:3]:
+                s = store.get(sid)
+                if s:
+                    support_lines.append(
+                        f"  - [{sid}] {_truncate(s.content, _SUPPORT_CHARS)}"
+                    )
+            support_block = (
+                "\nSupporting evidence:\n" + "\n".join(support_lines)
+                if support_lines else ""
+            )
+            prompt = (
+                f"TASK: {self.task_prompt}\n\n"
+                f"You are arguing FOR the following position in a structured "
+                f"debate between alternative approaches. Write ONE focused "
+                f"paragraph that: (a) states the specific claim clearly, "
+                f"(b) cites the strongest supporting evidence, (c) anticipates "
+                f"the central objection to this position.\n\n"
+                f"Position [{cp.representative_id}]: {content}\n"
+                f"{support_block}\n\n"
+                f"POSITION PARAGRAPH:"
+            )
+            try:
+                raw = await self.llm.generate(
+                    prompt, role=self.ROLE,
+                    max_tokens=_DEBATE_ROUND_MAX_TOKENS,
+                    temperature=_DEBATE_TEMPERATURE,
+                )
+                para = strip_reasoning((raw or "").strip())
+                if para:
+                    round1.append((cp.representative_id, para))
+            except Exception as exc:
+                print(f"[synthesizer] debate round1 failed for "
+                      f"{cp.representative_id}: {exc}")
+
+        if len(round1) < 2:
+            return ""
+
+        # Round 2: each cluster responds to the strongest sibling's Round-1 para.
+        round2: list[tuple[str, str]] = []
+        for idx, (cid, _own_para) in enumerate(round1):
+            # "Strongest sibling" = highest priority among other round-1 participants.
+            sibling_paras = [
+                (sid, para) for (sid, para) in round1 if sid != cid
+            ]
+            if not sibling_paras:
+                continue
+            _, strongest_sibling_para = sibling_paras[0]  # already priority-ordered
+            prompt = (
+                f"TASK: {self.task_prompt}\n\n"
+                f"In a structured debate, respond to the following competing "
+                f"position. Address its strongest specific claim directly. "
+                f"Do not restate your own position in full — focus the response "
+                f"on what distinguishes your approach from theirs.\n\n"
+                f"Your cluster ID: [{cid}]\n\n"
+                f"Competing position:\n{strongest_sibling_para}\n\n"
+                f"RESPONSE (one focused paragraph):"
+            )
+            try:
+                raw = await self.llm.generate(
+                    prompt, role=self.ROLE,
+                    max_tokens=_DEBATE_ROUND_MAX_TOKENS,
+                    temperature=_DEBATE_TEMPERATURE,
+                )
+                response = strip_reasoning((raw or "").strip())
+                if response:
+                    round2.append((cid, response))
+            except Exception as exc:
+                print(f"[synthesizer] debate round2 failed for {cid}: {exc}")
+
+        # Round 3: judge reads all positions + responses and names the unresolved
+        # empirical or structural question that would distinguish the alternatives.
+        positions_block = "\n\n".join(
+            f"Position [{cid}]:\n{para}" for cid, para in round1
+        )
+        responses_block = "\n\n".join(
+            f"Response [{cid}]:\n{resp}" for cid, resp in round2
+        ) if round2 else "(no responses generated)"
+
+        judge_prompt = (
+            f"TASK: {self.task_prompt}\n\n"
+            f"You are a judge reading a structured debate between alternative "
+            f"approaches. Read all positions and responses, then write ONE "
+            f"paragraph that:\n"
+            f"  1. Names the specific empirical or structural question that "
+            f"     remains unresolved after the exchange — the question that, "
+            f"     if answered, would decide between the approaches.\n"
+            f"  2. Characterizes what evidence or test would resolve it.\n"
+            f"  3. Does NOT collapse the alternatives into a single answer or "
+            f"     declare a winner. The alternatives remain open.\n\n"
+            f"Do not hedge with 'both have merit' without specifying what "
+            f"the actual unresolved question is.\n\n"
+            f"POSITIONS:\n\n{positions_block}\n\n"
+            f"RESPONSES:\n\n{responses_block}\n\n"
+            f"JUDGE PARAGRAPH (name the unresolved question precisely):"
+        )
+        try:
+            raw = await self.llm.generate(
+                judge_prompt, role=self.ROLE,
+                max_tokens=_DEBATE_JUDGE_MAX_TOKENS,
+                temperature=_DEBATE_TEMPERATURE,
+            )
+            judge_para = strip_reasoning((raw or "").strip())
+        except Exception as exc:
+            print(f"[synthesizer] debate round3 (judge) failed: {exc}")
+            judge_para = ""
+
+        if not judge_para:
+            return ""
+
+        # Assemble: present both positions, the exchange, and the judge's finding.
+        parts = [
+            "**[DEBATE FRAME — alternatives cluster set]**\n",
+        ]
+        for cid, para in round1:
+            parts.append(f"*Position [{cid}]:*\n{para}")
+        if round2:
+            parts.append("\n*Exchange:*\n")
+            for cid, resp in round2:
+                parts.append(f"[{cid}] responds: {resp}")
+        parts.append(f"\n*Judge (unresolved question):*\n{judge_para}")
+        return "\n\n".join(parts)
 
     # -----------------------------------------------------------------------
     # Per-cluster render helpers

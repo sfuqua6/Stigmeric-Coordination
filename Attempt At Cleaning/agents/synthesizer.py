@@ -115,6 +115,17 @@ _REVISION_TEMPERATURE = 0.2
 _SYNTHESIZER_USE_EDGE_COMPOSITION = True
 _EDGE_COMPOSE_MAX_TOKENS = 2000
 
+# Best-of-N cohesive composition (improvement 5.3). Run the integration call
+# N times with diverse cluster orderings and (for exploration) diverse
+# temperatures; score each candidate by cluster coverage + faithfulness
+# overlap − audit flags; take the argmax. Set to 0 or 1 to disable (single
+# candidate). Applies only to cohesive_exploration and cohesive_optimization
+# strategies, not to sectioned. Each additional candidate costs one full
+# LLM call; N=3 is the budget-safe default on a 6 GB laptop GPU.
+_BEST_OF_N_COHESIVE = 3
+_BEST_OF_N_EXPLORATION_TEMPS = [0.3, 0.5, 0.7]
+_BEST_OF_N_OPTIMIZATION_TEMPS = [0.15, 0.25, 0.35]
+
 # Feature flag for robust synthesizer logic: retry prompt interpretation,
 # sanitize planner output, and trim excessive render sets.
 _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK = True
@@ -567,19 +578,55 @@ class Synthesizer:
                 cp.representative_id for cp in
                 (_rank_clusters(projection.surviving) or projection.contested)[:5]
             ]
-            try:
-                if strategy == "cohesive_exploration":
-                    artifact = await self._render_cohesive_exploration(
-                        contract, projection, store, render_id_list,
-                    )
-                else:
-                    artifact = await self._render_cohesive_optimization(
-                        contract, projection, store, render_id_list,
-                    )
-            except Exception as exc:
-                print(f"[synthesizer] cohesive render failed: "
-                      f"{type(exc).__name__}: {exc}; "
-                      f"falling back to sectioned output")
+
+            # Best-of-N (improvement 5.3): generate N candidates with diverse
+            # cluster orderings + temperatures, score each deterministically
+            # against the cluster lattice, and take the argmax. Falls back to
+            # single-candidate when _BEST_OF_N_COHESIVE <= 1 or all fail.
+            _n = _BEST_OF_N_COHESIVE if _BEST_OF_N_COHESIVE > 1 else 1
+            _temps = (
+                _BEST_OF_N_EXPLORATION_TEMPS if strategy == "cohesive_exploration"
+                else _BEST_OF_N_OPTIMIZATION_TEMPS
+            )
+            candidates: list[tuple[float, str]] = []
+            for _i in range(_n):
+                _temp = _temps[_i % len(_temps)]
+                # Shuffle render order deterministically per candidate
+                import random as _random
+                _rng = _random.Random(_i + 42)
+                _shuffled = list(render_id_list)
+                if _i > 0:
+                    _rng.shuffle(_shuffled)
+                try:
+                    if strategy == "cohesive_exploration":
+                        _cand = await self._render_cohesive_exploration(
+                            contract, projection, store, _shuffled,
+                            temperature=_temp,
+                        )
+                    else:
+                        _cand = await self._render_cohesive_optimization(
+                            contract, projection, store, _shuffled,
+                            temperature=_temp,
+                        )
+                    if _cand:
+                        _score = self._score_cohesive_candidate(
+                            _cand, contract, projection, store,
+                        )
+                        candidates.append((_score, _cand))
+                        print(f"[synthesizer] best-of-N candidate {_i}: "
+                              f"temp={_temp:.2f} score={_score:.3f} "
+                              f"len={len(_cand)}")
+                except Exception as exc:
+                    print(f"[synthesizer] best-of-N candidate {_i} failed: "
+                          f"{type(exc).__name__}: {exc}")
+
+            if candidates:
+                best_score, artifact = max(candidates, key=lambda x: x[0])
+                print(f"[synthesizer] best-of-N: selected candidate "
+                      f"(score={best_score:.3f}) from {len(candidates)} total")
+            else:
+                print(f"[synthesizer] cohesive render failed (all {_n} candidates "
+                      f"failed); falling back to sectioned output")
                 strategy = "sectioned"
                 artifact = None
 
@@ -1286,6 +1333,7 @@ class Synthesizer:
         projection: SynthesisProjection,
         store: SignalStore,
         render_ids: list[str],
+        temperature: float = _INTEGRATE_TEMPERATURE_EXPLORATION,
     ) -> str:
         """Produce ONE unified artifact (haiku/story/plan/etc) from cluster threads.
 
@@ -1357,7 +1405,7 @@ class Synthesizer:
         raw = await self.llm.generate(
             prompt, role=self.ROLE,
             max_tokens=_INTEGRATE_MAX_TOKENS,
-            temperature=_INTEGRATE_TEMPERATURE_EXPLORATION,
+            temperature=temperature,
         )
         return strip_reasoning(raw.strip())
 
@@ -1367,6 +1415,7 @@ class Synthesizer:
         projection: SynthesisProjection,
         store: SignalStore,
         render_ids: list[str],
+        temperature: float = _INTEGRATE_TEMPERATURE_OPTIMIZATION,
     ) -> str:
         """Produce ONE working implementation from candidate approaches.
 
@@ -1429,9 +1478,66 @@ class Synthesizer:
         raw = await self.llm.generate(
             prompt, role=self.ROLE,
             max_tokens=_INTEGRATE_MAX_TOKENS,
-            temperature=_INTEGRATE_TEMPERATURE_OPTIMIZATION,
+            temperature=temperature,
         )
         return strip_reasoning(raw.strip())
+
+    # -----------------------------------------------------------------------
+    # Best-of-N scoring (improvement 5.3)
+    # -----------------------------------------------------------------------
+
+    def _score_cohesive_candidate(
+        self,
+        artifact: str,
+        contract: dict,
+        projection: SynthesisProjection,
+        store: SignalStore,
+    ) -> float:
+        """Score a candidate cohesive artifact for best-of-N argmax selection.
+
+        score = cluster_coverage_rate − audit_flag_penalty
+
+        cluster_coverage_rate: fraction of surviving cluster reps that have
+        at least one content word (4+ letters, non-stop) appearing in the
+        artifact. Measures whether the integration call actually used the
+        swarm's evidence rather than generating from parametric knowledge.
+
+        audit_flag_penalty: number of soft-audit flags * 0.1, capped at 0.5.
+        Subtracts for structural violations, content overlap failures, and
+        fabricated citation IDs that leaked into the artifact.
+
+        Pure Python — no additional LLM calls.
+        """
+        _STOP = frozenset({
+            "the", "a", "an", "is", "are", "to", "of", "in", "and", "or",
+            "it", "be", "that", "this", "with", "for", "on", "as", "by",
+            "at", "from", "but", "not",
+        })
+        artifact_words = {
+            w for w in re.findall(r"[a-z]{4,}", (artifact or "").lower())
+            if w not in _STOP
+        }
+        all_clusters = projection.surviving + projection.contested
+        covered = 0
+        for cp in all_clusters:
+            rep = store.get(cp.representative_id)
+            if not rep:
+                continue
+            rep_words = {
+                w for w in re.findall(r"[a-z]{4,}", rep.content.lower())
+                if w not in _STOP
+            }
+            if rep_words & artifact_words:
+                covered += 1
+        coverage_rate = covered / max(1, len(all_clusters))
+
+        try:
+            flags = _build_cohesive_audit(artifact, contract, projection, store)
+            flag_penalty = min(0.5, len(flags) * 0.1)
+        except Exception:
+            flag_penalty = 0.0
+
+        return coverage_rate - flag_penalty
 
     # -----------------------------------------------------------------------
     # Revision loop (improvement 5.2): Self-Refine critic → revise

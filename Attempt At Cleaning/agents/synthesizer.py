@@ -140,6 +140,17 @@ _DEBATE_ROUND_MAX_TOKENS = 800
 _DEBATE_JUDGE_MAX_TOKENS = 600
 _DEBATE_TEMPERATURE = 0.4
 
+# Alternative-of-the-best artifact (improvement 5.9). For exploration tasks,
+# after the primary synthesis emit a second artifact from the highest-priority
+# cluster that was NOT selected by the planner (section3_only or MMR-filtered).
+# Framed as "the strongest alternative direction the swarm explored but did
+# not select as primary." Gated on SYNTHESIZER_EMIT_ALTERNATIVE (False by
+# default — adds one full LLM call; enable when compute budget allows).
+# Only fires for cohesive_exploration strategy.
+SYNTHESIZER_EMIT_ALTERNATIVE = False
+_ALTERNATIVE_MAX_TOKENS = 1500
+_ALTERNATIVE_TEMPERATURE = 0.5
+
 # Feature flag for robust synthesizer logic: retry prompt interpretation,
 # sanitize planner output, and trim excessive render sets.
 _SYNTHESIZER_USE_ROBUST_PLAN_FALLBACK = True
@@ -651,6 +662,41 @@ class Synthesizer:
                     projection, store, plan_notes=plan_notes,
                 )
                 parts = [artifact]
+
+                # Alternative-of-the-best artifact (improvement 5.9).
+                # For exploration tasks: find the highest-priority surviving
+                # cluster NOT in render_full (section3_only or MMR-filtered)
+                # and generate a second artifact from that cluster alone.
+                if (
+                    SYNTHESIZER_EMIT_ALTERNATIVE
+                    and strategy == "cohesive_exploration"
+                    and plan_section3_ids
+                ):
+                    alt_candidates = [
+                        cp for cp in _rank_clusters(projection.surviving)
+                        if cp.representative_id in plan_section3_ids
+                    ]
+                    if alt_candidates:
+                        alt_cp = alt_candidates[0]
+                        try:
+                            alt_artifact = await self._render_alternative_artifact(
+                                contract, projection, store, alt_cp,
+                            )
+                            if alt_artifact:
+                                alt_why = (
+                                    f"strongest non-selected cluster "
+                                    f"[{alt_cp.representative_id}]: "
+                                    f"support_diversity={alt_cp.support_diversity}, "
+                                    f"verification_score={alt_cp.verification_score:.2f}"
+                                )
+                                parts.append(
+                                    f"\n\n---\n\n## STRONGEST ALTERNATIVE\n\n"
+                                    f"*{alt_why}*\n\n{alt_artifact}"
+                                )
+                        except Exception as exc:
+                            print(f"[synthesizer] alternative artifact failed: "
+                                  f"{type(exc).__name__}: {exc}")
+
                 parts.append("\n\n---\n\n## PROCESS NOTES\n")
                 parts.append(exec_notes)
                 answer = "\n\n".join(p for p in parts if p)
@@ -1525,6 +1571,80 @@ class Synthesizer:
             temperature=temperature,
         )
         return strip_reasoning(raw.strip())
+
+    # -----------------------------------------------------------------------
+    # Alternative-of-the-best artifact (improvement 5.9)
+    # -----------------------------------------------------------------------
+
+    async def _render_alternative_artifact(
+        self,
+        contract: dict,
+        projection: SynthesisProjection,
+        store: SignalStore,
+        alt_cp,
+    ) -> str:
+        """Generate a second artifact from the strongest non-selected cluster.
+
+        Uses the same integration-call style as cohesive_exploration but
+        with a single cluster's thread and an explicit "alternative direction"
+        framing. Framed as "the strongest alternative direction the swarm
+        explored but did not select as primary."
+
+        Returns empty string on failure.
+        """
+        rep = store.get(alt_cp.representative_id)
+        if rep is None:
+            return ""
+
+        form = contract.get("form", "free_response")
+        structural = contract.get("structural", []) or ["(none explicit)"]
+        soft = contract.get("soft", []) or ["(none explicit)"]
+        struct_block = "\n".join(f"  · {x}" for x in structural)
+        soft_block = "\n".join(f"  · {x}" for x in soft)
+
+        support_excerpts: list[str] = []
+        for sid in alt_cp.support_set[:4]:
+            s = store.get(sid)
+            if s and s.content:
+                support_excerpts.append(_truncate(s.content, _SUPPORT_CHARS))
+
+        thread_block = _truncate(rep.content, _REPRESENTATIVE_CHARS)
+        if support_excerpts:
+            thread_block += "\n" + "\n".join(f"  · {x}" for x in support_excerpts)
+
+        prompt = (
+            f"USER PROMPT: {self.task_prompt}\n\n"
+            f"You are producing an ALTERNATIVE artifact — the strongest "
+            f"direction the swarm explored but did not select as the primary "
+            f"answer. Produce the artifact in the same form as the primary, "
+            f"using ONLY the thread below. This is not a critique of the "
+            f"primary — it is an independent exploration of a different "
+            f"direction that also survived field pressure.\n\n"
+            f"FORM: {form}\n\n"
+            f"HARD STRUCTURAL CONSTRAINTS:\n{struct_block}\n\n"
+            f"SOFT CUES:\n{soft_block}\n\n"
+            f"ALTERNATIVE THREAD [{alt_cp.representative_id}] "
+            f"(support_diversity={alt_cp.support_diversity}, "
+            f"verification_score={alt_cp.verification_score:.2f}):\n"
+            f"{thread_block}\n\n"
+            f"RULES:\n"
+            f"  1. Produce the artifact itself — no preface, no 'Here is...'.\n"
+            f"  2. Honor every hard structural constraint.\n"
+            f"  3. Do NOT reference 'the primary' or 'the main answer'.\n"
+            f"  4. No bracketed cluster IDs in the final artifact.\n\n"
+            f"ALTERNATIVE ARTIFACT:"
+        )
+        try:
+            raw = await self.llm.generate(
+                prompt, role=self.ROLE,
+                max_tokens=_ALTERNATIVE_MAX_TOKENS,
+                temperature=_ALTERNATIVE_TEMPERATURE,
+            )
+            return strip_reasoning((raw or "").strip())
+        except Exception as exc:
+            print(f"[synthesizer] alternative artifact call failed: "
+                  f"{type(exc).__name__}: {exc}")
+            return ""
 
     # -----------------------------------------------------------------------
     # Best-of-N scoring (improvement 5.3)

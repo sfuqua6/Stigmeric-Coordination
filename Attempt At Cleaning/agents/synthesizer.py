@@ -1336,12 +1336,34 @@ class Synthesizer:
                     f"  - [{sid}] {_truncate(s.content, _SUPPORT_CHARS)}"
                 )
 
-        # External grounding (optional — Wikipedia at synthesis time)
-        ext_ctx = _get_external_context(rep.content)
-        ext_block = (
-            f"\n[External context, not agent-derived]: {ext_ctx}\n"
-            if ext_ctx else ""
-        )
+        # Validator grounding: read VERIFICATION signal contents deposited
+        # during exploration instead of re-fetching Wikipedia at synthesis
+        # time. validate_parse deposits the validator's one-sentence reasoning
+        # as VERIFICATION content (core/actions.py:537); this is richer than
+        # a Wikipedia snippet because it reflects judgement about this specific
+        # claim. Falls back to Wikipedia only when no validators ran (e.g.
+        # creative tasks that suppress the Validator role).
+        validator_notes: list[str] = []
+        for vid in cp.verification_set[:3]:
+            vsig = store.get(vid)
+            if vsig and vsig.content:
+                note = _truncate(vsig.content, _EXTERNAL_CHARS)
+                validator_notes.append(
+                    f"[validator score={vsig.strength:.2f}] {note}"
+                )
+                store.mark_read(vid)
+        if validator_notes:
+            ext_block = (
+                "\n[Validator notes from exploration]:\n"
+                + "\n".join(f"  · {n}" for n in validator_notes)
+                + "\n"
+            )
+        else:
+            ext_ctx = _get_external_context(rep.content)
+            ext_block = (
+                f"\n[External context, not agent-derived]: {ext_ctx}\n"
+                if ext_ctx else ""
+            )
 
         partition_note = (
             f"Partition origins: {', '.join(cp.partition_origins)}"

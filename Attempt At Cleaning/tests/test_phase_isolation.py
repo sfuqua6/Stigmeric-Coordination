@@ -24,10 +24,12 @@ from core.signal_store import SignalStore, _NULL_EMBEDDER
 class TestStoreRoundTrip(unittest.TestCase):
     def test_save_load_preserves_signals_and_logit(self):
         s = SignalStore(embedder=_NULL_EMBEDDER)
-        a = s.deposit("INITIAL", "first claim", 0.5, "scout")
-        b = s.deposit("INITIAL", "second different claim entirely", 0.7, "scout")
+        a = s.deposit("INITIAL", "first claim", 0.5, "scout",
+                      metadata={"partition_id": "partition_0"})
+        b = s.deposit("INITIAL", "second different claim entirely", 0.7, "scout",
+                      metadata={"partition_id": "partition_1"})
         c = s.deposit("SUPPORT", "a developmental support", 0.4, "forager",
-                       parent_id=a)
+                       parent_id=a, metadata={"partition_id": "partition_0"})
         self.assertIsNotNone(a)
         self.assertIsNotNone(b)
         self.assertIsNotNone(c)
@@ -82,7 +84,17 @@ class TestIsolatedOrchestration(unittest.TestCase):
              f"--run-id={run_id}", "--corpus=placeholder", "--ignore-kb"],
             cwd=str(repo),
             capture_output=True, text=True, timeout=300,
-            env={**os.environ, "MOCK_LLM": "1"},
+            env={
+                **os.environ,
+                "MOCK_LLM": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "SWARM_MIN_TIME_S": "0",
+                "SWARM_MIN_ITERATIONS": "5",
+                "SWARM_MIN_INITIALS_FOR_HALT": "0",
+                "SWARM_MIN_INTER_CLUSTER_EDGES": "0",
+                "SWARM_SAT_NO_NEW_SURVIVING": "5",
+                "SWARM_MAX_ITERATIONS": "20",
+            },
         )
         self.assertEqual(result.returncode, 0,
                          f"orchestrator failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")

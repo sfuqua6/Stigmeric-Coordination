@@ -171,7 +171,10 @@ class RequirementsScout(BaseAgent):
                 content=content,
                 strength=self.DEFAULT_DEPOSIT_STRENGTH,
                 depositor=self.ROLE,
-                metadata={"depositor_agent_id": self.agent_id},
+                metadata={
+                    "depositor_agent_id": self.agent_id,
+                    "partition_id": self.agent_id,
+                },
             )
             if sid is None:
                 consecutive_dups += 1

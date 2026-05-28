@@ -331,7 +331,8 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                        reset_kb: bool = False,
                        corpus_mode: str = "real",
                        show_partition_overlap: bool = False,
-                       cloud_provider: str = "none") -> dict:
+                       cloud_provider: str = "none",
+                       prune_kb_before: Optional[str] = None) -> dict:
     # Phase M: wall-clock from pipeline start (covers retrieval, all rounds,
     # AND synthesis — round_logs only sum each round's compute time).
     pipeline_start = time.time()
@@ -366,6 +367,8 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         print("[kb] disabled (--use-kb to enable)")
     else:
         kb.load()
+        if prune_kb_before:
+            kb.prune_before(prune_kb_before)
         n_priors = (len(kb.prior_consensus(current_topic_hash))
                     + len(kb.prior_rejections(current_topic_hash)))
         print(f"[kb] loaded {n_priors} priors — set --no-kb to disable")
@@ -898,6 +901,7 @@ async def run_continuous_pipeline(
     n_workers: int = _CONTINUOUS_DEFAULT_WORKERS,
     cloud_provider: str = "none",
     bundle: Optional[str] = None,
+    prune_kb_before: Optional[str] = None,
 ) -> dict:
     """Continuous worker pool replacing the round/phase scheduler.
 
@@ -947,6 +951,8 @@ async def run_continuous_pipeline(
         print("[kb] disabled (--use-kb to enable)")
     else:
         kb.load()
+        if prune_kb_before:
+            kb.prune_before(prune_kb_before)
         n_priors = (len(kb.prior_consensus(current_topic_hash))
                     + len(kb.prior_rejections(current_topic_hash)))
         print(f"[kb] loaded {n_priors} priors — set --no-kb to disable")
@@ -1624,6 +1630,11 @@ def main():
     use_kb = "--use-kb" in args
     ignore_kb = not use_kb
     reset_kb  = "--reset-kb"  in args
+    prune_kb_before: Optional[str] = None
+    _prune_flags = [a for a in args if a.startswith("--prune-kb-before=")]
+    if _prune_flags:
+        prune_kb_before = _prune_flags[-1].split("=", 1)[1]
+    args = [a for a in args if not a.startswith("--prune-kb-before=")]
     show_partition_overlap = "--show-partition-overlap" in args
     heterogeneous = "--heterogeneous" in args
     # Continuous worker pool is the default execution mode (Phase 1 of the
@@ -1879,6 +1890,7 @@ def main():
             corpus_mode=corpus_mode,
             show_partition_overlap=show_partition_overlap,
             cloud_provider=cloud_provider,
+            prune_kb_before=prune_kb_before,
         ))
     else:
         asyncio.run(run_continuous_pipeline(
@@ -1888,6 +1900,7 @@ def main():
             n_workers=workers,
             cloud_provider=cloud_provider,
             bundle=bundle,
+            prune_kb_before=prune_kb_before,
         ))
 
 

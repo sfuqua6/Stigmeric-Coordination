@@ -31,13 +31,23 @@ def _make_store() -> SignalStore:
 
 def _deposit(store, stype, content, strength=0.7, depositor="scout",
              parent_id=None, metadata=None):
+    meta = dict(metadata or {})
+    if stype in ("INITIAL", "SUPPORT") and "partition_id" not in meta:
+        # Derive partition from agent index so distinct foragers get distinct
+        # (partition_id, depositor) pairs — required for support_diversity > 1.
+        agent_id = meta.get("depositor_agent_id", meta.get("scout_agent_id", ""))
+        parts = agent_id.split("_")
+        if len(parts) >= 3 and parts[2].isdigit():
+            meta["partition_id"] = f"partition_{parts[2]}"
+        else:
+            meta["partition_id"] = "test_partition_0"
     return store.deposit(
         signal_type=stype,
         content=content,
         strength=strength,
         depositor=depositor,
         parent_id=parent_id,
-        metadata=metadata or {},
+        metadata=meta,
     )
 
 
@@ -50,16 +60,15 @@ class TestKBJunkFilter(unittest.TestCase):
                        metadata={"scout_agent_id": "scout_R1_0"})
         if iid is None:
             self.skipTest("deposit rejected (store dedup)")
-        # Four distinct forager supports: clears support_diversity >= 3
-        # AND clears the credibility gate via support_diversity >= 4
-        # (no verification, no dissent in this setup).
-        for strategy in (
+        # Four distinct forager supports with distinct agent indices so each
+        # gets a unique (partition_id, depositor) pair — satisfies diversity >= 4.
+        for i, strategy in enumerate((
             "stratified_extremes", "medium_only",
             "under_supported_clusters", "weighted_default",
-        ):
+        )):
             _deposit(store, SUPPORT, f"Evidence supports the claim ({strategy}).",
                      depositor="forager", parent_id=iid,
-                     metadata={"depositor_agent_id": f"forager_R1_0_{strategy}"})
+                     metadata={"depositor_agent_id": f"forager_R1_{i}_{strategy}"})
         proj = build_projection(store, has_validators=False)
         return store, proj
 
@@ -107,16 +116,15 @@ class TestKBRoundTrip(unittest.TestCase):
                        metadata={"scout_agent_id": "scout_R1_0"})
         if iid is None:
             self.skipTest("deposit rejected")
-        # Four distinct forager strategies: clears support_diversity >= 3
-        # AND the credibility gate (support_diversity >= 4) since there's
-        # no verification and no dissent.
-        for strategy in (
+        # Four distinct forager strategies with distinct agent indices so each
+        # gets a unique (partition_id, depositor) pair — satisfies diversity >= 4.
+        for i, strategy in enumerate((
             "stratified_extremes", "medium_only",
             "under_supported_clusters", "weighted_default",
-        ):
+        )):
             _deposit(store, SUPPORT, f"Confirming evidence ({strategy}).",
                      depositor="forager", parent_id=iid,
-                     metadata={"depositor_agent_id": f"forager_R1_0_{strategy}"})
+                     metadata={"depositor_agent_id": f"forager_R1_{i}_{strategy}"})
         proj = build_projection(store, has_validators=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:

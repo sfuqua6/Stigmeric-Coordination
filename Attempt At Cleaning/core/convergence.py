@@ -26,21 +26,38 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
+import os
+
 from .signal_store import SignalStore
 from .signal_types import INITIAL, VERIFICATION
 from .projection import build_projection
 from .config import SURVIVAL_TASK_PROFILES, SURVIVAL_DEFAULT_PROFILE
 
 
+def _float_env(key: str, default: float) -> float:
+    try:
+        return float(os.environ[key])
+    except (KeyError, ValueError):
+        return default
+
+
+def _int_env(key: str, default: int) -> int:
+    try:
+        return int(os.environ[key])
+    except (KeyError, ValueError):
+        return default
+
+
 # Hard floors — never halt before these are met (any halt path).
-MIN_ITERATIONS = 50
-MIN_TIME_S = 60.0
-MIN_INITIALS_FOR_HALT = 6
+# Override via env vars for fast smoke tests (e.g. SWARM_MIN_TIME_S=0).
+MIN_ITERATIONS = _int_env("SWARM_MIN_ITERATIONS", 50)
+MIN_TIME_S = _float_env("SWARM_MIN_TIME_S", 60.0)
+MIN_INITIALS_FOR_HALT = _int_env("SWARM_MIN_INITIALS_FOR_HALT", 6)
 # Require at least this many inter-cluster edges before halting. Prevents
 # premature halt when clusters exist but haven't been cross-referenced by
 # the field (which typically happens within a few iterations of the first
 # surviving cluster forming). 0 disables the floor.
-MIN_INTER_CLUSTER_EDGES = 1
+MIN_INTER_CLUSTER_EDGES = _int_env("SWARM_MIN_INTER_CLUSTER_EDGES", 1)
 
 # Quality gate thresholds.
 QUALITY_SUPPORT_DIV = 4
@@ -50,13 +67,13 @@ QUALITY_DUAL_VALIDATORS = 2          # require this many independent VERIFICATIO
 QUALITY_HOLD_ITERATIONS = 30         # wait this many iters after quality_met flip
 
 # Saturation thresholds.
-SAT_NO_NEW_SURVIVING = 60
+SAT_NO_NEW_SURVIVING = _int_env("SWARM_SAT_NO_NEW_SURVIVING", 60)
 SAT_STRENGTH_DELTA = 0.02
 SAT_WINDOW = 60
 
 # Hard caps.
-MAX_ITERATIONS = 2000
-MAX_TIME_S = 900.0
+MAX_ITERATIONS = _int_env("SWARM_MAX_ITERATIONS", 2000)
+MAX_TIME_S = _float_env("SWARM_MAX_TIME_S", 900.0)
 
 
 @dataclass
@@ -89,7 +106,8 @@ class ConvergenceDetector:
                  min_initials_for_halt: int = MIN_INITIALS_FOR_HALT,
                  max_iterations: int = MAX_ITERATIONS,
                  max_time_s: float = MAX_TIME_S,
-                 task_type: Optional[str] = None):
+                 task_type: Optional[str] = None,
+                 tick_interval: int = 10):
         self.store = store
         self.min_iterations = min_iterations
         self.min_time_s = min_time_s
@@ -107,6 +125,7 @@ class ConvergenceDetector:
             self.task_profile = SURVIVAL_TASK_PROFILES.get(
                 task_type, SURVIVAL_DEFAULT_PROFILE,
             )
+        self.tick_interval = max(1, tick_interval)
         self.state = DetectorState()
 
     # ------------------------------------------------------------------
@@ -114,12 +133,22 @@ class ConvergenceDetector:
     # ------------------------------------------------------------------
 
     def tick(self, iteration_counter: int, elapsed_s: float) -> None:
-        """Update state from the live signal store. Cheap to call."""
+        """Update state from the live signal store.
+
+        build_projection is expensive (full DAG walk); only run it every
+        tick_interval calls. Strength history is updated every call so
+        saturation detection stays smooth.
+        """
+        # Always update strength history (cheap store stat).
+        max_strength = self.store.stats().get("max_strength", 0.0) or 0.0
+        self.state.strength_history.append(max_strength)
+
+        if iteration_counter % self.tick_interval != 0:
+            return
+
         proj = build_projection(self.store, has_validators=True,
                                  task_type=self.task_type)
         n_surviving = len(proj.surviving)
-        max_strength = self.store.stats().get("max_strength", 0.0) or 0.0
-        self.state.strength_history.append(max_strength)
 
         # New surviving cluster?
         if n_surviving > self.state.n_surviving_last:

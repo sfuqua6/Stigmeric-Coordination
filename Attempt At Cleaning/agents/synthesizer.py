@@ -1098,6 +1098,19 @@ class Synthesizer:
     ) -> dict:
         """Ask the LLM to plan the synthesis from STRUCTURE alone.
 
+        DUAL-PLANNER NOTE: There are two planners in this codebase.
+        (1) This method — LLM-based. Sees a structural digest (IDs, counts,
+            80-char previews). Returns JSON with render_full / section3_only /
+            merge_groups. Lives in the Synthesizer agent because it still makes
+            an LLM call, even though it reads no signal content.
+        (2) core/projection.build_plan() — pure-Python, deterministic. Uses
+            composite scoring + MMR over embeddings. No LLM. Called by the
+            ConvergenceDetector and any path that needs a plan without a GPU.
+        This method falls back to build_plan() if the LLM call fails or
+        yields no valid cluster IDs. TODO: evaluate whether the LLM planner
+        adds measurable ranking quality over build_plan() in ablation runs;
+        if not, retire it and always use build_plan().
+
         The planner is shown a digest of the surviving + contested clusters:
         cluster IDs, type, support / dissent / verification *counts* and
         *scores*, support_depth, and a short preview (first 80 chars of the

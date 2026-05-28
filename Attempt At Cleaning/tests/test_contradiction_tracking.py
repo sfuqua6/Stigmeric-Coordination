@@ -40,9 +40,12 @@ def _make_store() -> SignalStore:
 
 def _deposit(store, stype, content, strength=0.7, depositor="scout",
              parent_id=None, metadata=None):
+    meta = dict(metadata or {})
+    if stype in ("INITIAL", "SUPPORT") and "partition_id" not in meta:
+        meta["partition_id"] = "test_partition_0"
     return store.deposit(
         signal_type=stype, content=content, strength=strength,
-        depositor=depositor, parent_id=parent_id, metadata=metadata or {},
+        depositor=depositor, parent_id=parent_id, metadata=meta,
     )
 
 

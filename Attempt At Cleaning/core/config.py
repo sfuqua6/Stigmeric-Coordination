@@ -182,6 +182,14 @@ DIVERSITY_THRESHOLD = 0.85
 BOOST_THRESHOLD = 0.7
 BOOST_BETA = 0.2
 
+# Maximum cumulative support_diversity boost a KB prior-consensus entry may
+# contribute to a matching cluster across all runs. Caps the rich-get-richer
+# dynamic: without this, a cluster that survives N times accumulates N×(+1)
+# to its stored support_diversity in the KB and effectively never faces the
+# weakly_supported gate again. Empirically calibrate once real-retriever runs
+# accumulate; 4 is a conservative floor (= ~SURVIVAL_BROAD_SUPPORT).
+MAX_KB_DIVERSITY_BOOST = 4
+
 # ---------------------------------------------------------------------------
 # Logit-space dynamics (DEFERRED.md P2.1 / R4 / M6)
 # ---------------------------------------------------------------------------
@@ -353,6 +361,34 @@ CLUSTER_JOIN_THRESHOLD = 0.88     # cosine sim above which a signal joins an exi
 CLUSTER_SPLIT_THRESHOLD = 0.78    # sim below which a member is ejected during reanchor
 CLUSTER_REANCHOR_EVERY = 8        # recompute medoid every N deposits into a cluster
 CLUSTERING_ENABLED_TYPES = {"INITIAL", "SUPPORT", "OBJECTION"}
+
+# ---------------------------------------------------------------------------
+# Stigmergy upgrade flags (Gaps 1–4)
+# ---------------------------------------------------------------------------
+
+# Gap 1: cluster-aware sampling — workers follow semantic trails instead of
+# sampling from a flat list of all INITIAL signals.
+USE_CLUSTER_AWARE_SAMPLING: bool = True
+
+# Gap 2: trail amplification — when a SUPPORT lands against a cluster,
+# sibling members receive a small logit-space boost.
+USE_TRAIL_AMPLIFICATION: bool = True
+# Fraction of DELTA_AMPLIFY applied to cluster siblings when a SUPPORT lands.
+# Scaled by 1/cluster_size so large clusters don't compound unboundedly.
+DELTA_CLUSTER_TRAIL: float = 0.03
+
+# Gap 3: local action bias — local cluster field state biases choose_action()
+# per-worker rather than relying solely on global share enforcement.
+USE_LOCAL_ACTION_BIAS: bool = True
+LOCAL_BIAS_DEVELOP_LOW_DIVERSITY: float = 2.0   # cluster support_diversity < 2
+LOCAL_BIAS_REFINE_HAS_DISSENT: float = 2.0      # cluster has OBJECTION/CRITIQUE_NEG
+LOCAL_BIAS_VALIDATE_NO_VERIFY: float = 2.0      # cluster has no VERIFICATION
+LOCAL_BIAS_CHAIN_DEEP_SUPPORT: float = 1.5      # cluster support_count >= 3
+
+# Gap 4: worker semantic position — running centroid of own deposit embeddings
+# so workers can specialize into niches and cluster sampling is position-biased.
+USE_WORKER_POSITION: bool = True
+WORKER_POSITION_WINDOW: int = 8
 
 # ---------------------------------------------------------------------------
 # Survival-filter thresholds (consumed by core/projection.py)

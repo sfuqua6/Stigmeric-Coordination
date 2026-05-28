@@ -43,6 +43,7 @@ from .config import (
     SURVIVAL_TASK_PROFILES, SURVIVAL_DEFAULT_PROFILE,
     RENDER_K, DISSENT_K, PLANNER_MMR_LAMBDA,
     VERIFICATION_WEIGHT, DISSENT_WEIGHT,
+    MAX_KB_DIVERSITY_BOOST,
 )
 
 # Module-private alias preserved for back-compat with existing code paths
@@ -672,8 +673,14 @@ def _parse_partition_tag(scout_agent_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
-    """Cosine similarity between two already-normalized vectors."""
-    return float(sum(x * y for x, y in zip(a, b)))
+    """Cosine similarity. signal_store normalizes at encode time so live
+    signals are unit-length; KB embeddings from older runs may not be.
+    Always computes full cosine to handle both cases correctly."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    denom = norm_a * norm_b
+    return float(dot / denom) if denom > _EPS else 0.0
 
 
 def _cluster_initials(
@@ -953,11 +960,8 @@ def _apply_kb(
                 if entry_emb is not None:
                     sim = _cosine_sim(rep_emb, entry_emb)
                     if sim >= _KB_MATCH_THRESHOLD:
-                        # Bounded boost: a prior cluster contributes at most +2,
-                        # using run_count as the proxy for accumulated evidence.
-                        # Caps the rich-get-richer dynamic from unbounded support_diversity.
                         run_count = entry.get("run_count", 1)
-                        cp.support_diversity += min(2, run_count)
+                        cp.support_diversity += min(MAX_KB_DIVERSITY_BOOST, run_count)
                         break
 
 

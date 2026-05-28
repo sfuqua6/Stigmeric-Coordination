@@ -25,6 +25,7 @@ does not touch ancestor text or other agents' history.
 from __future__ import annotations
 
 import asyncio
+import re
 import random
 import time
 from collections import Counter, deque
@@ -215,7 +216,8 @@ class PoolState:
 
 def choose_action(field_state: FieldState, worker_history: deque,
                   pool_state: PoolState, rng: random.Random,
-                  disabled_actions: Optional[set] = None) -> Optional[str]:
+                  disabled_actions: Optional[set] = None,
+                  local_biases: Optional[dict] = None) -> Optional[str]:
     """Pick an action for one worker iteration.
 
     Returns None when nothing is available (only SCOUT is precondition-free,
@@ -227,7 +229,8 @@ def choose_action(field_state: FieldState, worker_history: deque,
       3. Disabled actions (bundle-specific, e.g. OBJECT/VALIDATE on
          "creative") are removed from the candidate set entirely.
       4. Share floors/ceilings: bias weight ×1.5 below min, ×0.3 above max.
-      5. Recency penalty: a worker's recent action gets ×0.7 to avoid loops.
+      5. Local field bias (Gap 3): cluster-local state multipliers per action.
+      6. Recency penalty: a worker's recent action gets ×0.7 to avoid loops.
     """
     disabled = disabled_actions or frozenset()
     cold_start = (
@@ -269,6 +272,9 @@ def choose_action(field_state: FieldState, worker_history: deque,
                 w *= 1.5
             elif share > target["max"]:
                 w *= 0.3
+        # Local field bias (Gap 3 fix): multiply by cluster-local state signal
+        if local_biases and a in local_biases:
+            w *= local_biases[a]
         # Recency penalty: if this worker just did this action, dampen.
         if worker_history and a in list(worker_history)[-2:]:
             w *= 0.7
@@ -281,31 +287,40 @@ def choose_action(field_state: FieldState, worker_history: deque,
 # ---------------------------------------------------------------------------
 
 def _sample_initial(store: SignalStore, recent: Counter,
-                    rng: random.Random) -> Optional[Signal]:
-    initials = store.by_type(INITIAL)
-    if not initials:
+                    rng: random.Random,
+                    worker_centroid=None) -> Optional[Signal]:
+    results = store.sample_from_clusters(INITIAL, n=1,
+                                         worker_centroid=worker_centroid)
+    if not results:
         return None
-    weights = []
-    for s in initials:
-        w = max(0.05, s.strength)
-        if recent.get(s.id, 0) > 0:
-            w *= _RECENT_TARGET_PENALTY
-        weights.append(w)
-    return rng.choices(initials, weights=weights, k=1)[0]
+    s = results[0]
+    if recent.get(s.id, 0) > 0:
+        # Got a recently-visited signal; try once more then accept it
+        alt = store.sample_from_clusters(INITIAL, n=1,
+                                          worker_centroid=worker_centroid)
+        if alt and recent.get(alt[0].id, 0) == 0:
+            return alt[0]
+    return s
 
 
 def _sample_underserved_initial(store: SignalStore, recent: Counter,
-                                 rng: random.Random) -> Optional[Signal]:
+                                 rng: random.Random,
+                                 worker_centroid=None) -> Optional[Signal]:
     underserved = store.signals_with_few_children_of_type(INITIAL, SUPPORT, 2)
-    pool_list = underserved or store.by_type(INITIAL)
+    if underserved:
+        results = store.sample_from_clusters(INITIAL, n=1,
+                                              worker_centroid=worker_centroid)
+        # Prefer underserved members; if cluster sample landed on a well-served
+        # signal, check if the cluster has underserved members and pick one.
+        if results and results[0] in underserved:
+            return results[0]
+        # Fallback: pick the least-served from the underserved list
+        weights = [max(0.05, s.strength) for s in underserved]
+        return rng.choices(underserved, weights=weights, k=1)[0]
+    pool_list = store.by_type(INITIAL)
     if not pool_list:
         return None
-    weights = []
-    for s in pool_list:
-        w = max(0.05, s.strength)
-        if recent.get(s.id, 0) > 0:
-            w *= _RECENT_TARGET_PENALTY
-        weights.append(w)
+    weights = [max(0.05, s.strength) for s in pool_list]
     return rng.choices(pool_list, weights=weights, k=1)[0]
 
 
@@ -437,6 +452,113 @@ def _cluster_dissent(
 
 
 # ---------------------------------------------------------------------------
+# SAFE retrieval helpers (SAFE + Step-Back + HyDE per-atom verification)
+# ---------------------------------------------------------------------------
+
+# FLARE uncertainty threshold: confidence below this triggers retrieval.
+_FLARE_TAU = 0.6
+
+# Non-factual task types: use engages/quality schema rather than supports/confidence.
+_NON_FACTUAL_TASKS = {"debate", "analysis", "problem_solving", "creative"}
+
+
+async def _safe_decompose(content: str, llm, max_atoms: int = 3) -> list[dict]:
+    """Decompose a claim into atomic facts with centrality weights.
+
+    Each atom is a dict: {"text": str, "weight": float}.  Falls back to a
+    single atom (the whole content) when the LLM response is unparseable.
+    """
+    prompt = (
+        f"Break this claim into at most {max_atoms} independently verifiable "
+        f"atomic facts. For each fact write one line:\n"
+        f"ATOM: <one-sentence proposition> | WEIGHT: <centrality 0.0-1.0>\n\n"
+        f"WEIGHT reflects how central the proposition is to the main assertion "
+        f"(1.0 = load-bearing; 0.1 = incidental background).\n\n"
+        f"Claim: {content[:400]}"
+    )
+    try:
+        raw = await llm.generate(
+            prompt, role="validator", max_tokens=220, temperature=0.2
+        )
+        atoms: list[dict] = []
+        for line in raw.strip().splitlines():
+            upper = line.upper()
+            if "ATOM:" not in upper:
+                continue
+            parts = line.split("|")
+            atom_text = parts[0].split(":", 1)[-1].strip().strip('"\'')
+            weight = 1.0
+            if len(parts) > 1 and "WEIGHT:" in parts[1].upper():
+                try:
+                    weight = max(0.1, min(1.0, float(parts[1].split(":", 1)[-1].strip())))
+                except ValueError:
+                    pass
+            if atom_text and len(atom_text.split()) >= 3:
+                atoms.append({"text": atom_text, "weight": weight})
+        if atoms:
+            return atoms[:max_atoms]
+    except Exception:
+        pass
+    # Fallback: whole content as single atom.
+    return [{"text": content[:200], "weight": 1.0}]
+
+
+async def _safe_score_atom(atom_text: str, snippet: str, llm,
+                            task_type: str = None) -> float:
+    """Score one atomic fact against a retrieved snippet.
+
+    Uses the engages/quality schema for non-factual tasks and
+    supports/confidence for factual tasks.  Returns 0.5 (abstain) on failure.
+    """
+    if task_type in _NON_FACTUAL_TASKS:
+        prompt = (
+            f"Does this snippet substantively engage with the following claim?\n"
+            f"Claim: {atom_text}\n"
+            f"Snippet: {snippet[:350]}\n"
+            f"Reply with only: SCORE: X.X  (1.0=fully engages, 0.0=irrelevant)"
+        )
+    else:
+        prompt = (
+            f"Does this snippet support the following factual claim?\n"
+            f"Claim: {atom_text}\n"
+            f"Snippet: {snippet[:350]}\n"
+            f"Reply with only: SCORE: X.X  "
+            f"(1.0=strongly supports, 0.5=neutral/no result, 0.0=contradicts)"
+        )
+    try:
+        raw = await llm.generate(
+            prompt, role="validator", max_tokens=10, temperature=0.1
+        )
+        m = re.search(r"SCORE\s*[:=]\s*([0-9.]+)", raw, re.IGNORECASE)
+        if m:
+            return max(0.0, min(1.0, float(m.group(1))))
+    except Exception:
+        pass
+    return 0.5  # abstain
+
+
+def _format_safe_external(atom_results: list[dict]) -> str:
+    """Render atom-level verification results as the external-snippet block.
+
+    The main validate_prompt sees this string as its 'external_snippet',
+    allowing the LLM to produce a one-sentence overall assessment grounded
+    in the per-atom evidence that was already gathered.
+    """
+    lines = ["=== ATOMIC VERIFICATION RESULTS ===\n"]
+    total_weight = sum(a.get("weight", 1.0) for a in atom_results) or 1.0
+    agg = sum(a.get("score", 0.5) * a.get("weight", 1.0) for a in atom_results) / total_weight
+    for i, a in enumerate(atom_results, 1):
+        lines.append(
+            f"ATOM {i} [weight={a.get('weight', 1.0):.2f}]: {a['text']}\n"
+            f"  QUERY: {a.get('query', '')}\n"
+            f"  SOURCE: {a.get('snippet_tag', '(no result)')}\n"
+            f"  ATOM SCORE: {a.get('score', 0.5):.2f}\n"
+        )
+    lines.append(f"WEIGHTED AGGREGATE SCORE: {agg:.2f}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
 
@@ -466,6 +588,9 @@ class Worker:
         self._query_history: list[str] = []
         # Track own deposits so SCOUT re-seed can avoid restating them.
         self._own_scout_excerpts: list[str] = []
+        # Gap 4: semantic position as running centroid of own deposit embeddings.
+        self._position_centroid: Optional[list[float]] = None
+        self._position_embs: list[list[float]] = []   # recent window
         # Bundle-disabled actions (cached). Roles set to None in the bundle's
         # ROLE_TO_ENGINE map cause their action to drop out of choose_action.
         self._disabled_actions: frozenset = self._compute_disabled_actions()
@@ -479,6 +604,50 @@ class Worker:
             if self.router.role_disabled(role):
                 out.add(act)
         return frozenset(out)
+
+    def _local_action_biases(
+        self, store: SignalStore, target: Optional[Signal]
+    ) -> dict:
+        """Compute local field-state action multipliers for the target's cluster (Gap 3 fix).
+
+        Returns a dict of {action: multiplier} reflecting what this specific
+        part of the field needs, applied on top of global share pressure.
+        Returns empty dict when USE_LOCAL_ACTION_BIAS is False or target is None.
+        """
+        from core.config import (
+            USE_LOCAL_ACTION_BIAS,
+            LOCAL_BIAS_DEVELOP_LOW_DIVERSITY,
+            LOCAL_BIAS_REFINE_HAS_DISSENT,
+            LOCAL_BIAS_VALIDATE_NO_VERIFY,
+            LOCAL_BIAS_CHAIN_DEEP_SUPPORT,
+        )
+        if not USE_LOCAL_ACTION_BIAS or target is None:
+            return {}
+
+        biases: dict = {}
+
+        children = [store.get(cid) for cid in store.by_parent(target.id)]
+        children = [c for c in children if c is not None]
+
+        support_count = sum(1 for c in children
+                            if c.type in (SUPPORT, CRITIQUE_POSITIVE))
+        dissent_count = sum(1 for c in children
+                            if c.type in (CRITIQUE_NEGATIVE, OBJECTION))
+        verify_count = sum(1 for c in children if c.type == VERIFICATION)
+
+        if support_count < 2:
+            biases[DEVELOP] = LOCAL_BIAS_DEVELOP_LOW_DIVERSITY
+
+        if dissent_count >= 1:
+            biases[REFINE] = LOCAL_BIAS_REFINE_HAS_DISSENT
+
+        if support_count >= 2 and verify_count == 0:
+            biases[VALIDATE] = LOCAL_BIAS_VALIDATE_NO_VERIFY
+
+        if support_count >= 3:
+            biases[CHAIN] = LOCAL_BIAS_CHAIN_DEEP_SUPPORT
+
+        return biases
 
     def _llm_for_action(self, action: str):
         """Resolve the right LLM backend for this action.
@@ -496,9 +665,11 @@ class Worker:
     async def iterate(self, store: SignalStore, pool_state: PoolState,
                       field_state: FieldState) -> Optional[str]:
         """Run one iteration. Returns the action name on deposit, None on skip."""
+        local_biases: dict = {}  # populated after first gather_target
         action = choose_action(field_state, self.recent_actions, pool_state,
                                self._rng,
-                               disabled_actions=self._disabled_actions)
+                               disabled_actions=self._disabled_actions,
+                               local_biases=local_biases)
         if action is None:
             return None
 
@@ -507,6 +678,9 @@ class Worker:
         target, retrieved_chunks, query, dissent = await self._gather_target(
             action, store, pool_state, field_state,
         )
+
+        # Gap 3: update local biases from first available target.
+        local_biases = self._local_action_biases(store, target)
 
         # If the action needs a target and none is available, re-snapshot
         # and re-pick. Cap re-pick at 1 to avoid livelock.
@@ -517,7 +691,8 @@ class Worker:
             )
             action = choose_action(fresh, self.recent_actions, pool_state,
                                    self._rng,
-                                   disabled_actions=self._disabled_actions) or SCOUT
+                                   disabled_actions=self._disabled_actions,
+                                   local_biases=local_biases) or SCOUT
             target, retrieved_chunks, query, dissent = await self._gather_target(
                 action, store, pool_state, fresh,
             )
@@ -567,6 +742,28 @@ class Worker:
             print(f"[worker {self.agent_id}] parse failed for {action}: "
                   f"{type(exc).__name__}: {exc}")
             return None
+
+        # SAFE post-parse override: substitute pre-computed atom scores and
+        # extended metadata when _gather_target ran the SAFE decomposition path.
+        if action == VALIDATE:
+            _atoms = getattr(self, "_validate_atoms", None)
+            _agg = getattr(self, "_validate_agg_score", None)
+            if _atoms and _agg is not None:
+                parsed = ParsedDeposit(
+                    signal_type=parsed.signal_type,
+                    content=parsed.content,
+                    strength=round(_agg, 4),
+                    parent_id_override=parsed.parent_id_override,
+                    metadata={
+                        **(parsed.metadata or {}),
+                        "atoms": _atoms,
+                        "aggregation": "weighted_mean",
+                        "atom_count": len(_atoms),
+                        "score": round(_agg, 4),
+                    },
+                )
+                self._validate_atoms = None
+                self._validate_agg_score = None
 
         from agents.base import strip_reasoning
         content = strip_reasoning(parsed.content or "")
@@ -628,6 +825,25 @@ class Worker:
             pool_state.record_action(action, target.id if target else None)
         if action == SCOUT:
             self._own_scout_excerpts.append(content)
+
+        # Gap 4: update semantic position from this deposit's embedding
+        from core.config import USE_WORKER_POSITION, WORKER_POSITION_WINDOW
+        if USE_WORKER_POSITION:
+            emb = store.get_embedding(sid)
+            if emb is not None:
+                self._position_embs.append(emb)
+                if len(self._position_embs) > WORKER_POSITION_WINDOW:
+                    self._position_embs.pop(0)
+                if self._position_embs:
+                    n_dims = len(self._position_embs[0])
+                    centroid = [
+                        sum(e[i] for e in self._position_embs) / len(self._position_embs)
+                        for i in range(n_dims)
+                    ]
+                    norm = sum(x * x for x in centroid) ** 0.5
+                    if norm > 1e-9:
+                        self._position_centroid = [x / norm for x in centroid]
+
         return action
 
     # ---- target gathering --------------------------------------------------
@@ -653,6 +869,24 @@ class Worker:
                     self._query_history,
                     task_type=self.task_type,
                 )
+                # Step-Back + HyDE (FLARE-light): once past cold-start, lift the
+                # query to a higher abstraction level so the vocabulary matches
+                # confirming documents rather than the question itself.  Skip
+                # if the resulting query is already well-served (FLARE-light dedup).
+                if query and pool_state.cold_start_done:
+                    from core.query_planner import plan_step_back, plan_hyde_query
+                    _scout_llm = self._llm_for_action(SCOUT)
+                    try:
+                        _step_back = await plan_step_back(query, _scout_llm)
+                        _hyde_q = await plan_hyde_query(_step_back, _scout_llm)
+                        # Prefer HyDE query; fall back to step-back phrase; then keep original.
+                        if _hyde_q and find_cached_query(_hyde_q, pool_state.served_queries) is None:
+                            query = _hyde_q
+                        elif _step_back and find_cached_query(_step_back, pool_state.served_queries) is None:
+                            query = _step_back
+                        # else: original query is fine (already cached or HyDE failed)
+                    except Exception:
+                        pass
                 cached_q = find_cached_query(query, pool_state.served_queries) if query else None
                 if cached_q is not None and cached_q != query:
                     # Skip the network round-trip — another worker already
@@ -703,6 +937,7 @@ class Worker:
         if action == DEVELOP:
             target = _sample_underserved_initial(
                 store, pool_state.recent_targets, self._rng,
+                worker_centroid=self._position_centroid,
             )
             if target is None:
                 return None, [], "", None
@@ -719,39 +954,65 @@ class Worker:
                 1 for cid in store.by_parent(target.id)
                 if store.get(cid) and store.get(cid).type == SUPPORT
             )
+            # FLARE-strict: structural trigger (< 2 supports) is necessary but
+            # not sufficient — only retrieve when the LM self-rates as uncertain.
             if n_support < 2:
                 try:
                     from core.search_tool import search as _search, summarize_for_signal
-                    from core.query_planner import plan_develop_query, find_cached_query
-                    query = plan_develop_query(target.content, pool_state.served_queries,
-                                                task_type=self.task_type)
-                    if query:
-                        cached_q = find_cached_query(query, pool_state.served_queries)
-                        if cached_q is not None and cached_q != query:
-                            query = cached_q
-                            retrieved = _search(query, max_results=5,
-                                                task_type=getattr(self, "task_type", None))
-                        elif pool_state.try_reserve_search():
-                            retrieved = _search(query, max_results=5,
-                                                task_type=getattr(self, "task_type", None))
-                        else:
-                            retrieved = []
-                        if retrieved:
-                            store.deposit(
-                                signal_type=SEARCH,
-                                content=summarize_for_signal(query, retrieved),
-                                strength=0.4,
-                                depositor="develop",
-                                parent_id=target.id,
-                                metadata={
-                                    "depositor_agent_id": self.agent_id,
-                                    "query": query,
-                                    "n_results": len(retrieved),
-                                    "trigger": "sparse_support",
-                                },
+                    from core.query_planner import (
+                        plan_develop_query, find_cached_query,
+                        rate_confidence, plan_step_back, plan_hyde_query,
+                    )
+                    _dev_llm = self._llm_for_action(DEVELOP)
+                    _conf = await rate_confidence(target.content, _dev_llm)
+                    if _conf >= _FLARE_TAU:
+                        # LM is confident — skip retrieval for this iteration.
+                        pass
+                    else:
+                        # Low confidence: build HyDE query from step-back of target.
+                        _step_back = await plan_step_back(target.content, _dev_llm)
+                        _hyde_q = await plan_hyde_query(_step_back, _dev_llm)
+                        # Fall back to stance-based query if HyDE returned nothing clean.
+                        query = (
+                            _hyde_q
+                            if _hyde_q
+                            else plan_develop_query(
+                                target.content, pool_state.served_queries,
+                                task_type=self.task_type,
                             )
-                            prev = pool_state.served_queries.get(query, 0)
-                            pool_state.served_queries[query] = max(prev, len(retrieved))
+                        )
+                        if query:
+                            cached_q = find_cached_query(query, pool_state.served_queries)
+                            if cached_q is not None and cached_q != query:
+                                query = cached_q
+                                retrieved = _search(
+                                    query, max_results=5,
+                                    task_type=getattr(self, "task_type", None),
+                                )
+                            elif pool_state.try_reserve_search():
+                                retrieved = _search(
+                                    query, max_results=5,
+                                    task_type=getattr(self, "task_type", None),
+                                )
+                            else:
+                                retrieved = []
+                            if retrieved:
+                                store.deposit(
+                                    signal_type=SEARCH,
+                                    content=summarize_for_signal(query, retrieved),
+                                    strength=0.4,
+                                    depositor="develop",
+                                    parent_id=target.id,
+                                    metadata={
+                                        "depositor_agent_id": self.agent_id,
+                                        "query": query,
+                                        "n_results": len(retrieved),
+                                        "trigger": "sparse_support_flare",
+                                        "flare_confidence": round(_conf, 3),
+                                    },
+                                )
+                                prev = pool_state.served_queries.get(query, 0)
+                                pool_state.served_queries[query] = max(prev, len(retrieved))
                 except Exception:
                     retrieved = []
             return target, retrieved, query, dissent
@@ -761,7 +1022,8 @@ class Worker:
             return target, [], "", None
 
         if action == CRITIQUE:
-            target = _sample_initial(store, pool_state.recent_targets, self._rng)
+            target = _sample_initial(store, pool_state.recent_targets, self._rng,
+                                     worker_centroid=self._position_centroid)
             return target, [], "", None
 
         if action == OBJECT:
@@ -786,36 +1048,107 @@ class Worker:
             )
             if target is None:
                 return None, [], "", None
+            # SAFE: decompose the cluster representative into atomic facts,
+            # issue step-back + HyDE queries per atom, score each independently,
+            # and aggregate with centrality weights.
+            chosen_llm = self._llm_for_action(VALIDATE)
+            query = ""
             try:
                 from core.search_tool import search as _search
-                from core.query_planner import plan_validate_query, find_cached_query
-                query = plan_validate_query(target.content)
-                if query:
-                    cached_q = find_cached_query(query, pool_state.served_queries)
-                    if cached_q is not None and cached_q != query:
-                        query = cached_q
-                        hits = _search(query, max_results=3)
-                    elif pool_state.try_reserve_search():
-                        hits = _search(query, max_results=3)
+                from core.query_planner import (
+                    plan_step_back, plan_hyde_query, find_cached_query,
+                )
+                atoms = await _safe_decompose(target.content, chosen_llm)
+                atom_results: list[dict] = []
+                for atom in atoms:
+                    atom_text = atom["text"]
+                    atom_weight = atom.get("weight", 1.0)
+                    atom_query = ""
+                    snippet = ""
+                    snippet_tag = "(no result)"
+                    try:
+                        step_back = await plan_step_back(atom_text, chosen_llm)
+                        hyde_q = await plan_hyde_query(step_back, chosen_llm)
+                        # Dedup: reuse a cached query if semantically equivalent.
+                        atom_query = hyde_q or step_back
+                        cached_q = find_cached_query(atom_query, pool_state.served_queries) if atom_query else None
+                        if cached_q is not None:
+                            atom_query = cached_q
+                            hits = _search(atom_query, max_results=2)
+                        elif atom_query and pool_state.try_reserve_search():
+                            hits = _search(atom_query, max_results=2)
+                        else:
+                            hits = []
+                        if hits and atom_query:
+                            prev = pool_state.served_queries.get(atom_query, 0)
+                            pool_state.served_queries[atom_query] = max(prev, len(hits))
+                            if not query:
+                                query = atom_query
+                    except Exception:
+                        hits = []
+                    if hits:
+                        tag = (getattr(hits[0], "source_tag", "") or "")[:120]
+                        body = (getattr(hits[0], "text", "") or "")[:300]
+                        snippet = f"[{tag}]\n{body}"
+                        snippet_tag = tag or "(unnamed source)"
+                    else:
+                        snippet = f"(no result for: {atom_query!r})"
+                    # Score this atom against its snippet.
+                    try:
+                        atom_score = await _safe_score_atom(
+                            atom_text, snippet, chosen_llm,
+                            task_type=self.task_type,
+                        )
+                    except Exception:
+                        atom_score = 0.5
+                    atom_results.append({
+                        "text": atom_text,
+                        "weight": atom_weight,
+                        "query": atom_query,
+                        "score": atom_score,
+                        "snippet_tag": snippet_tag,
+                    })
+                # Centrality-weighted mean across atoms.
+                total_w = sum(a["weight"] for a in atom_results) or 1.0
+                agg_score = sum(a["score"] * a["weight"] for a in atom_results) / total_w
+                self._validate_atoms = atom_results
+                self._validate_agg_score = agg_score
+                self._validate_external = _format_safe_external(atom_results)
+            except Exception as exc:
+                print(f"[validate {self.agent_id}] SAFE pass failed: "
+                      f"{type(exc).__name__}: {exc}; falling back to single-query path")
+                # Legacy fallback: single keyphrase → single snippet.
+                self._validate_atoms = None
+                self._validate_agg_score = None
+                try:
+                    from core.query_planner import plan_validate_query, find_cached_query
+                    from core.search_tool import search as _search
+                    query = plan_validate_query(target.content)
+                    if query:
+                        cached_q = find_cached_query(query, pool_state.served_queries)
+                        if cached_q is not None and cached_q != query:
+                            query = cached_q
+                        if pool_state.try_reserve_search():
+                            hits = _search(query, max_results=3)
+                        else:
+                            hits = []
                     else:
                         hits = []
-                else:
-                    hits = []
-                if hits:
-                    prev = pool_state.served_queries.get(query, 0)
-                    pool_state.served_queries[query] = max(prev, len(hits))
-                blocks = []
-                for c in hits[:2]:
-                    tag = (getattr(c, "source_tag", "") or "")[:120]
-                    body = (getattr(c, "text", "") or "")[:400]
-                    blocks.append(f"[{tag}]\n{body}")
-                external = "\n\n".join(blocks) if blocks else (
-                    f"(no external snippet found for {query!r})"
-                )
-            except Exception:
-                external = f"(search failed; query was {query!r})"
-            # Stash external snippet on the worker for _build_prompt to read.
-            self._validate_external = external
+                    if hits and query:
+                        pool_state.served_queries[query] = max(
+                            pool_state.served_queries.get(query, 0), len(hits)
+                        )
+                    blocks = []
+                    for c in hits[:2]:
+                        tag = (getattr(c, "source_tag", "") or "")[:120]
+                        body = (getattr(c, "text", "") or "")[:400]
+                        blocks.append(f"[{tag}]\n{body}")
+                    self._validate_external = (
+                        "\n\n".join(blocks) if blocks
+                        else f"(no snippet for {query!r})"
+                    )
+                except Exception:
+                    self._validate_external = "(search failed)"
             return target, [], query, None
 
         if action == REFINE:
@@ -828,6 +1161,7 @@ class Worker:
             if target is None:
                 target = _sample_underserved_initial(
                     store, pool_state.recent_targets, self._rng,
+                    worker_centroid=self._position_centroid,
                 )
                 if target is None:
                     return None, [], "", None

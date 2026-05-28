@@ -56,7 +56,10 @@ class TestStaticCritic(unittest.TestCase):
         sid = self.store.deposit(
             signal_type=SUPPORT, content=content, strength=0.6,
             depositor="developer",
-            metadata={"depositor_agent_id": "developer_R1_0_stratified_extremes"},
+            metadata={
+                "depositor_agent_id": "developer_R1_0_stratified_extremes",
+                "partition_id": "test_partition_0",
+            },
         )
         return sid
 

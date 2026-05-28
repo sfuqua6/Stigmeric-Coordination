@@ -35,7 +35,9 @@ This rewrite enforces four rules:
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+from collections import Counter
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -426,3 +428,101 @@ def plan_followup_query(original_query: str,
         if cand.lower() != original_query.lower():
             return cand
     return ""
+
+
+# ---------------------------------------------------------------------------
+# LLM-assisted query generation: Step-Back, HyDE, FLARE confidence
+# ---------------------------------------------------------------------------
+
+def _is_mock() -> bool:
+    return os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False")
+
+
+async def plan_step_back(text: str, llm) -> str:
+    """Step-Back Prompting: ask the LLM for the broader topic a claim addresses.
+
+    Returns a 4–8 word search-engine phrase, or a sentence fragment as fallback.
+    In mock mode returns a deterministic fragment so plumbing tests stay fast.
+    """
+    if not text:
+        return ""
+    if _is_mock():
+        return _extract_sentence_fragment(text, max_words=6)
+    prompt = (
+        "Identify the broader topic or background concept addressed by this text.\n"
+        "Reply with a 4-8 word search-engine query phrase only — "
+        "no explanation, no punctuation at the end.\n\n"
+        f"Text: {text[:200].strip()}"
+    )
+    try:
+        raw = await llm.generate(prompt, role="planner", max_tokens=20, temperature=0.3)
+        result = raw.strip().strip('"\'.,').split("\n")[0].strip()
+        words = result.split()
+        if 2 <= len(words) <= 12 and _is_clean_fragment(result):
+            return result
+    except Exception:
+        pass
+    return _extract_sentence_fragment(text, max_words=6)
+
+
+async def plan_hyde_query(topic: str, llm) -> str:
+    """HyDE-style lexical query generation for web (DDG) backends.
+
+    Generates a short hypothetical encyclopedia excerpt, then extracts its
+    top noun phrases as a DDG-compatible keyword query string.  The full text
+    is NOT sent to DDG — only the salient content words are, which aligns the
+    query vocabulary with confirming-document vocabulary rather than question
+    vocabulary (the HyDE insight, adapted for keyword search).
+    """
+    if not topic:
+        return topic
+    if _is_mock():
+        return topic
+    prompt = (
+        "Write a 40-50 word excerpt from a reliable encyclopedia article "
+        f"about this topic: {topic}\n"
+        "Write only the excerpt, nothing else."
+    )
+    try:
+        raw = await llm.generate(prompt, role="planner", max_tokens=70, temperature=0.4)
+        hypo_doc = raw.strip()
+        words = [w.strip(".,;:?!\"'()[]{}").lower() for w in hypo_doc.split()]
+        content_words = [w for w in words if w and w not in _STOP and len(w) > 3]
+        counts = Counter(content_words)
+        top = [w for w, _ in counts.most_common(5)]
+        query = " ".join(top)
+        if _is_clean_fragment(query):
+            return query
+    except Exception:
+        pass
+    return topic
+
+
+async def rate_confidence(claim: str, llm) -> float:
+    """FLARE confidence proxy: self-rated certainty about a claim from parametric memory.
+
+    Returns a float in [0, 1].  1.0 = highly confident (no retrieval needed);
+    0.0 = very uncertain (retrieval strongly recommended).
+    Mock mode returns 0.5 so FLARE never unconditionally fires or suppresses.
+    """
+    if not claim:
+        return 0.5
+    if _is_mock():
+        return 0.5
+    prompt = (
+        "Rate your confidence (0.0–1.0) that you can write factually accurate, "
+        "well-grounded content about the following claim from memory alone, "
+        "without needing external sources.\n"
+        "1.0 = highly confident, well-known topic.\n"
+        "0.0 = very uncertain, topic needs external grounding.\n"
+        "Reply with only: CONFIDENCE: X.X\n\n"
+        f"Claim: {claim[:200].strip()}"
+    )
+    try:
+        raw = await llm.generate(prompt, role="planner", max_tokens=10, temperature=0.1)
+        m = re.search(r"CONFIDENCE\s*[:=]\s*([0-9.]+)", raw, re.IGNORECASE)
+        if m:
+            return max(0.0, min(1.0, float(m.group(1))))
+    except Exception:
+        pass
+    return 0.5

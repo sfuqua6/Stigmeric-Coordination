@@ -36,13 +36,23 @@ def _make_store() -> SignalStore:
 
 
 def _deposit(store, stype, content, strength, depositor, parent_id=None, metadata=None):
+    meta = dict(metadata or {})
+    if stype in ("INITIAL", "SUPPORT") and "partition_id" not in meta:
+        # Derive partition_id from agent_id index (e.g. "forager_R1_2_..." → "partition_2")
+        # so each distinct agent produces a distinct (partition_id, depositor) pair for Fix D.
+        agent_id = meta.get("depositor_agent_id", meta.get("scout_agent_id", ""))
+        parts = agent_id.split("_")
+        if len(parts) >= 3 and parts[2].isdigit():
+            meta["partition_id"] = f"partition_{parts[2]}"
+        else:
+            meta["partition_id"] = "test_partition_0"
     return store.deposit(
         signal_type=stype,
         content=content,
         strength=strength,
         depositor=depositor,
         parent_id=parent_id,
-        metadata=metadata or {},
+        metadata=meta,
     )
 
 
@@ -170,19 +180,28 @@ class TestSurvivalFilter(unittest.TestCase):
         _deposit(store, SUPPORT, "Modern reactors have improved containment features.", 0.35,
                  "forager", parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_1_medium_only"})
-        # heavy dissent with distinct content: sum = 1.5 → pressure = 1.5/0.75 = 2.0 > 1.5
+        # heavy dissent: 5 objections × 0.6 = 3.0; ratio = 3.0/0.75 = 4.0;
+        # math.log1p(4.0) ≈ 1.609 > SURVIVAL_REJECT_DISSENT_PRESSURE(1.5)
         _deposit(store, OBJECTION,
                  "Chernobyl demonstrated that containment can fail catastrophically.",
-                 0.5, "hater", parent_id=init_id,
+                 0.6, "hater", parent_id=init_id,
                  metadata={"depositor_agent_id": "hater_R1_0"})
         _deposit(store, OBJECTION,
                  "Fukushima shows that tsunami risk invalidates site safety assumptions.",
-                 0.5, "hater", parent_id=init_id,
+                 0.6, "hater", parent_id=init_id,
                  metadata={"depositor_agent_id": "hater_R1_1"})
         _deposit(store, OBJECTION,
                  "Radioactive waste disposal remains unsolved for thousands of years.",
-                 0.5, "hater", parent_id=init_id,
+                 0.6, "hater", parent_id=init_id,
                  metadata={"depositor_agent_id": "hater_R1_2"})
+        _deposit(store, OBJECTION,
+                 "Nuclear accidents have caused long-term environmental contamination.",
+                 0.6, "hater", parent_id=init_id,
+                 metadata={"depositor_agent_id": "hater_R1_3"})
+        _deposit(store, OBJECTION,
+                 "Insurance costs for nuclear plants are prohibitively expensive.",
+                 0.6, "hater", parent_id=init_id,
+                 metadata={"depositor_agent_id": "hater_R1_4"})
         return store
 
     def test_rejected_by_field(self):
@@ -207,11 +226,11 @@ class TestSurvivalFilter(unittest.TestCase):
         _deposit(store, SUPPORT, "Utility-scale PPAs now undercut new gas in major markets.",
                  0.6, "forager", parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_2_under_supported_clusters"})
-        # dissent_pressure ≈ 1.0 / (0.7+0.65+0.6) ≈ 0.53 → still contested
-        _deposit(store, CRITIQUE, "Intermittency costs are not captured in LCOE.", 0.5, "critic",
+        # dissent_pressure: ratio = 1.6/1.95 ≈ 0.82; math.log1p(0.82) ≈ 0.60 ≥ 0.5 → contested
+        _deposit(store, CRITIQUE, "Intermittency costs are not captured in LCOE.", 0.8, "critic",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "critic_R1_0_weighted_default"})
-        _deposit(store, OBJECTION, "Grid reliability requires expensive storage.", 0.5, "hater",
+        _deposit(store, OBJECTION, "Grid reliability requires expensive storage.", 0.8, "hater",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "hater_R1_0"})
 
@@ -257,11 +276,11 @@ class TestPriorRejectionPenalty(unittest.TestCase):
         _deposit(store, SUPPORT, "Anecdotal reports circulate online.", 0.35, "forager",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "forager_R1_2_under_supported_clusters"})
-        _deposit(store, CRITIQUE, "Study was retracted, no link found.", 0.7, "critic",
+        _deposit(store, CRITIQUE, "Study was retracted, no link found.", 0.9, "critic",
                  parent_id=init_id,
                  metadata={"depositor_agent_id": "critic_R1_0_weighted_default"})
 
-        # Without prior rejection: dissent_pressure ≈ 0.7/(0.4+0.35+0.35) = 0.64 → contested
+        # Without prior rejection: ratio = 0.9/1.1 ≈ 0.818; math.log1p(0.818) ≈ 0.60 → contested
         proj_no_kb = build_projection(store, has_validators=False)
         self.assertEqual(proj_no_kb.contested[0].dissent_pressure,
                          proj_no_kb.contested[0].dissent_pressure)  # just assert runs

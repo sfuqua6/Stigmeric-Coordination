@@ -57,6 +57,7 @@ def _cp(
         dissent_pressure=dissent_pressure,
         verification_score=verification_score,
         partition_origins=["partition_0"],
+        status=status,
     )
 
 

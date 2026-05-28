@@ -59,6 +59,7 @@ class TestNoLeakRuleEnforcement(unittest.TestCase):
         self.store.deposit(
             signal_type=INITIAL, content="A claim about climate action.",
             strength=0.6, depositor="scout",
+            metadata={"partition_id": "test_partition_0"},
         )
 
     def _samples(self):

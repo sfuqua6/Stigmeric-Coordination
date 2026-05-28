@@ -49,9 +49,17 @@ def _run_pipeline(extra_args: list[str], kb_dir: Path, outputs_dir: Path,
     env = {
         **os.environ,
         "MOCK_LLM": "1",
+        "PYTHONIOENCODING": "utf-8",
         "SWARM_KB_DIR": str(kb_dir),
         "SWARM_OUTPUTS_BASE_DIR": str(outputs_dir),
         "SWARM_RETRIEVAL_CACHE_DIR": str(retrieval_cache_dir),
+        # Fast convergence so the subprocess completes within the 120s timeout.
+        "SWARM_MIN_TIME_S": "0",
+        "SWARM_MIN_ITERATIONS": "5",
+        "SWARM_MIN_INITIALS_FOR_HALT": "0",
+        "SWARM_MIN_INTER_CLUSTER_EDGES": "0",
+        "SWARM_SAT_NO_NEW_SURVIVING": "5",
+        "SWARM_MAX_ITERATIONS": "20",
         # Force laptop tier for deterministic behavior — we're not testing
         # tier overrides, and Colab tier detection on a CI box that has no
         # GPU would still return None, but be explicit.

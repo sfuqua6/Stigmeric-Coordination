@@ -102,6 +102,12 @@ class Developer(BaseAgent):
             target = random.choices(underserved, weights=weights, k=1)
         else:
             target = self.strategy(store, self.INPUT_TYPE, 1)
+            # Fallback: strategy may return [] when no signals fall in the
+            # requested strength strata (e.g. stratified_extremes finds no
+            # weak signals). Sample any INITIAL by weight so the iteration
+            # stays productive and the partition_id invariant is preserved.
+            if not target:
+                target = store.sample_weighted(self.INPUT_TYPE, 1)
 
         # Stash the strongest dissent for the chosen INITIAL (for prompt building)
         self._stashed_dissent = None

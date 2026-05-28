@@ -328,6 +328,11 @@ class SignalStore:
                 if parent_sig and parent_sig.cluster_id:
                     sig.cluster_id = parent_sig.cluster_id
 
+            # Gap 2: trail amplification for SUPPORT deposits
+            from .signal_types import SUPPORT as _SUPPORT
+            if signal_type == _SUPPORT:
+                self._amplify_cluster_trail(sid, parent_id)
+
             return sid
 
     # ---- read accessors --------------------------------------------------
@@ -486,6 +491,69 @@ class SignalStore:
             cands.sort(key=lambda s: s.visits)
             picked = cands[:n]
             for s in picked:
+                s.visits += 1
+            return picked
+
+    def sample_from_clusters(
+        self,
+        signal_type: str,
+        n: int = 1,
+        worker_centroid: Optional[list[float]] = None,
+    ) -> list[Signal]:
+        """Stigmergic cluster-trail sampling (Gap 1 fix).
+
+        Selects a cluster first (weighted by total member strength, optionally
+        biased toward the worker's current semantic position), then samples
+        within that cluster weighted by individual signal strength.
+
+        Falls back to sample_weighted() when:
+          - USE_CLUSTER_AWARE_SAMPLING is False
+          - ClusterRegistry has no clusters for this signal_type
+          - No embeddings are available (worker_centroid is None and no embs)
+        """
+        from .config import USE_CLUSTER_AWARE_SAMPLING
+        if not USE_CLUSTER_AWARE_SAMPLING:
+            return self.sample_weighted(signal_type, n)
+
+        with self._lock:
+            raw_clusters = self._cluster_registry.clusters_by_type(signal_type)
+            live_clusters = []
+            for cl in raw_clusters:
+                members = [self._signals[mid] for mid in cl.member_ids
+                           if mid in self._signals]
+                if members:
+                    live_clusters.append((cl, members))
+
+            if not live_clusters:
+                return self.sample_weighted(signal_type, n)
+
+            # Weight each cluster: base = sum of member strengths.
+            # If worker has a centroid, multiply by cosine sim to cluster centroid.
+            cluster_weights = []
+            for cl, members in live_clusters:
+                base_w = sum(s.strength for s in members) + 0.1
+                if worker_centroid is not None and cl.centroid:
+                    sim = float(sum(a * b for a, b in zip(worker_centroid, cl.centroid)))
+                    # sim in [-1, 1]; shift to [0.1, 1.1] so no cluster is zeroed out
+                    base_w *= max(0.1, (sim + 1.0) / 2.0 + 0.1)
+                cluster_weights.append(max(0.01, base_w))
+
+            # Pick a cluster
+            chosen_cl, chosen_members = random.choices(
+                live_clusters, weights=cluster_weights, k=1
+            )[0]
+
+            # Sample within the cluster weighted by strength + exploration bonus
+            max_v = max((s.visits for s in chosen_members), default=0) or 1
+            member_weights = []
+            for s in chosen_members:
+                base = s.strength + 0.1
+                bonus = EXPLORATION_BONUS * (1.0 - s.visits / max_v)
+                member_weights.append(base + bonus)
+
+            k = min(n, len(chosen_members))
+            picked = random.choices(chosen_members, weights=member_weights, k=k)
+            for s in {id(x): x for x in picked}.values():
                 s.visits += 1
             return picked
 
@@ -747,6 +815,36 @@ class SignalStore:
         else:
             sig.strength = min(1.0, sig.strength * 1.05)
             sig._logit = _to_logit(sig.strength)
+
+    def _amplify_cluster_trail(self, deposited_id: str, parent_id: Optional[str]) -> None:
+        """Reinforce the cluster neighbourhood when a SUPPORT lands (Gap 2 fix).
+
+        Must be called INSIDE the store lock (called from deposit()).
+        """
+        from .config import USE_TRAIL_AMPLIFICATION, DELTA_CLUSTER_TRAIL
+        if not USE_TRAIL_AMPLIFICATION:
+            return
+        if not USE_LOGIT_DYNAMICS:
+            return
+
+        lookup_id = parent_id if parent_id else deposited_id
+        cluster_id = self._cluster_registry.get_cluster_id(lookup_id)
+        if cluster_id is None:
+            return
+
+        cl = self._cluster_registry.get_cluster(cluster_id)
+        if cl is None or not cl.member_ids:
+            return
+
+        live_members = [self._signals[mid] for mid in cl.member_ids
+                        if mid in self._signals and mid != deposited_id]
+        if not live_members:
+            return
+
+        delta = DELTA_CLUSTER_TRAIL / max(1, len(live_members))
+        for s in live_members:
+            s._logit += delta
+            s.strength = _from_logit(s._logit)
 
     def prune_weak(self) -> int:
         with self._lock:

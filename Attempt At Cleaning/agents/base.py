@@ -296,12 +296,6 @@ class BaseAgent:
                 continue
             if is_junk_output(content):
                 stats.rejected_dup += 1
-                continue
-
-            # Junk filter: reject first-person scratchpad that slipped past
-            # strip_reasoning. Zero cost — one regex check per deposit attempt.
-            if is_junk_output(content):
-                stats.rejected_dup += 1
                 consecutive_dups += 1
                 if consecutive_dups >= 3:
                     break
@@ -326,6 +320,14 @@ class BaseAgent:
 
             deposit_meta = {"depositor_agent_id": self.agent_id}
             deposit_meta.update(self.extra_deposit_metadata())
+            # Carry partition_id from the sampled parent signal explicitly so the
+            # SUPPORT deposit passes the PARTITION LEAK assertion even when the
+            # store's parent-lookup inheritance path can't resolve it (e.g. the
+            # parent was decayed away between sample() and deposit()).
+            if "partition_id" not in deposit_meta:
+                _pid = next((s.partition_id for s in samples if s.partition_id), "")
+                if _pid:
+                    deposit_meta["partition_id"] = _pid
             if dyn_type is not None:
                 deposit_meta["proposed_type"] = dyn_type
             if dyn_parent is not None:

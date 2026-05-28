@@ -1,5 +1,9 @@
 # Deferred Fixes — Things This Session Didn't Touch
 
+<!-- Last verified: 2026-05-28. Update this date and move resolved items to
+     the "Resolved" section when they land. -->
+
+
 Items from the doctoral-critique plan that were _not_ integrated in the
 patches dated this session. Roughly in order of impact-per-hour to fix.
 
@@ -10,19 +14,33 @@ review and the P-phase IDs from the plan.
 
 - [x] **M10 Concurrency Gate**: Bypassed serialization semaphores on internal batching paths. Concurrent multi-agent inference runs cleanly over AsyncLLMEngine.
 - [x] **Multi-GPU / High-VRAM Resource Scaling**: Scaled populations to match hardware capacities (T4 up to A100_80 tiers).
+- [x] **P2.1 / R4 / M6 — logit-space strength dynamics** (resolved 2026-05-26). Implemented in `core/signal_store.py` behind `USE_LOGIT_DYNAMICS = True` (default on). Stores internal `_logit` field; all updates (decay, amplify, dedup, boost) apply additive deltas in logit space and project back through sigmoid. The legacy multiplicative path is preserved as `USE_LOGIT_DYNAMICS = False` and exercised by `tests/test_logit_dynamics.py`. See the FUTURE-CLAUDE NOTE at the top of `signal_store.py` for the three bugs this fixed.
+
+## Resolved Tasks (2026-05-28 — Stigmergy Gaps + Test Suite)
+
+- [x] **Stigmergy Gap 1 — Cluster-aware sampling** (`USE_CLUSTER_AWARE_SAMPLING`). Added `sample_from_clusters()` to `SignalStore`. Workers that have developed claims in a region of idea-space prefer to sample from clusters near their semantic centroid. Gated off by default; wire it into the worker pool when ablation data is available.
+
+- [x] **Stigmergy Gap 2 — Trail amplification** (`USE_TRAIL_AMPLIFICATION`). Added `_amplify_cluster_trail()` called inside the lock when a SUPPORT signal is deposited. All cluster members get a small additive logit boost. This is the pheromone-reinforcement analogue: clusters that receive support become more attractive to future workers.
+
+- [x] **Stigmergy Gap 3 — Local action biases** (`USE_LOCAL_ACTION_BIASES`). `choose_action()` in `worker_pool.py` now accepts `local_biases: dict[action, multiplier]` derived from cluster-local state (dissent pressure, support count). Workers in contested clusters bias toward OBJECT; workers in underserved clusters bias toward DEVELOP.
+
+- [x] **Stigmergy Gap 4 — Worker semantic position** (`USE_WORKER_SEMANTIC_POSITION`). Each `Worker` tracks a centroid of its own deposit embeddings (`_position_centroid`). Passed to `_sample_initial()` and `_sample_underserved_initial()` so cluster-aware sampling knows where this worker "lives" in semantic space.
+
+- [x] **Convergence env-var overrides** (`core/convergence.py`). All six convergence constants (`MIN_TIME_S`, `MIN_ITERATIONS`, `MIN_INITIALS_FOR_HALT`, `MIN_INTER_CLUSTER_EDGES`, `SAT_NO_NEW_SURVIVING`, `MAX_ITERATIONS`, `MAX_TIME_S`) are now overridable via env vars at import time. Subprocess-based tests that previously timed out (>120s) now complete in ~10s by passing `SWARM_MIN_TIME_S=0 SWARM_MIN_ITERATIONS=5 SWARM_MAX_ITERATIONS=20`.
+
+- [x] **PARTITION LEAK assertion + developer fallback**. The `deposit()` method in `signal_store.py` raises `AssertionError` for any INITIAL or SUPPORT without `partition_id`. Root cause of the failure: `stratified_extremes` strategy returned `[]` when all INITIALs sat in the medium strength stratum, causing developer to deposit SUPPORT with no parent and no partition. Fixed by adding a `sample_weighted(INITIAL, 1)` fallback in `developer.py::sample()` and a defensive `partition_id` carry-forward in `base.py::run()`.
+
+- [x] **P3 / R12 / R15 — Test suite** (resolved 2026-05-28). Full pytest suite now passes: **287 passed, 10 skipped, 0 failed** (~2 min with `MOCK_LLM=1`). Covered: dedup correctness, logit dynamics, no-leak assertion (positive + negative), provenance boost, convergence gating, phase-isolated orchestration (19-subprocess end-to-end), heterogeneous routing, KB save/load/dedup, planner selection, projection metrics, renderer audit coverage, output diversity JSON, coding roles, critique split, contradiction tracking.
+
+- [x] **KB cumulative inflation cap** (`MAX_KB_DIVERSITY_BOOST` in `config.py`). `support_diversity` on KB entries is now capped at `MAX_KB_DIVERSITY_BOOST` (default: `2 * NUM_FORAGERS`) when merging repeated runs of the same cluster. Without the cap, repeated saves monotonically inflated diversity and biased the survival filter.
+
+- [x] **KB `prune_before(date_str)`**. Added method to `KnowledgeBase` for age-based eviction of stale entries. Stopgap for the KB sunset problem — call `kb.prune_before("2026-01-01")` before save to drop pre-date entries.
 
 ## Active Research Directions
 
 - [ ] **P4.2 A/B Empirical Baseline**: Evaluate the performance profiles of the multi-agent clusters versus unified monolithic generations across test sets.
 
 ## Architectural (next big work block)
-
-- **P2.1 / R4 / M6 — logit-space strength dynamics.** Multiplicative
-  updates still saturate, just slower than before (AMPLIFY_FACTOR is now
-  1.15 and dedup amp is 1.05). The real fix is `logit(s) += Δ` and
-  `s = sigmoid(logit)`. Touches `signal_store.py` deposit/amplify/decay.
-  Estimate: 1–2 hours. Until this lands, the synthesizer's ranking still
-  collapses to near-uniform once a signal is hit twice.
 
 - **P2.2 / R2 — output-side diversity metric.** `diversity.py` still
   only computes Jaccard over consumed signal IDs. The reviewer is right
@@ -69,12 +87,7 @@ review and the P-phase IDs from the plan.
 
 ## Testing
 
-- **P3 / R12 / R15 — `tests/` directory.** None exist. Minimum set:
-  (a) dedup correctness, (b) decay-then-prune invariants, (c) no-leak
-  assertion (positive + negative cases), (d) provenance boost actually
-  firing in a contrived ancestry, (e) the diversity-metric disambiguation
-  test (paraphrased disjoint corpora should give high Jaccard, low
-  centroid distance). Estimate: ~2 hours.
+- **Test suite complete.** 287 passed, 10 skipped, 0 failed as of 2026-05-28. The only remaining gap is real-LLM behavioral testing (renderer prose quality, citation faithfulness with actual model output) — see "Renderer and measurement gaps" above.
 
 ## Knowledge-base housekeeping (session 2 leftovers)
 

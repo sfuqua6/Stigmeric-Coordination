@@ -30,13 +30,23 @@ def _make_store():
 
 
 def _deposit(store, stype, content, strength, depositor, parent_id=None, metadata=None):
+    meta = dict(metadata or {})
+    if stype in ("INITIAL", "SUPPORT") and "partition_id" not in meta:
+        # Derive partition from agent index so distinct foragers get distinct
+        # (partition_id, depositor) pairs — required for support_diversity > 1.
+        agent_id = meta.get("depositor_agent_id", meta.get("scout_agent_id", ""))
+        parts = agent_id.split("_")
+        if len(parts) >= 3 and parts[2].isdigit():
+            meta["partition_id"] = f"partition_{parts[2]}"
+        else:
+            meta["partition_id"] = "test_partition_0"
     return store.deposit(
         signal_type=stype,
         content=content,
         strength=strength,
         depositor=depositor,
         parent_id=parent_id,
-        metadata=metadata or {},
+        metadata=meta,
     )
 
 
@@ -65,9 +75,9 @@ def _build_simple_projection(has_validators=False):
         ("Renewable PPAs have outcompeted new fossil generation in major markets.",
          "weighted_default"),
     ]
-    for content, strategy in forager_supports:
+    for i, (content, strategy) in enumerate(forager_supports):
         _deposit(store, SUPPORT, content, 0.7, "forager", parent_id=init_id,
-                 metadata={"depositor_agent_id": f"forager_R1_0_{strategy}"})
+                 metadata={"depositor_agent_id": f"forager_R1_{i}_{strategy}"})
     proj = build_projection(store, has_validators=has_validators)
     return store, proj
 

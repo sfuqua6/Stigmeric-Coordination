@@ -55,8 +55,13 @@ class Hater(BaseAgent):
         live_clusters = store.get_live_clusters(self.target_type)
         if live_clusters:
             # Pick the largest live cluster; sample up to 3 strongest members.
-            cluster_id, member_ids = max(live_clusters, key=lambda x: len(x[1]))
-            self._last_cluster_id = cluster_id
+            # get_live_clusters returns (rep_id, member_ids); look up the actual
+            # cluster UUID from the representative signal's cluster_id attribute.
+            rep_id, member_ids = max(live_clusters, key=lambda x: len(x[1]))
+            rep_sig = store.get(rep_id)
+            self._last_cluster_id = (
+                rep_sig.cluster_id if (rep_sig and rep_sig.cluster_id) else rep_id
+            )
             self._used_dbscan = True
             members = [store.get(mid) for mid in member_ids if store.get(mid)]
             reps = sorted(members, key=lambda s: s.strength, reverse=True)[:3]

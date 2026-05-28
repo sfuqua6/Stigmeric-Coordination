@@ -48,7 +48,7 @@ class TestNoSaturation(unittest.TestCase):
         store = SignalStore(embedder=_NULL_EMBEDDER)
         sid = store.deposit(
             signal_type=INITIAL, content="A claim.", strength=0.5,
-            depositor="scout",
+            depositor="scout", metadata={"partition_id": "test_partition_0"},
         )
         for _ in range(10):
             store.amplify(sid)
@@ -68,7 +68,8 @@ class TestContrarianDecay(unittest.TestCase):
         dissent_pressure accumulate forever."""
         store = SignalStore(embedder=_NULL_EMBEDDER)
         # Need a parent INITIAL so OBJECTION has a target
-        pid = store.deposit(INITIAL, "Target claim.", 0.6, "scout")
+        pid = store.deposit(INITIAL, "Target claim.", 0.6, "scout",
+                            metadata={"partition_id": "test_partition_0"})
         oid = store.deposit(OBJECTION, "An objection.", 0.7, "hater",
                             parent_id=pid)
         start = store.get(oid).strength
@@ -87,8 +88,10 @@ class TestOrderInvariance(unittest.TestCase):
         """Logit-space updates are exact additions; order must not matter."""
         store_a = SignalStore(embedder=_NULL_EMBEDDER)
         store_b = SignalStore(embedder=_NULL_EMBEDDER)
-        a = store_a.deposit(INITIAL, "Same claim.", 0.5, "scout")
-        b = store_b.deposit(INITIAL, "Same claim.", 0.5, "scout")
+        a = store_a.deposit(INITIAL, "Same claim.", 0.5, "scout",
+                            metadata={"partition_id": "test_partition_0"})
+        b = store_b.deposit(INITIAL, "Same claim.", 0.5, "scout",
+                            metadata={"partition_id": "test_partition_0"})
         # A: decay then amplify
         store_a.decay_all()
         store_a.amplify(a)
@@ -116,7 +119,8 @@ class TestLegacyEscapeHatch(unittest.TestCase):
         ss.USE_LOGIT_DYNAMICS = False
         try:
             store = SignalStore(embedder=_NULL_EMBEDDER)
-            sid = store.deposit(INITIAL, "A claim.", 0.5, "scout")
+            sid = store.deposit(INITIAL, "A claim.", 0.5, "scout",
+                                metadata={"partition_id": "test_partition_0"})
             store.amplify(sid)
             store.decay_all()
             self.assertIsNotNone(store.get(sid))

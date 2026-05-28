@@ -146,7 +146,18 @@ class TestPipelineSmoke(unittest.TestCase):
              "--heterogeneous", "--corpus=placeholder"],
             cwd=str(Path(__file__).parent.parent),
             capture_output=True, text=True, timeout=180,
-            env={**os.environ, "MOCK_LLM": "1"},
+            env={
+                **os.environ,
+                "MOCK_LLM": "1",
+                "PYTHONIOENCODING": "utf-8",
+                # Speed up convergence for smoke test — skip the 60s/50-iter floors.
+                "SWARM_MIN_TIME_S": "0",
+                "SWARM_MIN_ITERATIONS": "5",
+                "SWARM_MIN_INITIALS_FOR_HALT": "0",
+                "SWARM_MIN_INTER_CLUSTER_EDGES": "0",
+                "SWARM_SAT_NO_NEW_SURVIVING": "5",
+                "SWARM_MAX_ITERATIONS": "20",
+            },
         )
         self.assertEqual(result.returncode, 0,
                          f"pipeline failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")

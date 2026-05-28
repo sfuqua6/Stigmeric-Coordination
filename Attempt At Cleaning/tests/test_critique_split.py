@@ -31,7 +31,8 @@ class TestCritiqueSplit(unittest.TestCase):
         init_id = store.deposit(
             INITIAL, "a substantive claim about renewable energy economics",
             0.6, "scout",
-            metadata={"scout_agent_id": "scout_R1_0", "depositor_agent_id": "scout_R1_0"},
+            metadata={"scout_agent_id": "scout_R1_0", "depositor_agent_id": "scout_R1_0",
+                      "partition_id": "test_partition_0"},
         )
         self.assertIsNotNone(init_id)
         # Four distinct critic strategy names → support_diversity=4.
@@ -60,7 +61,8 @@ class TestCritiqueSplit(unittest.TestCase):
         init_id = store.deposit(
             INITIAL, "a thinly-supported speculative claim",
             0.5, "scout",
-            metadata={"scout_agent_id": "scout_R1_0", "depositor_agent_id": "scout_R1_0"},
+            metadata={"scout_agent_id": "scout_R1_0", "depositor_agent_id": "scout_R1_0",
+                      "partition_id": "test_partition_0"},
         )
         self.assertIsNotNone(init_id)
         for i in range(4):
@@ -83,7 +85,8 @@ class TestCritiqueSplit(unittest.TestCase):
         init_id = store.deposit(
             INITIAL, "weak claim awaiting attack",
             0.5, "scout",
-            metadata={"scout_agent_id": "scout_R1_0", "depositor_agent_id": "scout_R1_0"},
+            metadata={"scout_agent_id": "scout_R1_0", "depositor_agent_id": "scout_R1_0",
+                      "partition_id": "test_partition_0"},
         )
         for i in range(3):
             store.deposit(

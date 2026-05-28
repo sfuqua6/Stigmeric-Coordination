@@ -43,7 +43,8 @@ def _deposit_cluster(store, content: str) -> str:
     sid = store.deposit(
         signal_type=INITIAL, content=content,
         strength=0.7, depositor="scout",
-        metadata={"depositor_agent_id": "scout_R1_0_stratified_extremes"},
+        metadata={"depositor_agent_id": "scout_R1_0_stratified_extremes",
+                  "partition_id": "test_partition_0"},
     )
     # Use distinct strategy names AND distinct content so dedup doesn't block them.
     # support_diversity counts distinct strategies, so we need >= 2.

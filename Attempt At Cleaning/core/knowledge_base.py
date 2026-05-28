@@ -48,6 +48,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .config import MAX_KB_DIVERSITY_BOOST
 from .projection import SynthesisProjection, ClusterProjection
 from .signal_store import SignalStore
 from .filters import is_junk_output
@@ -257,6 +258,31 @@ class KnowledgeBase:
     def is_empty(self) -> bool:
         return not self._surviving and not self._contested and not self._rejected
 
+    def prune_before(self, date_str: str) -> int:
+        """Remove entries whose run_timestamp predates date_str (YYYY-MM-DD).
+
+        Mutates the in-memory lists; call save() afterward to persist.
+        Returns the total count of pruned entries.
+        """
+        from datetime import datetime
+        try:
+            cutoff = datetime.fromisoformat(date_str[:10])
+        except ValueError:
+            print(f"[kb] prune_before: invalid date {date_str!r}; expected YYYY-MM-DD")
+            return 0
+        pruned = 0
+        for bucket in (self._surviving, self._contested, self._rejected):
+            before = len(bucket)
+            bucket[:] = [
+                e for e in bucket
+                if datetime.fromisoformat(
+                    e.get("run_timestamp", "9999-12-31")[:10]
+                ) >= cutoff
+            ]
+            pruned += before - len(bucket)
+        print(f"[kb] prune_before({date_str!r}): removed {pruned} entries")
+        return pruned
+
     # ---- internal helpers --------------------------------------------------
 
     def _build_entries(
@@ -321,10 +347,13 @@ class KnowledgeBase:
                     prev_rc = ex.get("run_count", 1)
                     ex["last_seen"] = timestamp
                     ex["run_count"] = prev_rc + 1
-                    # Cap support_diversity boost at +1 per match
+                    # Cap support_diversity at MAX_KB_DIVERSITY_BOOST total (not just +1 per match).
                     prior_sd = ex.get("support_diversity", 0)
                     new_sd = entry.get("support_diversity", 0)
-                    ex["support_diversity"] = prior_sd + min(1, max(0, new_sd - prior_sd))
+                    ex["support_diversity"] = min(
+                        MAX_KB_DIVERSITY_BOOST,
+                        prior_sd + min(1, max(0, new_sd - prior_sd)),
+                    )
                     ex["decay_strength"] = 1.0  # refresh on match
                     match_records.append({
                         "hash": ex.get("cluster_hash", ""),

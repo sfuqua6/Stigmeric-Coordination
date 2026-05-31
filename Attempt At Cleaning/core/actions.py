@@ -255,13 +255,53 @@ def scout_parse(raw: str) -> ParsedDeposit:
 
 
 # ---------------------------------------------------------------------------
+# Genome-aware atom context block (used by DEVELOP, CRITIQUE, OBJECT, REFINE)
+# ---------------------------------------------------------------------------
+
+def _atom_for_develop(genome) -> Optional[object]:
+    """Return the atom with the lowest verification_score (most under-supported)."""
+    if genome is None or not genome.atoms:
+        return None
+    return min(genome.atoms, key=lambda a: a.verification_score)
+
+
+def _atom_for_critique(genome) -> Optional[object]:
+    """Return the atom with the highest weight (load-bearing claim to evaluate)."""
+    if genome is None or not genome.atoms:
+        return None
+    return max(genome.atoms, key=lambda a: a.weight)
+
+
+def _atom_for_object(genome) -> Optional[object]:
+    """Return the atom most vulnerable to attack: load-bearing (high weight) but weakly verified (low score).
+
+    Metric: verification_score / max(weight, 0.01).
+    A low ratio means the atom carries structural importance but lacks verification —
+    the ideal target for an adversarial objection.
+    min(score/weight) finds load-bearing atoms whose verification is most disproportionately low.
+    """
+    if genome is None or not genome.atoms:
+        return None
+    return min(genome.atoms, key=lambda a: a.verification_score / max(a.weight, 0.01))
+
+
+def _format_atom_block(atom) -> str:
+    """Render one AtomFact as a no-leak prompt fragment (text + scalars only, no IDs in prose)."""
+    lines = [f"  ATOM [{atom.atom_id}]: {atom.text}"]
+    lines.append(f"    verification_score={atom.verification_score:.2f}  "
+                 f"weight={atom.weight:.2f}  source={atom.source_tag}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # DEVELOP — produce SUPPORT for an INITIAL
 # ---------------------------------------------------------------------------
 
 def develop_prompt(task_prompt: str, target: Signal,
                    dissent: Optional[Signal] = None,
                    retrieval: Optional[list] = None,
-                   retrieval_query: str = "") -> str:
+                   retrieval_query: str = "",
+                   genome=None) -> str:
     dissent_block = ""
     if dissent is not None:
         dissent_block = (
@@ -281,24 +321,51 @@ def develop_prompt(task_prompt: str, target: Signal,
             f"\nCluster has thin support — you queried {retrieval_query!r}:\n\n"
             + "\n\n".join(blocks) + "\n\n"
         )
+    # Genome-aware atom targeting: show the weakest atom and ask to develop it.
+    # Falls back to standard single-signal prompt when no genome is available.
+    atom = _atom_for_develop(genome)
+    if atom is not None:
+        atom_block = (
+            f"\nThe cluster this signal belongs to has been decomposed into "
+            f"atomic facts. The LEAST verified atom is:\n"
+            f"{_format_atom_block(atom)}\n"
+            f"Produce ONE SUPPORT that provides evidence or elaboration "
+            f"specifically for THAT atom. Your deposit metadata will record "
+            f"targets_atom={atom.atom_id!r}.\n"
+        )
+        develop_instruction = (
+            f"Target the weakest atom above. One or two sentences of "
+            f"concrete evidence or reasoning that directly supports it."
+        )
+    else:
+        atom_block = ""
+        develop_instruction = (
+            f"Produce ONE concise development of this signal: supporting "
+            f"evidence, an extension, or a refinement that anticipates the "
+            f"challenge above (if any). One or two sentences."
+        )
     return (
         f"TASK: {task_prompt}\n\n"
         f"You observe one signal in the shared store. You do not know who "
         f"deposited it.\n\n"
         f"---SIGNAL [{target.id}]---\n{target.content}\n---END SIGNAL---\n"
-        f"{dissent_block}{retrieval_block}\n"
-        f"Produce ONE concise development of this signal: supporting "
-        f"evidence, an extension, or a refinement that anticipates the "
-        f"challenge above (if any). One or two sentences.\n\n"
+        f"{dissent_block}{retrieval_block}{atom_block}\n"
+        f"{develop_instruction}\n\n"
         f"{_type_parent_instruction()}\n"
         f"DEVELOPMENT:"
     )
 
 
-def develop_parse(raw: str) -> ParsedDeposit:
+def develop_parse(raw: str, genome=None) -> ParsedDeposit:
     content = _strip_meta_lines(raw or "")
+    meta: dict = {}
+    if genome is not None:
+        atom = _atom_for_develop(genome)
+        if atom is not None:
+            meta["targets_atom"] = atom.atom_id
     return ParsedDeposit(
         signal_type=SUPPORT, content=content, strength=0.6,
+        metadata=meta if meta else None,
     )
 
 
@@ -332,11 +399,23 @@ def chain_parse(raw: str) -> ParsedDeposit:
 # CRITIQUE — evaluate an INITIAL, valence determines POS vs NEG
 # ---------------------------------------------------------------------------
 
-def critique_prompt(task_prompt: str, target: Signal) -> str:
+def critique_prompt(task_prompt: str, target: Signal,
+                    genome=None) -> str:
+    atom = _atom_for_critique(genome)
+    if atom is not None:
+        atom_block = (
+            f"\nThe cluster's most load-bearing atom (highest weight) is:\n"
+            f"{_format_atom_block(atom)}\n\n"
+            f"Focus your evaluation on WHETHER THAT ATOM STANDS. Does the "
+            f"artifact provide adequate grounding for it?\n"
+        )
+    else:
+        atom_block = ""
     return (
         f"TASK: {task_prompt}\n\n"
         f"Evaluate this deposited artifact on its merits.\n\n"
-        f"---ARTIFACT [{target.id}]---\n{target.content}\n---END ARTIFACT---\n\n"
+        f"---ARTIFACT [{target.id}]---\n{target.content}\n---END ARTIFACT---\n"
+        f"{atom_block}\n"
         f"Write a brief critique (one or two sentences) and assign a "
         f"quality score in [0, 1] reflecting how well the artifact stands "
         f"as a claim. Score >= 0.5 means well-formed; < 0.5 means it has "
@@ -369,7 +448,8 @@ def critique_parse(raw: str) -> ParsedDeposit:
 # ---------------------------------------------------------------------------
 
 def object_prompt(task_prompt: str, representatives: list[Signal],
-                  task_type: Optional[str] = None) -> str:
+                  task_type: Optional[str] = None,
+                  genome=None) -> str:
     rep_lines = "\n".join(
         f"  - [{s.id}] strength={s.strength:.2f}: {s.content}"
         for s in representatives
@@ -392,11 +472,22 @@ def object_prompt(task_prompt: str, representatives: list[Signal],
             "these signals make that might be wrong? What kind of evidence "
             "would they all collectively miss? One or two sentences."
         )
+    atom = _atom_for_object(genome)
+    if atom is not None:
+        atom_block = (
+            f"\nThe cluster's most VULNERABLE atom (low verification × high weight) is:\n"
+            f"{_format_atom_block(atom)}\n\n"
+            f"Your objection should attack WHETHER THAT ATOM IS ACTUALLY SUPPORTED — "
+            f"what would disprove it, or what assumption does it silently rely on?\n"
+        )
+    else:
+        atom_block = ""
     return (
         f"TASK: {task_prompt}\n\n"
         f"You see a consensus cluster forming in the shared signal store, "
         f"represented by {len(representatives)} signal(s):\n\n"
-        f"{rep_lines}\n\n"
+        f"{rep_lines}\n"
+        f"{atom_block}\n"
         f"{challenge_instruction}\n\n"
         f"{_type_parent_instruction()}\n"
         f"OBJECTION:"
@@ -544,7 +635,8 @@ def validate_parse(raw: str, task_type: Optional[str] = None) -> ParsedDeposit:
 # ---------------------------------------------------------------------------
 
 def refine_prompt(task_prompt: str, target: Signal,
-                  dissent: Optional[Signal] = None) -> str:
+                  dissent: Optional[Signal] = None,
+                  genome=None) -> str:
     """Build a REFINE prompt.
 
     Two modes:
@@ -556,7 +648,28 @@ def refine_prompt(task_prompt: str, target: Signal,
       - Without dissent: legacy polishing mode (sharpen the claim toward
         verifiability).
     """
+    # Genome-aware: identify the atom under attack (if dissent carries targets_atom).
+    # Falls back to standard prompt when no genome or no targeted atom.
+    targeted_atom = None
+    if genome is not None and dissent is not None:
+        targets_atom_id = (dissent.metadata or {}).get("targets_atom")
+        if targets_atom_id:
+            targeted_atom = next(
+                (a for a in genome.atoms if a.atom_id == targets_atom_id), None
+            )
+    if targeted_atom is None and genome is not None and dissent is not None:
+        # No explicit target: default to the weakest atom (highest priority to strengthen)
+        targeted_atom = _atom_for_develop(genome)
+
     if dissent is not None:
+        atom_block = ""
+        if targeted_atom is not None:
+            atom_block = (
+                f"\nThe challenge targets this atom:\n"
+                f"{_format_atom_block(targeted_atom)}\n"
+                f"Rebut by strengthening THAT ATOM SPECIFICALLY — new evidence, "
+                f"a scope qualification, or a counter-example.\n"
+            )
         return (
             f"TASK: {task_prompt}\n\n"
             f"This claim has been challenged by another agent. Produce ONE "
@@ -567,7 +680,8 @@ def refine_prompt(task_prompt: str, target: Signal,
             f"claim verbatim.\n\n"
             f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
             f"---CHALLENGE [{dissent.id}] (strength={dissent.strength:.2f})---\n"
-            f"{dissent.content}\n---END CHALLENGE---\n\n"
+            f"{dissent.content}\n---END CHALLENGE---\n"
+            f"{atom_block}\n"
             f"One or two sentences. Your SUPPORT should be readable as a "
             f"reply to the challenge: it must engage what the challenge "
             f"actually says.\n\n"
@@ -587,10 +701,16 @@ def refine_prompt(task_prompt: str, target: Signal,
     )
 
 
-def refine_parse(raw: str) -> ParsedDeposit:
+def refine_parse(raw: str, genome=None) -> ParsedDeposit:
     content = _strip_meta_lines(raw or "")
+    meta: dict = {}
+    if genome is not None:
+        atom = _atom_for_develop(genome)   # weakest atom = most needing rebuttal
+        if atom is not None:
+            meta["targets_atom"] = atom.atom_id
     return ParsedDeposit(
         signal_type=SUPPORT, content=content, strength=0.55,
+        metadata=meta if meta else None,
     )
 
 

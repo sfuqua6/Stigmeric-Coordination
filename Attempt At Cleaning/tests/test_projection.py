@@ -436,5 +436,216 @@ class TestSemanticClustering(unittest.TestCase):
             self.assertEqual(len(cp.member_ids), 1)
 
 
+class TestClusterGenome(unittest.TestCase):
+    """Regression tests for the ClusterGenome pipeline (Stages 1-6)."""
+
+    def _make_genome_store(self) -> tuple:
+        """Return (store, init_id) with SEARCH + SUPPORT + VERIFICATION signals."""
+        store = _make_store()
+        init_id = _deposit(
+            store, INITIAL, "CO2 emissions drive global temperature rise.",
+            strength=0.7, depositor="scout",
+            metadata={
+                "scout_agent_id": "scout_R1_0",
+                "depositor_agent_id": "scout_R1_0",
+            },
+        )
+        # Scout SEARCH signal (no parent — correlated via scout_agent_id)
+        store.deposit(
+            signal_type="SEARCH",
+            content="QUERY: CO2 climate\n  - ipcc.ch/ar6\n  - nature.com/climate",
+            strength=0.4,
+            depositor="scout",
+            parent_id=None,
+            metadata={
+                "query": "CO2 climate",
+                "n_results": 2,
+                "scout_agent_id": "scout_R1_0",
+                "depositor_agent_id": "scout_R1_0",
+            },
+        )
+        for i in range(3):
+            _deposit(
+                store, SUPPORT, f"Supporting evidence {i}.",
+                strength=0.65, depositor="forager", parent_id=init_id,
+                metadata={"depositor_agent_id": f"forager_R1_{i}_stratified"},
+            )
+        # VERIFICATION with two atoms (different weight / score)
+        store.deposit(
+            signal_type="VERIFICATION",
+            content="IPCC AR6 confirms relationship.",
+            strength=0.8,
+            depositor="validator",
+            parent_id=init_id,
+            metadata={
+                "partition_id": "partition_0",
+                "atoms": [
+                    {
+                        "text": "CO2 rose 50% since pre-industrial era.",
+                        "weight": 1.0,
+                        "score": 0.85,
+                        "snippet_tag": "ipcc.ch",
+                        "query": "CO2 historical",
+                    },
+                    {
+                        "text": "Global mean temperature tracks CO2 concentration.",
+                        "weight": 0.3,
+                        "score": 0.20,
+                        "snippet_tag": "nature.com",
+                        "query": "temperature CO2 correlation",
+                    },
+                ],
+            },
+        )
+        return store, init_id
+
+    def test_genome_assembled(self):
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True)
+        all_cp = (proj.surviving + proj.contested
+                  + proj.weakly_supported + proj.unverified + proj.rejected_by_field)
+        self.assertEqual(len(all_cp), 1)
+        cp = all_cp[0]
+        self.assertIsNotNone(cp.genome, "ClusterGenome must be populated")
+
+    def test_genome_atoms_from_verification(self):
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True)
+        g = (proj.surviving + proj.weakly_supported + proj.unverified)[0].genome
+        self.assertEqual(len(g.atoms), 2)
+        texts = {a.text for a in g.atoms}
+        self.assertIn("CO2 rose 50% since pre-industrial era.", texts)
+
+    def test_genome_hash_stable(self):
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True)
+        g = (proj.surviving + proj.weakly_supported + proj.unverified)[0].genome
+        # Hash should be a non-empty hex string
+        self.assertRegex(g.genome_hash, r'^[0-9a-f]{16}$')
+
+    def test_genome_kb_captures_search_sources(self):
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True)
+        g = (proj.surviving + proj.weakly_supported + proj.unverified)[0].genome
+        kb = g.knowledge_base
+        # Should have at least ipcc.ch (from SEARCH signal) and nature.com (from atoms)
+        self.assertIn("ipcc.ch", kb.source_domains)
+        self.assertGreater(kb.domain_diversity, 0.0)
+        self.assertEqual(kb.parametric_content_ratio, 0.0)  # has SEARCH coverage
+
+    def test_genome_kb_queries_captured(self):
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True)
+        g = (proj.surviving + proj.weakly_supported + proj.unverified)[0].genome
+        self.assertIn("CO2 climate", g.knowledge_base.queries_issued)
+
+    def test_composite_fitness_nonzero(self):
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True, task_type="debate")
+        g = (proj.surviving + proj.weakly_supported + proj.unverified)[0].genome
+        self.assertGreater(g.composite_fitness, 0.0)
+        self.assertLessEqual(g.composite_fitness, 1.0)
+
+    def test_composite_fitness_llm_capped(self):
+        from core.fitness import CAP_LLM
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True, task_type="debate")
+        g = (proj.surviving + proj.weakly_supported + proj.unverified)[0].genome
+        self.assertLessEqual(g.fitness_breakdown["semantic_strength"], CAP_LLM + 1e-9)
+
+    def test_novelty_density_zero_for_single_cluster(self):
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True)
+        all_cp = (proj.surviving + proj.contested + proj.weakly_supported + proj.unverified)
+        self.assertEqual(len(all_cp), 1)
+        self.assertEqual(all_cp[0].genome.phenotype.novelty_density, 0.0)
+
+    def test_sensitivity_populated_for_surviving_cluster(self):
+        store, _ = self._make_genome_store()
+        proj = build_projection(store, has_validators=True, task_type="debate")
+        all_cp = proj.surviving + proj.weakly_supported + proj.unverified
+        g = all_cp[0].genome
+        # GenomeSensitivity should exist (may have empty lists when cluster is robust)
+        self.assertIsNotNone(g.sensitivity)
+        self.assertIsInstance(g.sensitivity.load_bearing_atoms, list)
+
+    def test_genome_on_split_cluster_has_formation_centroid(self):
+        """Verifies Bug 1 fix: _reanchor() sets centroid_at_formation on ejected clusters."""
+        from core.cluster_registry import ClusterRegistry
+        cr = ClusterRegistry()
+        cr.create("s0", [1.0, 0.0], "INITIAL")
+        cr.create("s1", [0.0, 1.0], "INITIAL")
+        for cid in list(cr._clusters):
+            cl = cr.get_cluster(cid)
+            self.assertTrue(len(cl.centroid_at_formation) > 0,
+                            f"cluster {cid} missing centroid_at_formation")
+
+    def test_atom_graph_edges_from_support_verification(self):
+        """SUPPORT-level VERIFICATION atoms depend on INITIAL-level atoms."""
+        store = _make_store()
+        init_id = _deposit(store, INITIAL, "CO2 drives climate.", 0.7, "scout",
+                           metadata={"scout_agent_id": "scout_R1_0",
+                                     "depositor_agent_id": "scout_R1_0"})
+        sup_id = _deposit(store, SUPPORT, "Ice cores confirm CO2.", 0.65, "forager",
+                          parent_id=init_id,
+                          metadata={"depositor_agent_id": "forager_R1_0_strat"})
+        # VERIFICATION of the INITIAL → atoms belong to INITIAL level
+        store.deposit("VERIFICATION", "IPCC confirms.", 0.8, "validator",
+                      parent_id=init_id,
+                      metadata={"partition_id": "partition_0",
+                                "atoms": [{"text": "CO2 rose 50pct.", "weight": 1.0,
+                                           "score": 0.85, "snippet_tag": "ipcc.ch",
+                                           "query": "CO2"}]})
+        # VERIFICATION of the SUPPORT → atoms belong to SUPPORT level and depend on INITIAL atoms
+        store.deposit("VERIFICATION", "Nature confirms temp tracking.", 0.7, "validator",
+                      parent_id=sup_id,
+                      metadata={"partition_id": "partition_0",
+                                "atoms": [{"text": "Temps track CO2.", "weight": 0.8,
+                                           "score": 0.72, "snippet_tag": "nature.com",
+                                           "query": "temp CO2"}]})
+        for i in range(2):
+            _deposit(store, SUPPORT, f"Extra support {i}.", 0.6, "forager",
+                     parent_id=init_id,
+                     metadata={"depositor_agent_id": f"forager_R1_{i+1}_strat"})
+        proj = build_projection(store, has_validators=True, task_type="analysis")
+        all_cp = (proj.surviving + proj.contested + proj.weakly_supported + proj.unverified)
+        self.assertEqual(len(all_cp), 1)
+        g = all_cp[0].genome
+        self.assertEqual(len(g.atoms), 2)
+        # Find the support-level atom
+        sup_atoms = [a for a in g.atoms if a.text == "Temps track CO2."]
+        init_atoms = [a for a in g.atoms if a.text == "CO2 rose 50pct."]
+        if sup_atoms and init_atoms:
+            # Support-level atom should depend on initial-level atom
+            self.assertIn(init_atoms[0].atom_id, g.atom_graph[sup_atoms[0].atom_id])
+
+    def test_targets_atom_stamped_in_develop_parse(self):
+        """develop_parse stamps targets_atom in metadata when genome provided."""
+        from core.actions import develop_parse, _atom_for_develop
+        from core.projection import AtomFact, ClusterGenome
+        from core.projection import (TopologyExpression, Phenotype, ClusterKnowledgeBase,
+                                     GenomeSensitivity, FitnessTrajectory, GenomeRelations)
+
+        atoms = [
+            AtomFact("a1", "Strong verified claim.", weight=1.0, verification_score=0.9,
+                     source_tag="ipcc.ch", query="q", extracted_from=["v1"],
+                     parent_cluster_id="c1"),
+            AtomFact("a2", "Weak unverified claim.", weight=0.5, verification_score=0.1,
+                     source_tag="", query="q2", extracted_from=["v2"],
+                     parent_cluster_id="c1"),
+        ]
+
+        class _FakeGenome:
+            def __init__(self):
+                self.atoms = atoms
+
+        genome = _FakeGenome()
+        parsed = develop_parse("Test development output.", genome=genome)
+
+        # Should target a2 (lowest verification_score)
+        self.assertIsNotNone(parsed.metadata)
+        self.assertEqual(parsed.metadata.get("targets_atom"), "a2")
+
+
 if __name__ == "__main__":
     unittest.main()

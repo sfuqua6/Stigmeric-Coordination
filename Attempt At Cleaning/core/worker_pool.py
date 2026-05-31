@@ -591,6 +591,11 @@ class Worker:
         # Gap 4: semantic position as running centroid of own deposit embeddings.
         self._position_centroid: Optional[list[float]] = None
         self._position_embs: list[list[float]] = []   # recent window
+        # Genome cache: cluster_id (= representative_id) -> ClusterGenome.
+        # Populated externally by AdaptiveLLMPool.update_genome_cache() after
+        # each round's build_projection() call. Empty until then (genome=None
+        # falls back to the standard single-signal prompt in action builders).
+        self._genome_cache: dict = {}
         # Bundle-disabled actions (cached). Roles set to None in the bundle's
         # ROLE_TO_ENGINE map cause their action to drop out of choose_action.
         self._disabled_actions: frozenset = self._compute_disabled_actions()
@@ -794,6 +799,17 @@ class Worker:
         meta = dict(parsed.metadata or {})
         meta["depositor_agent_id"] = self.agent_id
         meta["action"] = action
+
+        # Atom targeting: stamp which atom this DEVELOP/REFINE deposit addresses.
+        # Enables atom_graph edge construction in _build_genomes and future
+        # REFINE-targeted prompting to know which atom was strengthened.
+        if action in (DEVELOP, REFINE) and target is not None and target.cluster_id:
+            genome = self._genome_cache.get(target.cluster_id)
+            if genome is not None and genome.atoms:
+                from core.actions import _atom_for_develop as _afd
+                targeted = _afd(genome)
+                if targeted and "targets_atom" not in meta:
+                    meta["targets_atom"] = targeted.atom_id
         if dyn_type is not None:
             meta["proposed_type"] = dyn_type
         if dyn_parent is not None:
@@ -1187,18 +1203,23 @@ class Worker:
             return A.scout_prompt(self.task_prompt, retrieved, prior_own)
         if target is None:
             return None
+        # Genome-aware: look up the cluster genome for this target signal.
+        # Falls back to None (standard prompt) when the cache is empty or the
+        # cluster has no genome yet (early iterations, or mock mode).
+        genome = self._genome_cache.get(target.cluster_id) if target.cluster_id else None
         if action == DEVELOP:
             return A.develop_prompt(self.task_prompt, target, dissent,
-                                    retrieved, query)
+                                    retrieved, query, genome=genome)
         if action == CHAIN:
             return A.chain_prompt(self.task_prompt, target)
         if action == CRITIQUE:
-            return A.critique_prompt(self.task_prompt, target)
+            return A.critique_prompt(self.task_prompt, target, genome=genome)
         if action == OBJECT:
             reps = getattr(self, "_object_reps", [target])
             if not reps:
                 return None
-            return A.object_prompt(self.task_prompt, reps, task_type=self.task_type)
+            return A.object_prompt(self.task_prompt, reps, task_type=self.task_type,
+                                   genome=genome)
         if action == VALIDATE:
             external = getattr(self, "_validate_external", "")
             return A.validate_prompt(self.task_prompt, target, external,
@@ -1207,7 +1228,8 @@ class Worker:
             # `dissent` is forwarded from _gather_target when the chosen
             # target has cluster-level dissent; A.refine_prompt switches
             # to its rebuttal variant when dissent is non-None.
-            return A.refine_prompt(self.task_prompt, target, dissent=dissent)
+            return A.refine_prompt(self.task_prompt, target, dissent=dissent,
+                                   genome=genome)
         return None
 
     def _assert_no_leak(self, prompt: str) -> None:
@@ -1273,7 +1295,8 @@ async def run_pool(store: SignalStore, llm, task_prompt: str,
                    user_prompt: str, stop_event: asyncio.Event,
                    n_workers: int = 24,
                    task_type: Optional[str] = None,
-                   router=None) -> PoolState:
+                   router=None,
+                   genome_cache: Optional[dict] = None) -> PoolState:
     """Spin up `n_workers` and run until `stop_event` fires.
 
     Returns the PoolState (action log, iteration count, etc.) for the
@@ -1283,13 +1306,21 @@ async def run_pool(store: SignalStore, llm, task_prompt: str,
     routes generate() per-action via ACTION_TO_ROLE → router.engine_for.
     The single `llm` argument is still accepted as the fallback for
     actions whose role is missing from the bundle.
+
+    `genome_cache` (optional dict): cluster_id -> ClusterGenome, populated
+    externally by run_swarm.py after each build_projection() call. Workers
+    share a reference to this dict — updates made between rounds are visible
+    immediately. Falls back to empty (no genome-aware prompting) when None.
     """
     pool_state = PoolState()
+    _gc = genome_cache if genome_cache is not None else {}
     workers = [
         Worker(i, llm, task_prompt, user_prompt, rng_seed=i,
                task_type=task_type, router=router)
         for i in range(n_workers)
     ]
+    for w in workers:
+        w._genome_cache = _gc
     tasks = [
         asyncio.create_task(worker_loop(w, store, pool_state, stop_event))
         for w in workers

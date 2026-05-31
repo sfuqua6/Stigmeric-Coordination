@@ -57,7 +57,7 @@ _DEFAULT_KB_DIR = "knowledge_base"
 _SURVIVING_FILE = "surviving_clusters.json"
 _REJECTED_FILE = "rejected_clusters.json"
 _CONTESTED_FILE = "contested_clusters.json"
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 # Cosine similarity above which a new cluster is considered a duplicate.
 _KB_DEDUP_THRESHOLD = 0.85
@@ -379,40 +379,77 @@ class KnowledgeBase:
     ) -> list[list[str]]:
         """Flag cross-status pairs as contradictions and annotate both entries.
 
+        Two detection channels (v3 upgrade):
+        1. Embedding-level (original): cosine similarity between representative
+           embeddings >= _KB_CONTRADICTION_THRESHOLD (0.75).
+        2. Atom-level (new in v3): check whether any atom text from entry A
+           matches any atom text from entry B with word-Jaccard >= 0.50. This
+           catches "in run R1 atom A2 was supported; in run R2 the same claim
+           appeared as an atom in a rejected cluster" — sharper than embedding
+           similarity when the two clusters are worded differently but share a
+           specific disputed proposition.
+
         Returns list of [hash_a, hash_b] pairs.
         """
         pairs: list[list[str]] = []
 
+        def _flag_pair(ea: dict, eb: dict) -> None:
+            ha = ea.get("cluster_hash", "")
+            hb = eb.get("cluster_hash", "")
+            if [ha, hb] in pairs or [hb, ha] in pairs:
+                return
+            ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+            ea.setdefault("contradicts", [])
+            if hb not in ea["contradicts"]:
+                ea["contradicts"].append(hb)
+            ea["first_contradicted_at"] = ea.get("first_contradicted_at", ts)
+            eb.setdefault("contradicts", [])
+            if ha not in eb["contradicts"]:
+                eb["contradicts"].append(ha)
+            eb["first_contradicted_at"] = eb.get("first_contradicted_at", ts)
+            pairs.append([ha, hb])
+
+        def _atom_texts(entry: dict) -> list[str]:
+            """Extract atom texts from a KB entry's genome_atoms field."""
+            return [
+                a.get("text", "").lower().strip()
+                for a in (entry.get("genome_atoms") or [])
+                if a.get("text")
+            ]
+
+        def _word_jaccard(ta: str, tb: str) -> float:
+            """Word-level Jaccard similarity between two strings."""
+            wa = set(ta.split())
+            wb = set(tb.split())
+            if not wa or not wb:
+                return 0.0
+            return len(wa & wb) / len(wa | wb)
+
+        _ATOM_CONTRADICTION_JACCARD = 0.50   # same threshold as existing 0.85 dedup
+
         def _check_and_flag(group_a: list[dict], group_b: list[dict]) -> None:
             for ea in group_a:
-                emb_a = ea.get("representative_embedding")
-                if emb_a is None:
-                    continue
                 for eb in group_b:
+                    # Channel 1: embedding similarity
+                    emb_a = ea.get("representative_embedding")
                     emb_b = eb.get("representative_embedding")
-                    if emb_b is None:
-                        continue
-                    sim = _cosine_sim(emb_a, emb_b)
-                    if sim >= _KB_CONTRADICTION_THRESHOLD:
-                        ha = ea.get("cluster_hash", "")
-                        hb = eb.get("cluster_hash", "")
-                        if [ha, hb] not in pairs and [hb, ha] not in pairs:
-                            # Annotate both entries
-                            ea.setdefault("contradicts", [])
-                            if hb not in ea["contradicts"]:
-                                ea["contradicts"].append(hb)
-                            ea["first_contradicted_at"] = ea.get(
-                                "first_contradicted_at",
-                                time.strftime("%Y-%m-%dT%H:%M:%S"),
-                            )
-                            eb.setdefault("contradicts", [])
-                            if ha not in eb["contradicts"]:
-                                eb["contradicts"].append(ha)
-                            eb["first_contradicted_at"] = eb.get(
-                                "first_contradicted_at",
-                                time.strftime("%Y-%m-%dT%H:%M:%S"),
-                            )
-                            pairs.append([ha, hb])
+                    if emb_a is not None and emb_b is not None:
+                        if _cosine_sim(emb_a, emb_b) >= _KB_CONTRADICTION_THRESHOLD:
+                            _flag_pair(ea, eb)
+                            continue
+
+                    # Channel 2: atom-level text matching (v3, when genome_atoms present)
+                    atoms_a = _atom_texts(ea)
+                    atoms_b = _atom_texts(eb)
+                    if atoms_a and atoms_b:
+                        for ta in atoms_a:
+                            for tb in atoms_b:
+                                if _word_jaccard(ta, tb) >= _ATOM_CONTRADICTION_JACCARD:
+                                    _flag_pair(ea, eb)
+                                    break
+                            else:
+                                continue
+                            break
 
         _check_and_flag(new_surviving, prior_rejected)
         _check_and_flag(new_rejected, prior_surviving)
@@ -485,4 +522,25 @@ def _cluster_to_entry(
         "task_context": task_context,
         # C7 contradiction tracking (populated at save time if contradiction found)
         "contradicts": [],
+        # Schema v3: genome fields (None when genome not yet populated)
+        "genome_hash": cp.genome.genome_hash if cp.genome else None,
+        "genome_atoms": [
+            {
+                "atom_id": a.atom_id,
+                "text": a.text,
+                "weight": a.weight,
+                "verification_score": a.verification_score,
+                "source_tag": a.source_tag,
+                "query": a.query,
+            }
+            for a in cp.genome.atoms
+        ] if cp.genome else [],
+        "composite_fitness": round(cp.genome.composite_fitness, 4) if cp.genome else None,
+        "fitness_breakdown": cp.genome.fitness_breakdown if cp.genome else {},
+        "knowledge_base": {
+            "queries_issued": cp.genome.knowledge_base.queries_issued,
+            "source_domains": cp.genome.knowledge_base.source_domains,
+            "domain_diversity": cp.genome.knowledge_base.domain_diversity,
+            "parametric_content_ratio": cp.genome.knowledge_base.parametric_content_ratio,
+        } if cp.genome else {},
     }

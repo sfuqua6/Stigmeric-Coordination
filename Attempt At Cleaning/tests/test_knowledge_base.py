@@ -264,5 +264,140 @@ class TestClusterToEntry(unittest.TestCase):
         self.assertIsInstance(entry["lineage_signal_ids"], list)
 
 
+class TestAtomLevelContradiction(unittest.TestCase):
+    """Verify atom-level contradiction detection (KB v3 upgrade, §10)."""
+
+    def _make_entry(self, content: str, atoms: list, cluster_hash: str,
+                    emb=None) -> dict:
+        return {
+            "cluster_hash": cluster_hash,
+            "representative_content": content,
+            "representative_embedding": emb,
+            "genome_atoms": [
+                {"text": t, "weight": 1.0, "verification_score": 0.8,
+                 "source_tag": "test", "query": "q"}
+                for t in atoms
+            ],
+            "contradicts": [],
+        }
+
+    def test_atom_match_flags_contradiction_when_no_embedding(self):
+        """Atom-level channel catches contradictions even when embeddings are absent."""
+        from core.knowledge_base import KnowledgeBase
+        kb = KnowledgeBase.__new__(KnowledgeBase)
+        kb._surviving = []
+        kb._rejected = []
+        kb._contested = []
+        kb._archived = []
+
+        new_surviving = [self._make_entry(
+            "Climate action is necessary.", ["CO2 levels are at record highs."], "hash_s1"
+        )]
+        prior_rejected = [self._make_entry(
+            "A different claim.", ["CO2 levels are at record highs."], "hash_r1"  # same atom text
+        )]
+
+        pairs = kb._detect_contradictions(new_surviving, prior_rejected, [], [])
+        self.assertTrue(len(pairs) > 0, "Atom-level contradiction should be detected")
+        # new_surviving[0] gets the hash of the prior_rejected entry it contradicts
+        self.assertIn("hash_r1", new_surviving[0]["contradicts"])
+        # prior_rejected[0] gets the hash of the new_surviving entry it contradicts
+        self.assertIn("hash_s1", prior_rejected[0]["contradicts"])
+
+    def test_distinct_atoms_no_false_contradiction(self):
+        """Different atom texts don't trigger a contradiction."""
+        from core.knowledge_base import KnowledgeBase
+        kb = KnowledgeBase.__new__(KnowledgeBase)
+        kb._surviving = []
+        kb._rejected = []
+        kb._contested = []
+        kb._archived = []
+
+        new_surviving = [self._make_entry(
+            "X.", ["Solar panels produce clean energy."], "hash_a"
+        )]
+        prior_rejected = [self._make_entry(
+            "Y.", ["Nuclear fission releases enormous heat."], "hash_b"
+        )]
+
+        pairs = kb._detect_contradictions(new_surviving, prior_rejected, [], [])
+        self.assertEqual(len(pairs), 0, "Unrelated atoms should not contradict")
+
+    def test_kb_v3_entry_has_genome_fields(self):
+        """_cluster_to_entry includes v3 genome fields."""
+        store = _make_store()
+        init_id = _deposit(store, INITIAL, "Test claim.", 0.7, "scout",
+                           metadata={"scout_agent_id": "scout_R1_0",
+                                     "depositor_agent_id": "scout_R1_0"})
+        for i in range(3):
+            _deposit(store, SUPPORT, f"Support {i}.", 0.6, "forager",
+                     parent_id=init_id,
+                     metadata={"depositor_agent_id": f"forager_R1_{i}_strat"})
+        proj = build_projection(store, has_validators=False)
+        all_cp = proj.surviving + proj.weakly_supported + proj.unverified
+        self.assertGreater(len(all_cp), 0)
+        entry = _cluster_to_entry(all_cp[0], store, "2026-01-01", "surviving")
+        self.assertIn("genome_hash", entry)
+        self.assertIn("genome_atoms", entry)
+        self.assertIn("composite_fitness", entry)
+        self.assertIn("fitness_breakdown", entry)
+        self.assertIn("knowledge_base", entry)
+
+
+class TestAtomDeduplication(unittest.TestCase):
+    """Verify Rule 3 atom deduplication in _build_genomes."""
+
+    def test_near_duplicate_atoms_collapsed(self):
+        """Two atoms with high word-Jaccard similarity are collapsed into one."""
+        store = _make_store()
+        init_id = _deposit(store, INITIAL, "Climate claim.", 0.7, "scout",
+                           metadata={"scout_agent_id": "scout_R1_0",
+                                     "depositor_agent_id": "scout_R1_0"})
+        for i in range(3):
+            _deposit(store, SUPPORT, f"Support {i}.", 0.6, "forager",
+                     parent_id=init_id,
+                     metadata={"depositor_agent_id": f"forager_R1_{i}_strat"})
+        # Deposit TWO verification signals with near-duplicate atom texts
+        store.deposit("VERIFICATION", "Confirmed A.", 0.8, "validator",
+                      parent_id=init_id,
+                      metadata={"partition_id": "p0", "atoms": [
+                          {"text": "CO2 concentrations have increased since 1850.",
+                           "weight": 1.0, "score": 0.85, "snippet_tag": "ipcc.ch", "query": "CO2"}]})
+        store.deposit("VERIFICATION", "Confirmed B.", 0.8, "validator",
+                      parent_id=init_id,
+                      metadata={"partition_id": "p0", "atoms": [
+                          {"text": "CO2 concentrations have increased since 1850.",  # exact duplicate
+                           "weight": 0.9, "score": 0.70, "snippet_tag": "nature.com", "query": "CO2"}]})
+        proj = build_projection(store, has_validators=True)
+        all_cp = proj.surviving + proj.weakly_supported + proj.unverified
+        g = all_cp[0].genome
+        # Two near-identical atoms should be collapsed into one
+        self.assertEqual(len(g.atoms), 1, "Near-duplicate atoms should be deduplicated")
+        # Surviving atom should be the higher-score one
+        self.assertAlmostEqual(g.atoms[0].verification_score, 0.85, places=2)
+
+    def test_distinct_atoms_not_collapsed(self):
+        """Atoms with low word overlap are kept separate."""
+        store = _make_store()
+        init_id = _deposit(store, INITIAL, "Multi-aspect claim.", 0.7, "scout",
+                           metadata={"scout_agent_id": "scout_R1_0",
+                                     "depositor_agent_id": "scout_R1_0"})
+        for i in range(3):
+            _deposit(store, SUPPORT, f"Support {i}.", 0.6, "forager",
+                     parent_id=init_id,
+                     metadata={"depositor_agent_id": f"forager_R1_{i}_strat"})
+        store.deposit("VERIFICATION", "Confirmed.", 0.8, "validator",
+                      parent_id=init_id,
+                      metadata={"partition_id": "p0", "atoms": [
+                          {"text": "CO2 rose fifty percent since industrialisation.",
+                           "weight": 1.0, "score": 0.85, "snippet_tag": "ipcc.ch", "query": "CO2"},
+                          {"text": "Arctic sea ice area declined dramatically over decades.",
+                           "weight": 0.8, "score": 0.72, "snippet_tag": "nsidc.org", "query": "arctic"}]})
+        proj = build_projection(store, has_validators=True)
+        all_cp = proj.surviving + proj.weakly_supported + proj.unverified
+        g = all_cp[0].genome
+        self.assertEqual(len(g.atoms), 2, "Distinct atoms should not be deduplicated")
+
+
 if __name__ == "__main__":
     unittest.main()

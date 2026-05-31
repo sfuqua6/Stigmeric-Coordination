@@ -46,6 +46,7 @@ Returns
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -62,6 +63,7 @@ from core.config import (
     RENDER_POSITION_MAX_WORDS,
     RENDER_DISSENT_MAX_WORDS,
     SAMPLING_PER_ENGINE,
+    LLM_CONCURRENCY,
 )
 from core.projection import (
     SynthesisProjection,
@@ -122,9 +124,13 @@ _EDGE_COMPOSE_MAX_TOKENS = 2000
 # candidate). Applies only to cohesive_exploration and cohesive_optimization
 # strategies, not to sectioned. Each additional candidate costs one full
 # LLM call; N=3 is the budget-safe default on a 6 GB laptop GPU.
-_BEST_OF_N_COHESIVE = 3
-_BEST_OF_N_EXPLORATION_TEMPS = [0.3, 0.5, 0.7]
-_BEST_OF_N_OPTIMIZATION_TEMPS = [0.15, 0.25, 0.35]
+# Reduce best-of-N on laptop path (LLM_CONCURRENCY=1). With genome-enhanced
+# scoring, 2 candidates is sufficient — the genome coverage signal is more
+# discriminating than word overlap alone, so fewer candidates are needed to
+# find the best one. On vLLM/A100 (LLM_CONCURRENCY > 1) keep the full 3.
+_BEST_OF_N_COHESIVE = 2 if LLM_CONCURRENCY <= 1 else 3
+_BEST_OF_N_EXPLORATION_TEMPS = [0.3, 0.7][:_BEST_OF_N_COHESIVE]
+_BEST_OF_N_OPTIMIZATION_TEMPS = [0.15, 0.35][:_BEST_OF_N_COHESIVE]
 
 # Debate frame for `alternatives` cluster sets (improvement 5.5).
 # When ≥2 surviving clusters are connected by an `alternatives` edge and
@@ -134,7 +140,7 @@ _BEST_OF_N_OPTIMIZATION_TEMPS = [0.15, 0.25, 0.35]
 # identifies the unresolved empirical question. Gate on _SYNTHESIZER_USE_DEBATE
 # (False by default — adds 3+ LLM calls per alternatives set; enable only
 # when compute budget permits).
-_SYNTHESIZER_USE_DEBATE = False  # enable to activate debate frame
+_SYNTHESIZER_USE_DEBATE = True   # debate frame for alternatives cluster sets
 _DEBATE_PRIORITY_RATIO = 0.8     # alternatives within 20% of each other's priority
 _DEBATE_ROUND_MAX_TOKENS = 800
 _DEBATE_JUDGE_MAX_TOKENS = 600
@@ -147,7 +153,7 @@ _DEBATE_TEMPERATURE = 0.4
 # not select as primary." Gated on SYNTHESIZER_EMIT_ALTERNATIVE (False by
 # default — adds one full LLM call; enable when compute budget allows).
 # Only fires for cohesive_exploration strategy.
-SYNTHESIZER_EMIT_ALTERNATIVE = False
+SYNTHESIZER_EMIT_ALTERNATIVE = True
 _ALTERNATIVE_MAX_TOKENS = 1500
 _ALTERNATIVE_TEMPERATURE = 0.5
 
@@ -164,6 +170,16 @@ _SYNTHESIZER_USE_CALIBRATED_ABSTENTION = True
 _ABSTAIN_VER_THRESHOLD = 0.15    # max verification_score must exceed this
 _ABSTAIN_DIVERSITY_THRESHOLD = 2  # max support_diversity must exceed this
 _ABSTAIN_DISSENT_THRESHOLD = 1.2  # max dissent_pressure trigger
+
+# Genome-level abstention gate (Gap #3, design doc §11).
+# Fires when every surviving cluster's genome fails all three tests:
+#   composite_fitness < _ABSTAIN_GENOME_FITNESS_TAU
+#   knowledge_base.grounding_score == 0 (purely parametric, no retrieval)
+#   sensitivity.load_bearing_atoms is empty (no atom structure)
+# Only fires when genomes are populated (i.e., after build_projection with
+# the genome pipeline active). Falls back to passing when genomes are absent.
+_SYNTHESIZER_USE_GENOME_ABSTENTION = True
+_ABSTAIN_GENOME_FITNESS_TAU = 0.20   # composite_fitness floor; below this = suspect
 
 # Planner is a single LLM call ahead of per-cluster rendering. Its prompt
 # carries STRUCTURAL metadata only (cluster IDs, support / dissent / ver
@@ -191,6 +207,21 @@ _INTERPRET_TEMPERATURE = 0.1
 _INTEGRATE_MAX_TOKENS = 2500
 _INTEGRATE_TEMPERATURE_EXPLORATION = 0.7
 _INTEGRATE_TEMPERATURE_OPTIMIZATION = 0.3
+
+# Lattice resolution: governs which level of the multi-resolution lattice
+# the synthesizer primarily traverses when composing a cluster's paragraph.
+# "atom" = atom-level citations from VERIFICATION metadata (analysis/coding
+# tasks where exact sourcing matters); "cluster" = cluster-rep only (debate/
+# problem_solving where positions matter more than citations); "frame" =
+# aggregate frame-level framing (creative tasks with broad scope).
+# "atom+cluster" = atom references annotated per cluster (coding).
+_LATTICE_RESOLUTION_BY_TASK = {
+    "creative":        "frame",
+    "problem_solving": "cluster",
+    "debate":          "cluster",
+    "analysis":        "atom",
+    "coding":          "atom+cluster",
+}
 
 # Map task_type to output strategy. Tasks not listed fall back to
 # "sectioned" (the original multi-section format). Per the design memo:
@@ -231,6 +262,14 @@ _SECTION_1_DIVERSITY_MIN_DIST = 0.35
 # If the planner returns more than this, the set is trimmed to the most
 # diverse, highest-priority clusters.
 _SECTION_1_MAX_RENDER_FULL = 6
+
+# Semaphore size for parallel per-cluster renders (Fix S1 from §9b).
+# The per-cluster renders are mutually independent under the no-leak rule, so
+# they can run concurrently. Capped at min(LLM_CONCURRENCY, 4) because the
+# laptop GPU (RTX 3060, 6 GB VRAM) can safely decode ≤4 streams in parallel.
+# With LLM_CONCURRENCY=1 (laptop/HF path) this collapses to serial — same
+# behaviour as before, zero overhead. On vLLM / A100 paths it parallelizes.
+_RENDER_SEM_SIZE = max(1, min(LLM_CONCURRENCY, 4))
 
 # Retries for the prompt interpreter and planner when the LLM returns
 # malformed or non-JSON output.
@@ -568,6 +607,46 @@ class Synthesizer:
                     f"with a larger corpus or more iterations."
                 )
 
+        # Genome-level abstention gate (Gap #3, design doc §11).
+        # Only fires when all surviving clusters have populated genomes
+        # AND all of them fail the composite_fitness+grounding+load_bearing triple.
+        # Complement to the structural gate above: catches the case where
+        # clusters exist and are structurally reasonable but have zero external
+        # grounding, no load-bearing atoms, and poor composite fitness.
+        if (
+            _SYNTHESIZER_USE_GENOME_ABSTENTION
+            and projection.surviving
+            and all(cp.genome is not None for cp in projection.surviving)
+        ):
+            def _genome_passes(cp) -> bool:
+                g = cp.genome
+                if g is None:
+                    return True   # no genome → pass (don't penalise legacy path)
+                fitness_ok = g.composite_fitness >= _ABSTAIN_GENOME_FITNESS_TAU
+                grounding_ok = g.knowledge_base.source_count > 0
+                atoms_ok = len(g.sensitivity.load_bearing_atoms) > 0
+                return fitness_ok or grounding_ok or atoms_ok
+
+            if not any(_genome_passes(cp) for cp in projection.surviving):
+                best = max(projection.surviving, key=lambda c: c.genome.composite_fitness)
+                print(
+                    f"[synthesizer] GENOME ABSTAIN: no surviving cluster clears "
+                    f"fitness≥{_ABSTAIN_GENOME_FITNESS_TAU} OR grounding>0 OR load_bearing_atoms≥1. "
+                    f"Best composite_fitness={best.genome.composite_fitness:.3f}"
+                )
+                if output_dir is not None:
+                    _write_no_consensus_audit(output_dir)
+                return (
+                    f"The surviving signal clusters lack sufficient external grounding "
+                    f"and atom-level support structure for confident synthesis. "
+                    f"Abstaining from synthesis.\n\n"
+                    f"Best cluster composite_fitness={best.genome.composite_fitness:.3f} "
+                    f"(threshold={_ABSTAIN_GENOME_FITNESS_TAU}), "
+                    f"grounding={best.genome.knowledge_base.source_count} source(s), "
+                    f"load_bearing_atoms={len(best.genome.sensitivity.load_bearing_atoms)}.\n\n"
+                    f"Consider re-running with more iterations or a larger retrieval corpus."
+                )
+
         # ------------------------------------------------------------------
         # Stage 1: interpret the user's prompt into a structural contract.
         # Decouples task category (coarse) from output shape (fine). The
@@ -760,35 +839,55 @@ class Synthesizer:
                     )
 
             fragments: list[str] = []
-            # Render debate groups first so they appear before normal clusters.
-            for grp in debate_groups:
-                debate_text = await self._render_debate_frame(grp, store)
-                if debate_text:
-                    fragments.append(debate_text)
-                else:
-                    # Debate frame failed: fall back to per-cluster rendering.
-                    for cp in grp:
-                        fragment = await self._render_cluster_position(
-                            cp, store, projection=projection,
-                        )
-                        if fragment:
-                            if fragment[-1] not in ".!?\")'":
-                                fragment += "."
-                            fragments.append(fragment)
-            # Render remaining clusters (not in any debate group).
-            # Pass projection so the renderer can inject adjacency context
-            # (improvement 5.10) without importing neighboring content.
-            for cp in rendered_surviving:
-                if cp.representative_id in debate_cluster_ids:
-                    continue
-                fragment = await self._render_cluster_position(
-                    cp, store, projection=projection,
-                )
-                if fragment:
-                    # Ensure paragraph ends with terminal punctuation.
-                    if fragment and fragment[-1] not in ".!?\")'":
-                        fragment += "."
-                    fragments.append(fragment)
+            # Semaphore-bounded parallel render (Fix S1, §9b).
+            # Per-cluster renders are mutually independent under the no-leak
+            # rule — each call reads only its own cluster's signals. Gather
+            # runs them concurrently up to _RENDER_SEM_SIZE slots. On the
+            # laptop (LLM_CONCURRENCY=1) the semaphore inside the LLM
+            # serializes them anyway; on vLLM paths they genuinely parallelize.
+            _render_sem = asyncio.Semaphore(_RENDER_SEM_SIZE)
+
+            async def _guarded_debate(grp):
+                async with _render_sem:
+                    return await self._render_debate_frame(grp, store)
+
+            async def _guarded_position(cp):
+                async with _render_sem:
+                    return await self._render_cluster_position(
+                        cp, store, projection=projection,
+                    )
+
+            # Render debate groups and remaining clusters concurrently.
+            # Debate groups first (preserves ordering in final output).
+            debate_tasks = [_guarded_debate(grp) for grp in debate_groups]
+            debate_results = await asyncio.gather(*debate_tasks, return_exceptions=True)
+
+            for grp, result in zip(debate_groups, debate_results):
+                if isinstance(result, BaseException):
+                    # Debate frame raised: fall back to per-cluster rendering.
+                    fallback_tasks = [_guarded_position(cp) for cp in grp]
+                    fallback_results = await asyncio.gather(*fallback_tasks, return_exceptions=True)
+                    for frag in fallback_results:
+                        if isinstance(frag, str) and frag:
+                            if frag[-1] not in ".!?\")'":
+                                frag += "."
+                            fragments.append(frag)
+                elif result:
+                    fragments.append(result)
+
+            # Render remaining (non-debate) clusters in parallel, then
+            # append in priority order (gather preserves task submission order).
+            solo_clusters = [
+                cp for cp in rendered_surviving
+                if cp.representative_id not in debate_cluster_ids
+            ]
+            solo_tasks = [_guarded_position(cp) for cp in solo_clusters]
+            solo_results = await asyncio.gather(*solo_tasks, return_exceptions=True)
+            for frag in solo_results:
+                if isinstance(frag, str) and frag:
+                    if frag[-1] not in ".!?\")'":
+                        frag += "."
+                    fragments.append(frag)
             if fragments:
                 # Stage B (improvement 5.4): compose paragraphs along the
                 # typed edge graph. Falls back to plain join when no edges
@@ -822,12 +921,20 @@ class Synthesizer:
         ]
         if dissent_candidates or contradictions:
             fragments = []
-            for cp in dissent_candidates:
-                fragment = await self._render_cluster_dissent(cp, store)
-                if fragment:
-                    if fragment[-1] not in ".!?\")'":
-                        fragment += "."
-                    fragments.append(fragment)
+            # Parallel dissent renders — same independence guarantee as Section 1.
+            _dissent_sem = asyncio.Semaphore(_RENDER_SEM_SIZE)
+
+            async def _guarded_dissent(cp):
+                async with _dissent_sem:
+                    return await self._render_cluster_dissent(cp, store)
+
+            dissent_tasks = [_guarded_dissent(cp) for cp in dissent_candidates]
+            dissent_results = await asyncio.gather(*dissent_tasks, return_exceptions=True)
+            for frag in dissent_results:
+                if isinstance(frag, str) and frag:
+                    if frag[-1] not in ".!?\")'":
+                        frag += "."
+                    fragments.append(frag)
             for ca, cb in contradictions:
                 fragments.append(
                     f"[INTER-CLUSTER CONTRADICTION] Clusters "
@@ -887,6 +994,45 @@ class Synthesizer:
                 "## 3. CONSIDERED AND FILTERED\n\n"
                 + "\n".join(lines)
             )
+
+        # ------------------------------------------------------------------
+        # Section 5: Topology coverage gaps — cells the scouts were assigned
+        # to but no surviving signal covered. Pure Python; no LLM call.
+        # Only emitted when topology is present and gaps exist.
+        # ------------------------------------------------------------------
+        topology = getattr(projection, "topology", None)
+        if topology is not None:
+            uncovered = list(getattr(projection, "uncovered_cells", []))
+            if uncovered:
+                gap_lines: list[str] = []
+                for cell in uncovered[:8]:
+                    desc = (
+                        topology.cell_description(cell)
+                        if hasattr(topology, "cell_description") else str(cell)
+                    )
+                    gap_lines.append(f"- {desc}")
+                sections.append(
+                    "## 5. UNEXPLORED ANSWER-SPACE REGIONS\n\n"
+                    "The following topology cells were assigned to scouts but no "
+                    "surviving signal was deposited in these regions — they "
+                    "represent bounds of the answer space the swarm did not "
+                    "adequately explore:\n\n"
+                    + "\n".join(gap_lines)
+                )
+
+        # Section 6: Out-of-bounds clusters — surviving clusters whose topology
+        # coordinates fall outside the declared axes. Flags possible category
+        # errors or prompt drift. Only emitted when OOB clusters exist.
+        if topology is not None:
+            oob = list(getattr(projection, "out_of_bounds_clusters", []))
+            if oob:
+                sections.append(
+                    "## 6. OUT-OF-BOUNDS CLUSTERS\n\n"
+                    f"{len(oob)} surviving cluster(s) have topology coordinates "
+                    "that fall outside the declared answer-space axes. This may "
+                    "indicate off-topic exploration or axis under-specification:\n\n"
+                    + "\n".join(f"- [{c}]" for c in oob[:5])
+                )
 
         # ------------------------------------------------------------------
         # Assemble sections
@@ -1348,6 +1494,27 @@ class Synthesizer:
             f"Of {total} claim cluster(s) projected from the signal field: {breakdown}.",
         ]
 
+        # Topology coverage preamble — shows which answer-space cells were
+        # explored vs. left uncovered. Pure Python; no LLM call.
+        topology = getattr(projection, "topology", None)
+        if topology is not None:
+            n_cells = len(topology.all_cells()) if hasattr(topology, "all_cells") else 0
+            covered_cells = list(getattr(projection, "topology_coverage", {}).keys())
+            uncovered = list(getattr(projection, "uncovered_cells", []))
+            oob = list(getattr(projection, "out_of_bounds_clusters", []))
+            lines.append(
+                f"Answer-space topology: {len(topology.axes)} axes, "
+                f"{n_cells} cells. "
+                f"Coverage: {len(covered_cells)}/{n_cells} cells explored. "
+                + (f"Uncovered: {len(uncovered)} cell(s). " if uncovered else "")
+                + (f"Out-of-bounds clusters: {len(oob)}. " if oob else "")
+            )
+            if uncovered:
+                uc_strs = [topology.cell_description(c) for c in uncovered[:4]
+                           if hasattr(topology, "cell_description")]
+                if uc_strs:
+                    lines.append(f"Uncovered regions: {'; '.join(uc_strs)}")
+
         if projection.surviving:
             ranked = _rank_clusters(projection.surviving)
             top = ranked[0]
@@ -1441,6 +1608,69 @@ class Synthesizer:
             lines.append("")
         return "\n".join(lines).rstrip()
 
+    def _gather_genomes(
+        self, projection: SynthesisProjection, cluster_ids: list[str],
+    ) -> list:
+        """Return ClusterGenome objects for the given cluster IDs (Fix S2, §9b).
+
+        Prefer genome-based intake over raw-materials when genomes are populated.
+        Returns empty list when no cluster has a genome — caller should fall back
+        to _gather_raw_materials.
+        """
+        result = []
+        all_cps = projection.surviving + projection.contested
+        for cid in cluster_ids:
+            cp = next((c for c in all_cps if c.representative_id == cid), None)
+            if cp is not None and cp.genome is not None:
+                result.append((cp, cp.genome))
+        return result
+
+    def _format_genome_bundle(self, genome_pairs: list) -> str:
+        """Render a structured genome bundle for the integration call (Fix S2, §9b).
+
+        Replaces the flat text dump from _format_materials_block with a compact
+        structured form: atoms (id, text, score, source), fitness summary, and
+        domain provenance. The integration call reduces over this structure rather
+        than re-deriving it from prose.
+
+        No-leak: only AtomFact.text, atom_id, scalar fields, and source_tag
+        (no foreign reasoning chains, no signal ancestry text).
+        """
+        if not genome_pairs:
+            return "(no genome bundle available)"
+        lines: list[str] = []
+        for cp, g in genome_pairs:
+            fitness_str = (
+                f"composite_fitness={g.composite_fitness:.3f} "
+                f"(grounding={g.fitness_breakdown.get('grounding', 0):.2f}, "
+                f"stability={g.fitness_breakdown.get('centroid_stability', 0):.2f}, "
+                f"llm_judged={g.fitness_breakdown.get('semantic_strength', 0):.2f})"
+            )
+            lines.append(
+                f"--- CLUSTER [{cp.representative_id}] {fitness_str} "
+                f"status={cp.status} ---"
+            )
+            if g.atoms:
+                lines.append("ATOMS:")
+                for a in g.atoms[:6]:
+                    src = f" [src:{a.source_tag}]" if a.source_tag and not a.source_tag.startswith("(") else ""
+                    lines.append(
+                        f"  [{a.atom_id}] {a.text} "
+                        f"(score={a.verification_score:.2f}, w={a.weight:.2f}){src}"
+                    )
+            kb = g.knowledge_base
+            if kb.source_domains:
+                lines.append(
+                    f"SOURCES: {', '.join(kb.source_domains[:5])} "
+                    f"(domain_diversity={kb.domain_diversity:.2f})"
+                )
+            if g.sensitivity.load_bearing_atoms:
+                lines.append(
+                    f"LOAD-BEARING ATOMS: {', '.join(g.sensitivity.load_bearing_atoms[:3])}"
+                )
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
     async def _render_cohesive_exploration(
         self,
         contract: dict,
@@ -1462,8 +1692,14 @@ class Synthesizer:
         _build_cohesive_audit) — content-word overlap and structural
         plausibility, not 4-gram exact match.
         """
-        materials = self._gather_raw_materials(projection, store, render_ids)
-        materials_block = self._format_materials_block(materials)
+        # Fix S2 (§9b): use structured genome bundle when genomes are available.
+        # Falls back to raw-materials text dump on legacy paths (no genome).
+        genome_pairs = self._gather_genomes(projection, render_ids)
+        if genome_pairs:
+            materials_block = self._format_genome_bundle(genome_pairs)
+        else:
+            materials = self._gather_raw_materials(projection, store, render_ids)
+            materials_block = self._format_materials_block(materials)
 
         # Edge-graph cues (improvement 5.4): tell the integration call how
         # threads relate so it can choose transitions deliberately.
@@ -1539,8 +1775,13 @@ class Synthesizer:
         the spec. Same single-call shape as the exploration path, but lower
         temperature and a spec-shaped instruction.
         """
-        materials = self._gather_raw_materials(projection, store, render_ids)
-        materials_block = self._format_materials_block(materials)
+        # Fix S2 (§9b): use structured genome bundle when genomes are available.
+        genome_pairs_opt = self._gather_genomes(projection, render_ids)
+        if genome_pairs_opt:
+            materials_block = self._format_genome_bundle(genome_pairs_opt)
+        else:
+            materials = self._gather_raw_materials(projection, store, render_ids)
+            materials_block = self._format_materials_block(materials)
 
         # Edge-graph cues (improvement 5.4): tell the integration call which
         # approaches are alternatives (pick the better), complements (merge),
@@ -1683,17 +1924,18 @@ class Synthesizer:
     ) -> float:
         """Score a candidate cohesive artifact for best-of-N argmax selection.
 
-        score = cluster_coverage_rate − audit_flag_penalty
+        score = weighted_coverage_rate − audit_flag_penalty
 
-        cluster_coverage_rate: fraction of surviving cluster reps that have
-        at least one content word (4+ letters, non-stop) appearing in the
-        artifact. Measures whether the integration call actually used the
-        swarm's evidence rather than generating from parametric knowledge.
+        Genome-enhanced (when genomes are available):
+          weighted_coverage_rate uses composite_fitness as the weight per cluster,
+          so high-fitness clusters contribute more to the score than low-fitness
+          ones. Coverage checks both representative content AND atom texts, so
+          an artifact that uses precise atom propositions scores higher than one
+          that only echoes the representative summary.
+
+        Legacy fallback (when no genomes): original uniform coverage rate.
 
         audit_flag_penalty: number of soft-audit flags * 0.1, capped at 0.5.
-        Subtracts for structural violations, content overlap failures, and
-        fabricated citation IDs that leaked into the artifact.
-
         Pure Python — no additional LLM calls.
         """
         _STOP = frozenset({
@@ -1701,23 +1943,49 @@ class Synthesizer:
             "it", "be", "that", "this", "with", "for", "on", "as", "by",
             "at", "from", "but", "not",
         })
+        artifact_lower = (artifact or "").lower()
         artifact_words = {
-            w for w in re.findall(r"[a-z]{4,}", (artifact or "").lower())
+            w for w in re.findall(r"[a-z]{4,}", artifact_lower)
             if w not in _STOP
         }
+
         all_clusters = projection.surviving + projection.contested
-        covered = 0
+        total_weight = 0.0
+        covered_weight = 0.0
+        has_genomes = any(cp.genome is not None for cp in all_clusters)
+
         for cp in all_clusters:
+            # Genome-aware weight: use composite_fitness when available
+            weight = cp.genome.composite_fitness if (cp.genome is not None and has_genomes) else 1.0
+            weight = max(0.01, weight)  # floor so zero-fitness clusters still count
+            total_weight += weight
+
+            # Coverage: check representative content
             rep = store.get(cp.representative_id)
-            if not rep:
-                continue
-            rep_words = {
-                w for w in re.findall(r"[a-z]{4,}", rep.content.lower())
-                if w not in _STOP
-            }
-            if rep_words & artifact_words:
-                covered += 1
-        coverage_rate = covered / max(1, len(all_clusters))
+            rep_covered = False
+            if rep:
+                rep_words = {
+                    w for w in re.findall(r"[a-z]{4,}", rep.content.lower())
+                    if w not in _STOP
+                }
+                rep_covered = bool(rep_words & artifact_words)
+
+            # Genome-aware coverage: also check atom texts (more precise than rep content)
+            atom_covered = False
+            if cp.genome is not None and cp.genome.atoms:
+                for atom in cp.genome.atoms:
+                    atom_words = {
+                        w for w in re.findall(r"[a-z]{4,}", atom.text.lower())
+                        if w not in _STOP
+                    }
+                    if atom_words & artifact_words:
+                        atom_covered = True
+                        break
+
+            if rep_covered or atom_covered:
+                covered_weight += weight
+
+        coverage_rate = covered_weight / max(1e-9, total_weight)
 
         try:
             flags = _build_cohesive_audit(artifact, contract, projection, store)
@@ -2207,6 +2475,44 @@ class Synthesizer:
         if rep is None:
             return ""
 
+        # Fix S3 (§9b): template-first render for high-confidence clusters.
+        # When ALL atoms have verification_score ≥ 0.60 AND no meaningful dissent
+        # AND task type is factual (not creative/debate where prose nuance matters),
+        # render deterministically without an LLM call. Reserve llm.generate() for
+        # clusters that genuinely need prose smoothing or that have dissent to address.
+        task_type_s3 = getattr(self, "_task_type", None)
+        _TEMPLATE_VER_FLOOR = 0.60
+        _TEMPLATE_DISSENT_MAX = 0.30
+        if (
+            cp.genome is not None
+            and cp.genome.atoms
+            and task_type_s3 not in {"creative", "debate"}
+            and cp.dissent_pressure < _TEMPLATE_DISSENT_MAX
+            and all(a.verification_score >= _TEMPLATE_VER_FLOOR
+                    for a in cp.genome.atoms)
+        ):
+            atom_stmts = []
+            for a in cp.genome.atoms:
+                src = f" [{a.source_tag}]" if a.source_tag and not a.source_tag.startswith("(") else ""
+                atom_stmts.append(f"{a.text}{src}")
+            unver_pfx = ""
+            if cp.unverified and task_type_s3 not in {"debate", "analysis", "problem_solving", "creative"}:
+                unver_pfx = " (not externally verified)"
+            template_para = (
+                f"[{cp.representative_id}] "
+                + " ".join(atom_stmts)
+                + unver_pfx
+                + f" (support_diversity={cp.support_diversity},"
+                f" verification={cp.verification_score:.2f})"
+                + "."
+            )
+            print(
+                f"[RENDER] template-first {cp.representative_id}: "
+                f"n_atoms={len(cp.genome.atoms)} "
+                f"min_score={min(a.verification_score for a in cp.genome.atoms):.2f}"
+            )
+            return template_para
+
         content = _truncate(rep.content, _REPRESENTATIVE_CHARS)
         # Only annotate "not externally verified" on factual tasks. For debate
         # / analysis / problem_solving the projection no longer flags unverified
@@ -2250,6 +2556,24 @@ class Synthesizer:
                 + "\n".join(f"  · {n}" for n in validator_notes)
                 + "\n"
             )
+        elif cp.genome is not None and cp.genome.atoms:
+            # Prefer genome atom verification scores over live Wikipedia lookup.
+            # Removes the synchronous network round-trip from the serial chain.
+            verified = [
+                a for a in cp.genome.atoms
+                if a.source_tag and not a.source_tag.startswith("(")
+            ]
+            if verified:
+                atom_lines = [
+                    f"  [{a.source_tag}] (score={a.verification_score:.2f}): {a.text}"
+                    for a in verified[:3]
+                ]
+                ext_block = (
+                    "\n[External grounding from atom verification]:\n"
+                    + "\n".join(atom_lines) + "\n"
+                )
+            else:
+                ext_block = ""
         else:
             ext_ctx = _get_external_context(rep.content)
             ext_block = (
@@ -2342,6 +2666,39 @@ class Synthesizer:
                     + "\n".join(adj_lines) + "\n"
                 )
 
+        # Sensitivity annotation (topology-lattice overhaul): inject robustness
+        # signal from _build_sensitivities() when available. Tells the renderer
+        # whether this cluster's survival is load-bearing on a few key supports
+        # (fragile) or spread across many (robust). Purely structural metadata —
+        # no other cluster's content is exposed.
+        sensitivity_block = ""
+        if projection is not None:
+            sens = getattr(projection, "cluster_sensitivities", {}).get(
+                cp.representative_id
+            )
+            if sens is not None:
+                robustness = getattr(sens, "support_removal_robustness", None)
+                load_bearing = getattr(sens, "load_bearing_supports", [])
+                competing = getattr(sens, "competing_takeover", None)
+                topo_gap = getattr(sens, "topology_uncovered_on_removal", [])
+                parts: list[str] = []
+                if robustness is not None:
+                    parts.append(f"robustness={robustness:.2f}")
+                if load_bearing:
+                    parts.append(
+                        f"load_bearing=[{', '.join(load_bearing[:2])}]"
+                    )
+                if competing:
+                    parts.append(f"competing_cluster=[{competing}]")
+                if topo_gap:
+                    parts.append(
+                        f"topology_gap_on_removal={len(topo_gap)}_cell(s)"
+                    )
+                if parts:
+                    sensitivity_block = (
+                        f"\nSensitivity: {', '.join(parts)}.\n"
+                    )
+
         # Position-taking instruction varies by task type. Non-factual tasks
         # need an actual stance on the supplied evidence; factual tasks need
         # to stick to what's verifiable. Both forbid the "the debate over X"
@@ -2383,6 +2740,7 @@ class Synthesizer:
             f"{dissent_block}"
             f"{traj_block}"
             f"{adj_block}"
+            f"{sensitivity_block}"
             f"{ext_block}"
             f"{partition_note}\n\n"
             f"PARAGRAPH:"

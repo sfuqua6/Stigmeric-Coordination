@@ -103,6 +103,7 @@ from agents.synthesizer import Synthesizer
 from core.role_registry import get_role_classes
 from core.worker_pool import run_pool, decay_loop
 from core.convergence import ConvergenceDetector
+from core.topology import generate_topology, assign_topology_cells, format_cell_for_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +459,16 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
             f"(web={len(web_partitions)}, corpus={len(corpus_parts)})"
         )
 
+    # Topology generation (bounds-first exploration): one LLM call before any
+    # scout runs, producing an AnswerSpaceTopology whose cells are pre-assigned
+    # to scouts. Scouts carry topology_coords in INITIAL metadata for coverage
+    # tracking in build_projection. Returns None gracefully on parse failure.
+    topology = None
+    topology_cell_assignments: list = [None] * NUM_SCOUTS
+    if task_type != "coding" and llm is not None:
+        topology = await generate_topology(task_prompt, task_type, llm)
+        topology_cell_assignments = assign_topology_cells(topology, NUM_SCOUTS)
+
     # Estimate total LLM calls for the progress bar.
     # Per round: scouts + validators (phase A) + foragers + critics + haters (phase B).
     # Plus 1 synthesizer call at the end.
@@ -533,8 +544,15 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 for i in range(NUM_SCOUTS)
             ]
         else:
-            scouts = [
-                ScoutClass(
+            scouts = []
+            for i in range(NUM_SCOUTS):
+                _cell = topology_cell_assignments[i] if topology_cell_assignments else None
+                _cell_desc = (
+                    format_cell_for_prompt(topology, _cell)
+                    if topology is not None and _cell is not None
+                    else ""
+                )
+                scouts.append(ScoutClass(
                     agent_id=f"scout_R{round_num}_{i}",
                     llm=llm,
                     config=ScoutConfig(
@@ -545,10 +563,10 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                         # contiguous-partition diversity engine.
                         use_search=(corpus_mode != "placeholder"),
                         user_prompt=user_prompt,
+                        topology_cell=_cell,
+                        topology_cell_desc=_cell_desc,
                     ),
-                )
-                for i in range(NUM_SCOUTS)
-            ]
+                ))
         validators = []
         for i in range(n_validators):
             name, strat = strategy_for_validator(i)
@@ -771,7 +789,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
     if not ignore_kb:
         try:
             from core.projection import build_projection
-            final_projection = build_projection(store, has_validators=(n_validators > 0))
+            final_projection = build_projection(store, has_validators=(n_validators > 0), topology=topology)
             diff = kb.save(final_projection, store, run_meta_dict, output_dir=output_dir)
             kb_diff = {
                 "new": len(diff.get("new_entries", [])),
@@ -977,15 +995,23 @@ async def run_continuous_pipeline(
     detector = ConvergenceDetector(store, task_type=task_type)
     stop_event = asyncio.Event()
 
+    # Genome cache: cluster_id -> ClusterGenome. Shared with all workers via
+    # reference. Refreshed periodically in the tick loop so workers see
+    # up-to-date atom-targeted prompts as clusters develop.
+    _genome_cache: dict = {}
+
     pool_task = asyncio.create_task(run_pool(
         store, llm, task_prompt, user_prompt, stop_event,
         n_workers=n_workers,
         task_type=task_type,
         router=router,
+        genome_cache=_genome_cache,
     ))
     decay_task = asyncio.create_task(decay_loop(store, stop_event, interval_s=30.0))
 
     # Orchestrator tick loop — every 2s, snapshot state, log, check halt.
+    _last_genome_refresh_iter = 0
+    _GENOME_REFRESH_EVERY = 25   # refresh genome cache every N worker iterations
     while not stop_event.is_set():
         await asyncio.sleep(2.0)
         elapsed = time.time() - pipeline_start
@@ -1000,6 +1026,24 @@ async def run_continuous_pipeline(
         iter_n = ps.iteration_counter if ps else 0
         detector.tick(iter_n, elapsed)
         _log_progress(iter_n, elapsed, detector, ps, store, task_type=task_type)
+
+        # Genome cache refresh: rebuild projection and update the shared dict
+        # so workers get up-to-date atom-targeted prompts. Done every
+        # _GENOME_REFRESH_EVERY iterations, not every tick (build_projection
+        # is pure-Python but not free). Pure dict update is GIL-safe in async.
+        if iter_n - _last_genome_refresh_iter >= _GENOME_REFRESH_EVERY:
+            try:
+                from core.projection import build_projection as _bp
+                _proj = _bp(store, has_validators=True, task_type=task_type)
+                _genome_cache.clear()
+                for _cp in (_proj.surviving + _proj.contested
+                            + _proj.weakly_supported + _proj.rejected_by_field):
+                    if _cp.genome is not None:
+                        _genome_cache[_cp.representative_id] = _cp.genome
+                _last_genome_refresh_iter = iter_n
+            except Exception:
+                pass   # genome cache stays stale; workers fall back to standard prompts
+
         if detector.satisfied(iter_n, elapsed):
             break
 

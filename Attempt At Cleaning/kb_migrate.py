@@ -1,4 +1,9 @@
-"""Migration script: old flat-JSON KB format → schema_version=2 format.
+"""Migration script: KB format upgrades.
+
+Supports:
+  v1 (flat JSON) → v2 (schema_version field, cluster_hash, decay fields)
+  v2 → v3 (genome fields: genome_hash, genome_atoms, composite_fitness,
+            fitness_breakdown, knowledge_base summary)
 
 Reads surviving_clusters.json, contested_clusters.json, rejected_clusters.json
 from the old format (or from quarantine directories), applies the junk filter,
@@ -29,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.filters import is_junk_output
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _FILES = ("surviving_clusters.json", "contested_clusters.json", "rejected_clusters.json")
 
 
@@ -82,6 +87,17 @@ def _migrate_file(path: Path) -> tuple[list[dict], int, int, int]:
         entry.setdefault("run_count", 1)
         entry.setdefault("task_context", None)
         entry.setdefault("contradicts", [])
+
+        # v2→v3: genome fields with null placeholders for old entries
+        # (atoms will be populated on the next real run via build_projection)
+        entry.setdefault("genome_hash", None)
+        entry.setdefault("genome_atoms", [])
+        entry.setdefault("composite_fitness", None)
+        entry.setdefault("fitness_breakdown", {})
+        entry.setdefault("knowledge_base", {})
+
+        # Stamp final schema version
+        entry["schema_version"] = _SCHEMA_VERSION
 
         seen_hashes[chash] = len(out)
         out.append(entry)

@@ -60,6 +60,10 @@ class _Cluster:
     signal_type: str
     member_ids: list[str] = field(default_factory=list)
     centroid: list[float] = field(default_factory=list)
+    # Snapshot of the centroid at the moment the cluster was created (the
+    # founding member's embedding, L2-normalized). Used by the genome's
+    # Phenotype to compute centroid_drift across the run.
+    centroid_at_formation: list[float] = field(default_factory=list)
     deposit_count: int = 0   # deposits INTO this cluster; triggers reanchor
 
 
@@ -128,6 +132,7 @@ class ClusterRegistry:
             signal_type=signal_type,
             member_ids=[signal_id],
             centroid=embedding[:],
+            centroid_at_formation=embedding[:],
             deposit_count=1,
         )
         self._clusters[cid] = cl
@@ -246,6 +251,7 @@ class ClusterRegistry:
                 signal_type=cl.signal_type,
                 member_ids=[mid],
                 centroid=emb[:],
+                centroid_at_formation=emb[:],
                 deposit_count=1,
             )
             self._clusters[new_cid] = new_cl

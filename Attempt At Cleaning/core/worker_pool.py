@@ -1084,7 +1084,26 @@ class Worker:
             return target, [], "", None
 
         if action == VALIDATE:
-            target = _sample_well_supported_cluster_head(
+            # Genome-aware target selection: prefer high-fitness clusters whose
+            # atoms have the lowest mean verification_score — highest marginal
+            # value from adding an external verification pass. Falls back to
+            # the existing well-supported cluster head sampler.
+            validate_target: Optional[Signal] = None
+            if self._genome_cache:
+                best_val = -1.0
+                for rep_id, genome in self._genome_cache.items():
+                    if not genome.atoms:
+                        continue
+                    mean_unverified = sum(
+                        1.0 - a.verification_score for a in genome.atoms
+                    ) / len(genome.atoms)
+                    val = genome.composite_fitness * mean_unverified
+                    if val > best_val:
+                        sig = store.get(rep_id)
+                        if sig is not None and not pool_state.recent_targets.get(sig.id, 0):
+                            best_val = val
+                            validate_target = sig
+            target = validate_target or _sample_well_supported_cluster_head(
                 store, pool_state.recent_targets, self._rng,
             )
             if target is None:

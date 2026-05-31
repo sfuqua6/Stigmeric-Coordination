@@ -328,20 +328,37 @@ class KnowledgeBase:
             new_emb = entry.get("representative_embedding")
             new_hash = entry.get("cluster_hash", "")
             new_content = entry.get("representative_content", "")
+            new_genome_hash = entry.get("genome_hash")
             matched = False
 
             for ex in existing:
-                ex_emb = ex.get("representative_embedding")
-                # Prefer embedding cosine similarity; fall back to string ratio.
-                if new_emb is not None and ex_emb is not None:
-                    sim = _cosine_sim(new_emb, ex_emb)
+                # Fast path: exact genome_hash match — same atom set across runs.
+                # O(1) string compare vs. O(n) cosine/SequenceMatcher. Also
+                # refreshes genome data with the newer, likely higher-quality values.
+                if (new_genome_hash
+                        and new_genome_hash == ex.get("genome_hash")
+                        and new_genome_hash != ""):
+                    ex_cf = ex.get("composite_fitness") or 0.0
+                    new_cf = entry.get("composite_fitness") or 0.0
+                    if new_cf > ex_cf:
+                        ex["composite_fitness"] = new_cf
+                        ex["fitness_breakdown"] = entry.get("fitness_breakdown", {})
+                        ex["genome_atoms"] = entry.get("genome_atoms", [])
+                        ex["knowledge_base"] = entry.get("knowledge_base", {})
+                    sim = 1.0  # exact atom-set match
+
                 else:
-                    from difflib import SequenceMatcher
-                    sim = SequenceMatcher(
-                        None,
-                        new_content.lower(),
-                        ex.get("representative_content", "").lower(),
-                    ).ratio()
+                    ex_emb = ex.get("representative_embedding")
+                    # Prefer embedding cosine similarity; fall back to string ratio.
+                    if new_emb is not None and ex_emb is not None:
+                        sim = _cosine_sim(new_emb, ex_emb)
+                    else:
+                        from difflib import SequenceMatcher
+                        sim = SequenceMatcher(
+                            None,
+                            new_content.lower(),
+                            ex.get("representative_content", "").lower(),
+                        ).ratio()
 
                 if sim >= _KB_DEDUP_THRESHOLD:
                     prev_rc = ex.get("run_count", 1)

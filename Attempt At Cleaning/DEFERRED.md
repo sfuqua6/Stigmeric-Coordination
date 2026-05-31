@@ -1,6 +1,6 @@
 # Deferred Fixes — Things This Session Didn't Touch
 
-<!-- Last verified: 2026-05-28. Update this date and move resolved items to
+<!-- Last verified: 2026-05-31. Update this date and move resolved items to
      the "Resolved" section when they land. -->
 
 
@@ -42,16 +42,16 @@ review and the P-phase IDs from the plan.
 
 ## Architectural (next big work block)
 
-- **P2.2 / R2 — output-side diversity metric.** `diversity.py` still
-  only computes Jaccard over consumed signal IDs. The reviewer is right
-  that this measures input partition, not output independence. Add
-  pairwise centroid cosine distance over agent outputs in embedding
-  space, plus optionally Self-BLEU. Estimate: 30–45 minutes.
+- [x] **P2.2 / R2 — output-side diversity metric.** Resolved 2026-05-31.
+  `output_diversity.py` existed with `centroid_cosine_distance` + `self_bleu`.
+  Wired into `summary.json` for the continuous pipeline. Also added genome
+  quality stats (avg/max composite_fitness, avg_grounding, total_atoms).
 
-- **P2.4 / M11 — real semantic clustering for haters.** `consensus_summary`
-  returns top-K by strength, not an actual cluster. Replace with kNN over
-  embeddings (e.g., DBSCAN or simple cosine-threshold component find).
-  Estimate: ~1 hour using the embedder already loaded in SignalStore.
+- [x] **P2.4 / M11 — real semantic clustering for haters.** Resolved 2026-05-31.
+  `cluster_signals_dbscan` existed and was already used in the OBJECT action.
+  OBJECT further upgraded to prefer genome-vulnerable clusters (high
+  composite_fitness / low grounding ratio). VALIDATE upgraded to prefer
+  high-fitness clusters with low mean atom verification_score.
 
 ## Empirical (hardware-bound, overnight)
 

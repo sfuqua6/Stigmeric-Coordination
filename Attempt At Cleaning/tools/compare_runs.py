@@ -64,6 +64,14 @@ _COMPARISON_KEYS = [
     ("avg_verification_score", "avg verification score"),
     ("audit_flags",            "audit flags"),
     ("corpus_chars",           "corpus chars"),
+    # Genome quality metrics (added in v6.0)
+    ("genome.avg_composite_fitness", "genome avg composite_fitness"),
+    ("genome.max_composite_fitness", "genome max composite_fitness"),
+    ("genome.avg_grounding",         "genome avg grounding"),
+    ("genome.total_atoms",           "genome total atoms"),
+    # Output diversity (P2.2)
+    ("output_diversity.centroid_cosine_dist", "output diversity (centroid cosine)"),
+    ("output_diversity.self_bleu",            "output diversity (self-BLEU)"),
 ]
 
 
@@ -78,9 +86,17 @@ def compare(path_a: str, path_b: str) -> None:
     print(f"\n{'Metric':<30}  {'Run A':<{col_w}}  {'Run B':<{col_w}}  Delta")
     print("-" * (30 + col_w * 2 + 12))
 
+    def _nested_get(d: dict, key: str):
+        """Support dotted paths like 'genome.avg_composite_fitness'."""
+        parts = key.split(".", 1)
+        val = d.get(parts[0], "—")
+        if len(parts) == 2 and isinstance(val, dict):
+            return val.get(parts[1], "—")
+        return val
+
     for key, label in _COMPARISON_KEYS:
-        va = a.get(key, "—")
-        vb = b.get(key, "—")
+        va = _nested_get(a, key)
+        vb = _nested_get(b, key)
         if va == "—" and vb == "—":
             continue
         delta = _delta(va, vb) if va != "—" and vb != "—" else ""

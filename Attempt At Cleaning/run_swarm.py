@@ -696,6 +696,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         {
             "id": s.id, "type": s.type, "strength": round(s.strength, 4),
             "depositor": s.depositor, "parent_id": s.parent_id,
+            "cluster_id": s.cluster_id,
             "visits": s.visits,
             "metadata": s.metadata,
             "content": s.content,
@@ -1119,6 +1120,7 @@ async def run_continuous_pipeline(
         {
             "id": s.id, "type": s.type, "strength": round(s.strength, 4),
             "depositor": s.depositor, "parent_id": s.parent_id,
+            "cluster_id": s.cluster_id,
             "visits": s.visits,
             "metadata": s.metadata,
             "content": s.content,

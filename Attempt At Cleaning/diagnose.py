@@ -97,6 +97,40 @@ def main():
     """)
     results["torch"] = run_step("torch + CUDA", code, timeout=60)
 
+    # 2b. genome pipeline sanity (no GPU, no model — pure Python)
+    code = textwrap.dedent("""
+        import sys
+        sys.path.insert(0, '.')
+        from core.signal_store import SignalStore, _NULL_EMBEDDER
+        from core.signal_types import INITIAL, SUPPORT, VERIFICATION
+        from core.projection import build_projection, ClusterGenome
+        from core.fitness import compute_composite_fitness, CAP_LLM
+        store = SignalStore(embedder=_NULL_EMBEDDER)
+        init_id = store.deposit('INITIAL', 'Test claim for genome diagnostic.', 0.7, 'scout',
+            metadata={'partition_id': 'p0', 'scout_agent_id': 'scout_R1_0',
+                      'depositor_agent_id': 'scout_R1_0'})
+        for i in range(3):
+            store.deposit('SUPPORT', f'Evidence {i}', 0.65, 'forager', parent_id=init_id,
+                metadata={'partition_id': f'p{i}', 'depositor_agent_id': f'forager_R1_{i}_strat'})
+        store.deposit('VERIFICATION', 'Confirmed.', 0.8, 'validator', parent_id=init_id,
+            metadata={'partition_id': 'p0', 'atoms': [
+                {'text': 'Test claim verified.', 'weight': 1.0, 'score': 0.85,
+                 'snippet_tag': 'test.org', 'query': 'test'}]})
+        proj = build_projection(store, has_validators=True, task_type='analysis')
+        all_cp = proj.surviving + proj.weakly_supported + proj.unverified
+        assert all_cp, 'no clusters found'
+        g = all_cp[0].genome
+        assert g is not None, 'genome is None'
+        assert isinstance(g, ClusterGenome), f'wrong type: {type(g)}'
+        assert len(g.atoms) > 0, 'no atoms'
+        assert 0.0 <= g.composite_fitness <= 1.0, f'fitness out of range: {g.composite_fitness}'
+        assert g.fitness_breakdown.get('semantic_strength', 1.0) <= CAP_LLM + 1e-9
+        print(f'genome OK: atoms={len(g.atoms)} fitness={g.composite_fitness:.3f}',
+              f'grounding={g.fitness_breakdown.get("grounding",0):.2f}')
+        print('GENOME PIPELINE: OK')
+    """)
+    results["genome"] = run_step("genome pipeline (no GPU required)", code, timeout=60)
+
     # 3. bitsandbytes — does it import cleanly?
     code = textwrap.dedent("""
         import bitsandbytes as bnb

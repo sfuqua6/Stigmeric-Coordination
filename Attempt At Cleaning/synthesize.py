@@ -47,6 +47,7 @@ def _load_store(signals_path: Path) -> SignalStore:
             timestamp=float(entry.get("timestamp", 0.0)),
             depositor=entry.get("depositor", "unknown"),
             parent_id=entry.get("parent_id"),
+            cluster_id=entry.get("cluster_id"),  # restored from v6+ dumps
             visits=int(entry.get("visits", 0)),
             metadata=entry.get("metadata", {}) or {},
         )
@@ -110,11 +111,14 @@ async def _resynthesize(
     print(f"[synthesize] llm backend: {llm.name}")
 
     synth = Synthesizer(llm, task_prompt)
+    # Pass task_type so the genome FitnessCompositor uses the correct per-task
+    # weight table and the synthesizer's task-aware rendering paths activate.
     answer, citations, lineage_dot = await synth.synthesize(
         store,
         has_validators=has_validators,
         prior_rejections=kb.prior_rejections() if not ignore_kb else None,
         prior_consensus=kb.prior_consensus() if not ignore_kb else None,
+        task_type=task_type,
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

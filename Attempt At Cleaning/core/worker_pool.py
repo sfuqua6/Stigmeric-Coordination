@@ -1043,15 +1043,50 @@ class Worker:
             return target, [], "", None
 
         if action == OBJECT:
-            # Use DBSCAN cluster heads when available
-            clusters = store.cluster_signals_dbscan(INITIAL, eps=0.35)
-            if clusters and len(clusters[0]) > 0:
-                largest = clusters[0]
-                reps = sorted(largest, key=lambda s: s.strength, reverse=True)[:3]
+            # Genome-aware target selection: prefer influential but weakly-grounded
+            # clusters (high composite_fitness × low grounding = worth attacking).
+            # Falls back to DBSCAN field-size selection when no genome cache.
+            genome_target: Optional[Signal] = None
+            if self._genome_cache:
+                # Score each cached genome: fitness/grounding ratio identifies clusters
+                # that have survived selection but lack external backing — highest
+                # priority for adversarial objection.
+                best_score = -1.0
+                for rep_id, genome in self._genome_cache.items():
+                    grounding = genome.fitness_breakdown.get("grounding", 0.0)
+                    # Vulnerability = fitness (influence) / (grounding + ε)
+                    vuln = genome.composite_fitness / max(0.05, grounding)
+                    if vuln > best_score:
+                        sig = store.get(rep_id)
+                        if sig is not None:
+                            best_score = vuln
+                            genome_target = sig
+
+            if genome_target is not None:
+                # Build rep list from the same cluster's members via DBSCAN
+                cluster_sig_id = genome_target.cluster_id
+                reps = [genome_target]
+                if cluster_sig_id:
+                    # Add other strong members of this cluster
+                    for cand_id, g in self._genome_cache.items():
+                        if cand_id != genome_target.id:
+                            cand = store.get(cand_id)
+                            if cand and cand.cluster_id == cluster_sig_id:
+                                reps.append(cand)
+                                if len(reps) >= 3:
+                                    break
+                reps = sorted(reps, key=lambda s: s.strength, reverse=True)[:3]
             else:
-                summary = store.consensus_summary(INITIAL, k=3)
-                reps = [store.get(r["id"]) for r in summary["representatives"]]
-                reps = [s for s in reps if s is not None]
+                # Legacy fallback: DBSCAN cluster heads
+                dbscan_clusters = store.cluster_signals_dbscan(INITIAL, eps=0.35)
+                if dbscan_clusters and len(dbscan_clusters[0]) > 0:
+                    largest = dbscan_clusters[0]
+                    reps = sorted(largest, key=lambda s: s.strength, reverse=True)[:3]
+                else:
+                    summary = store.consensus_summary(INITIAL, k=3)
+                    reps = [store.get(r["id"]) for r in summary["representatives"]]
+                    reps = [s for s in reps if s is not None]
+
             target = reps[0] if reps else None
             # We hand the FULL rep list to object_prompt via a sentinel:
             # attach reps to the worker so _build_prompt sees them.

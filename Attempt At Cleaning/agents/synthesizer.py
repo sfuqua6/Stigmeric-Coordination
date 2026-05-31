@@ -1532,11 +1532,34 @@ class Synthesizer:
             rep = store.get(top.representative_id)
             if rep:
                 excerpt = _truncate(rep.content, 160)
+                # Genome fitness annotation when available
+                genome_note = ""
+                if top.genome is not None:
+                    genome_note = (
+                        f", composite_fitness={top.genome.composite_fitness:.3f}"
+                        f", grounding={top.genome.fitness_breakdown.get('grounding', 0):.2f}"
+                        f", n_atoms={len(top.genome.atoms)}"
+                    )
                 lines.append(
                     f"Strongest surviving cluster [{top.representative_id}] "
                     f"(support_diversity={top.support_diversity}, "
                     f"verification_score={top.verification_score:.2f}, "
-                    f"dissent_pressure={top.dissent_pressure:.2f}): {excerpt}"
+                    f"dissent_pressure={top.dissent_pressure:.2f}"
+                    f"{genome_note}): {excerpt}"
+                )
+
+            # Genome field summary across all surviving clusters
+            genome_cps = [cp for cp in projection.surviving if cp.genome is not None]
+            if genome_cps:
+                avg_fitness = sum(cp.genome.composite_fitness for cp in genome_cps) / len(genome_cps)
+                avg_grounding = sum(
+                    cp.genome.fitness_breakdown.get("grounding", 0.0) for cp in genome_cps
+                ) / len(genome_cps)
+                n_with_atoms = sum(1 for cp in genome_cps if cp.genome.atoms)
+                lines.append(
+                    f"Genome field: avg_composite_fitness={avg_fitness:.3f}, "
+                    f"avg_grounding={avg_grounding:.2f}, "
+                    f"{n_with_atoms}/{len(genome_cps)} clusters have atom-level verification."
                 )
 
         if projection.contested:

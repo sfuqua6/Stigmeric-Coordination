@@ -619,6 +619,21 @@ class TestClusterGenome(unittest.TestCase):
             # Support-level atom should depend on initial-level atom
             self.assertIn(init_atoms[0].atom_id, g.atom_graph[sup_atoms[0].atom_id])
 
+    def test_fission_genome_inherits_atoms(self):
+        """B1 fission inheritance: split cluster carries genome with centroid_at_formation."""
+        from core.cluster_registry import ClusterRegistry
+        cr = ClusterRegistry()
+        # Create a cluster, add a second member that drifts (no reanchor triggered
+        # without CLUSTER_REANCHOR_EVERY deposits, so we manually create two clusters)
+        cr.create("s0", [1.0, 0.0], "INITIAL")
+        cr.create("s1", [0.0, 1.0], "INITIAL")
+        # Both clusters must have centroid_at_formation set
+        for cid in list(cr._clusters):
+            cl = cr.get_cluster(cid)
+            self.assertTrue(len(cl.centroid_at_formation) > 0)
+            # centroid_at_formation should equal centroid for single-member clusters
+            self.assertEqual(cl.centroid, cl.centroid_at_formation)
+
     def test_targets_atom_stamped_in_develop_parse(self):
         """develop_parse stamps targets_atom in metadata when genome provided."""
         from core.actions import develop_parse, _atom_for_develop

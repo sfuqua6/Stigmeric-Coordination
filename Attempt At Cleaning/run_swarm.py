@@ -1041,6 +1041,13 @@ async def run_continuous_pipeline(
                     if _cp.genome is None:
                         continue
                     _g = _cp.genome
+                    # Dual-key: (1) representative_id for synthesizer/planner lookups,
+                    # (2) ClusterRegistry cluster_id for worker pool lookups via
+                    # Signal.cluster_id. Without key (2), _build_prompt and the
+                    # targets_atom stamping always miss (different ID spaces).
+                    _rep_sig = store.get(_cp.representative_id)
+                    if _rep_sig and _rep_sig.cluster_id:
+                        new_cache[_rep_sig.cluster_id] = _g
                     # Merge trajectory history from previous snapshot so
                     # FitnessTrajectory.fitness_history accumulates across refreshes
                     # and _trajectory_score() can return non-zero values.
@@ -1204,10 +1211,11 @@ async def run_continuous_pipeline(
     # summary.json — reuse the projection already computed for KB save when possible
     try:
         from core.projection import build_projection as _bp
-        # Prefer the final projection already computed for KB save;
-        # fall back to a fresh one if KB was skipped.
+        # Prefer the final projection already computed for KB save (stored as
+        # `final_projection`). Fall back to a fresh one if KB was skipped or
+        # the save failed before defining final_projection.
         try:
-            _final_proj  # defined above when KB save ran
+            _final_proj = final_projection  # type: ignore[name-defined]
         except NameError:
             _final_proj = _bp(store, has_validators=True, task_type=task_type)
 

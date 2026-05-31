@@ -835,7 +835,6 @@ def _build_cluster_kb(
     cp: "ClusterProjection",
     store: "SignalStore",
     all_search_sigs: list,
-    all_cluster_projections: list,
     atom_facts: list,
 ) -> "ClusterKnowledgeBase":
     """Populate ClusterKnowledgeBase by aggregating SEARCH-signal lineage.
@@ -1241,7 +1240,7 @@ def _build_genomes(
 
         # ClusterKnowledgeBase: populated from SEARCH-signal lineage
         kb = _build_cluster_kb(
-            cp, store, all_search_sigs, clusters, atom_facts
+            cp, store, all_search_sigs, atom_facts
         )
 
         # GenomeSensitivity: derived from ClusterSensitivity (support-level)

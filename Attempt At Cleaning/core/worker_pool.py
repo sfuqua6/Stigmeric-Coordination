@@ -1063,19 +1063,9 @@ class Worker:
                             genome_target = sig
 
             if genome_target is not None:
-                # Build rep list from the same cluster's members via DBSCAN
-                cluster_sig_id = genome_target.cluster_id
+                # genome_target is the cluster representative; the genome cache
+                # has one entry per cluster so there are no other members to add.
                 reps = [genome_target]
-                if cluster_sig_id:
-                    # Add other strong members of this cluster
-                    for cand_id, g in self._genome_cache.items():
-                        if cand_id != genome_target.id:
-                            cand = store.get(cand_id)
-                            if cand and cand.cluster_id == cluster_sig_id:
-                                reps.append(cand)
-                                if len(reps) >= 3:
-                                    break
-                reps = sorted(reps, key=lambda s: s.strength, reverse=True)[:3]
             else:
                 # Legacy fallback: DBSCAN cluster heads
                 dbscan_clusters = store.cluster_signals_dbscan(INITIAL, eps=0.35)

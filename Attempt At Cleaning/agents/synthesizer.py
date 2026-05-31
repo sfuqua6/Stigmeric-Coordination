@@ -129,8 +129,11 @@ _EDGE_COMPOSE_MAX_TOKENS = 2000
 # discriminating than word overlap alone, so fewer candidates are needed to
 # find the best one. On vLLM/A100 (LLM_CONCURRENCY > 1) keep the full 3.
 _BEST_OF_N_COHESIVE = 2 if LLM_CONCURRENCY <= 1 else 3
-_BEST_OF_N_EXPLORATION_TEMPS = [0.3, 0.7][:_BEST_OF_N_COHESIVE]
-_BEST_OF_N_OPTIMIZATION_TEMPS = [0.15, 0.35][:_BEST_OF_N_COHESIVE]
+# Three-element lists so the modulo cycle `_temps[_i % len(_temps)]` in the
+# best-of-N loop produces distinct temperatures for all N ≤ 3 candidates.
+# The first two are used when N=2 (laptop); all three when N=3 (vLLM/A100).
+_BEST_OF_N_EXPLORATION_TEMPS = [0.3, 0.5, 0.7]
+_BEST_OF_N_OPTIMIZATION_TEMPS = [0.15, 0.25, 0.35]
 
 # Debate frame for `alternatives` cluster sets (improvement 5.5).
 # When ≥2 surviving clusters are connected by an `alternatives` edge and

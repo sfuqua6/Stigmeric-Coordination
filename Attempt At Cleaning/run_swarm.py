@@ -1033,13 +1033,46 @@ async def run_continuous_pipeline(
         # is pure-Python but not free). Pure dict update is GIL-safe in async.
         if iter_n - _last_genome_refresh_iter >= _GENOME_REFRESH_EVERY:
             try:
-                from core.projection import build_projection as _bp
+                from core.projection import build_projection as _bp, FitnessTrajectory
                 _proj = _bp(store, has_validators=True, task_type=task_type)
-                _genome_cache.clear()
+                new_cache: dict = {}
                 for _cp in (_proj.surviving + _proj.contested
                             + _proj.weakly_supported + _proj.rejected_by_field):
-                    if _cp.genome is not None:
-                        _genome_cache[_cp.representative_id] = _cp.genome
+                    if _cp.genome is None:
+                        continue
+                    _g = _cp.genome
+                    # Merge trajectory history from previous snapshot so
+                    # FitnessTrajectory.fitness_history accumulates across refreshes
+                    # and _trajectory_score() can return non-zero values.
+                    _prev = _genome_cache.get(_cp.representative_id)
+                    if _prev is not None and _prev.trajectory.fitness_history:
+                        old_hist = _prev.trajectory.fitness_history
+                        new_hist = old_hist + [(iter_n, _g.composite_fitness)]
+                        # monotone_growth: fitness never decreased
+                        _mono = all(
+                            b >= a
+                            for (_, a), (_, b) in zip(new_hist[:-1], new_hist[1:])
+                        )
+                        # consolidation: last 3 snapshots within 0.02
+                        _consol = None
+                        if len(new_hist) >= 3:
+                            _recent = [f for _, f in new_hist[-3:]]
+                            if max(_recent) - min(_recent) < 0.02:
+                                _consol = new_hist[-3][0]
+                        _g.trajectory = FitnessTrajectory(
+                            formation_iteration=_prev.trajectory.formation_iteration,
+                            fitness_history=new_hist,
+                            strength_history=_prev.trajectory.strength_history,
+                            member_count_history=_prev.trajectory.member_count_history,
+                            monotone_growth=_mono,
+                            consolidation_iteration=_consol,
+                        )
+                    else:
+                        # First snapshot for this cluster
+                        _g.trajectory.fitness_history = [(iter_n, _g.composite_fitness)]
+                    new_cache[_cp.representative_id] = _g
+                _genome_cache.clear()
+                _genome_cache.update(new_cache)
                 _last_genome_refresh_iter = iter_n
             except Exception:
                 pass   # genome cache stays stale; workers fall back to standard prompts
@@ -1168,10 +1201,16 @@ async def run_continuous_pipeline(
     except Exception:
         audit_flags = 0
 
-    # summary.json
+    # summary.json — reuse the projection already computed for KB save when possible
     try:
         from core.projection import build_projection as _bp
-        _final_proj = _bp(store, has_validators=True, task_type=task_type)
+        # Prefer the final projection already computed for KB save;
+        # fall back to a fresh one if KB was skipped.
+        try:
+            _final_proj  # defined above when KB save ran
+        except NameError:
+            _final_proj = _bp(store, has_validators=True, task_type=task_type)
+
         ver_scores = [cp.verification_score for cp in _final_proj.surviving + _final_proj.contested]
         support_depth_max = max(
             (cp.support_depth for cp in (
@@ -1181,6 +1220,50 @@ async def run_continuous_pipeline(
             )),
             default=0,
         )
+
+        # Genome quality metrics (P2.2 / R2 supplement)
+        genome_cps = [
+            cp for cp in (
+                _final_proj.surviving + _final_proj.contested
+                + _final_proj.weakly_supported
+            )
+            if cp.genome is not None
+        ]
+        genome_stats: dict = {}
+        if genome_cps:
+            fitness_vals = [cp.genome.composite_fitness for cp in genome_cps]
+            grounding_vals = [
+                cp.genome.fitness_breakdown.get("grounding", 0.0)
+                for cp in genome_cps
+            ]
+            n_atoms_total = sum(len(cp.genome.atoms) for cp in genome_cps)
+            genome_stats = {
+                "n_genomes": len(genome_cps),
+                "avg_composite_fitness": round(
+                    sum(fitness_vals) / len(fitness_vals), 4
+                ),
+                "max_composite_fitness": round(max(fitness_vals), 4),
+                "avg_grounding": round(sum(grounding_vals) / len(grounding_vals), 4),
+                "total_atoms": n_atoms_total,
+            }
+
+        # Output diversity (P2.2 / R2 — continuous pipeline path)
+        output_diversity: dict = {}
+        try:
+            from core.output_diversity import centroid_cosine_distance, self_bleu as _self_bleu
+            all_deposit_texts = [
+                s.content for s in store.all()
+                if s.type in ("INITIAL", "SUPPORT") and len(s.content) > 20
+            ]
+            if len(all_deposit_texts) >= 2:
+                output_diversity = {
+                    "centroid_cosine_dist": centroid_cosine_distance(all_deposit_texts),
+                    "self_bleu": _self_bleu(all_deposit_texts),
+                    "n_texts": len(all_deposit_texts),
+                }
+        except Exception:
+            pass
+
         summary = {
             "task_type": task_type,
             "user_prompt": user_prompt,
@@ -1205,6 +1288,8 @@ async def run_continuous_pipeline(
             "support_depth_max": int(support_depth_max),
             "audit_flags": audit_flags,
             "kb_diff": kb_diff,
+            "genome": genome_stats,
+            "output_diversity": output_diversity,
         }
     except Exception as exc:
         summary = {"error": str(exc)}

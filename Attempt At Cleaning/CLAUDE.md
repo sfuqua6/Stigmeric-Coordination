@@ -35,7 +35,7 @@ MOCK_LLM=1 python run_swarm.py debate "Test thesis"
 SWARM_MODEL="microsoft/phi-2" python run_swarm.py debate "..."
 SWARM_MODEL="Qwen/Qwen2.5-3B-Instruct" python run_swarm.py debate "..."
 
-# Tests (pytest) — 287 pass, 10 skip, 0 fail as of 2026-05-28
+# Tests (pytest) — 304 pass, 10 skip, 0 fail as of 2026-05-31
 pytest tests/                                              # full suite (~2 min with MOCK_LLM=1)
 pytest tests/test_logit_dynamics.py -v                     # single file
 pytest tests/test_no_leak_real_patterns.py::test_name -v   # single test
@@ -117,6 +117,51 @@ Both implement the same conceptual role; the LLM planner has not yet been ablate
 
 A faithfulness audit runs after rendering: each paragraph must have ≥4-gram overlap with the cluster content for every `[INITIAL_XXXXX]` citation tag it contains. Failures land in `renderer_audit.json`. External grounding (Wikipedia lookup per surviving cluster) is best-effort and tagged `[External context]` so it's distinguishable from agent content.
 
+### Topology (`core/topology.py`)
+
+Bounds-first exploration scaffolding. One LLM call before any scout runs produces an `AnswerSpaceTopology`:
+- `AxisSpec` (name, values: 2–5 discrete categories) + `AnchorCorner` (coords, label, rationale)
+- `generate_topology(task_prompt, task_type, llm)` — async, temp=0.1, 2 retries, returns `None` on parse failure
+- `assign_topology_cells(topology, n_scouts)` — anchor cells first, then interior round-robin
+- `format_cell_for_prompt(topology, cell)` — human-readable cell description for scout prompt
+
+Scouts carry `topology_cell` and `topology_cell_desc` in `ScoutConfig`. INITIAL deposits carry `metadata["topology_coords"]`. `build_projection()` reads these to populate `topology_coverage` / `uncovered_cells` / `out_of_bounds_clusters` in `SynthesisProjection`.
+
+`run_swarm.py` wiring: topology is generated after partition assembly, before rounds. Cell assignments are computed once and reused each round (`topology_cell_assignments`). Topology is also passed to `build_projection()` in the KB save section.
+
+Task-type templates in `_TOPOLOGY_TEMPLATES` (debate/analysis/problem_solving/creative/coding). Falls back to `_TOPOLOGY_DEFAULT_TEMPLATE` for unknown types.
+
+### Multi-resolution lattice (`core/projection.py`)
+
+Four new dataclasses in projection after `InterClusterEdge`:
+- `AtomProjection` — individual SAFE atoms from VERIFICATION signal metadata
+- `PropositionProjection` — 25–50 char proposition slices grouping atoms
+- `FrameProjection` — structural grouping of clusters by coarser cosine similarity (threshold 0.40)
+- `CrossLevelEdge` — typed edges across levels (supports/refines/contradicts/contextualizes)
+- `ClusterSensitivity` — robustness annotation per surviving cluster
+
+`SynthesisProjection` has 9 new fields: `topology`, `topology_coverage`, `uncovered_cells`, `out_of_bounds_clusters`, `frames`, `propositions`, `atoms`, `cross_level_edges`, `cluster_sensitivities`.
+
+New builders (all `O(n)` or `O(n log n)`, called at end of `build_projection()`):
+- `_build_atoms(clusters, store)` — reads `vsig.metadata["atoms"]` from VERIFICATION signals
+- `_build_frames(clusters, store)` — cosine-based structural grouping
+- `_build_cross_level_edges(atoms, frames, clusters, store)` — typed edge inference
+- `_build_sensitivities(clusters, store)` — simulates support removal; gated by `_SENSITIVITY_MAX_CLUSTERS=20`
+- `_build_topology_coverage(clusters, store, topology)` — reads `metadata["topology_coords"]` from signals
+
+### Synthesizer (`agents/synthesizer.py`) — topology/lattice extensions
+
+New constants:
+- `_LATTICE_RESOLUTION_BY_TASK` — maps task_type to atom/cluster/frame resolution level
+- `_SYNTHESIZER_USE_DEBATE = True` — debate frame for alternatives cluster sets (now enabled)
+- `SYNTHESIZER_EMIT_ALTERNATIVE = True` — alternative-of-the-best artifact (now enabled)
+
+Renderer extensions (no new LLM calls except the pre-existing debate frame):
+- **Topology preamble** in `_render_executive_summary` — coverage ratio, uncovered cell names
+- **Sensitivity annotation** in `_render_cluster_position` — robustness, load_bearing signals, competing cluster, topology gap on removal
+- **Section 5** (UNEXPLORED ANSWER-SPACE REGIONS) — deterministic, lists uncovered topology cells
+- **Section 6** (OUT-OF-BOUNDS CLUSTERS) — clusters whose topology coords fall outside declared axes
+
 ### Configuration (`core/config.py`)
 
 All tunables live in one validated module: agent counts, decay/amplify/prune thresholds, boost params, dedup thresholds, model name. Important env vars:
@@ -152,9 +197,25 @@ Tests that spawn subprocesses (test_phase_isolation, test_heterogeneous_routing,
 
 `CompositeRetriever`: Wikipedia → Web → placeholder fallback. The `--corpus=placeholder` flag forces the engineered corpus; diversity numbers from placeholder mode are *not* empirical evidence — see DEFERRED.md P4.1.
 
+### Cluster Genome (`core/projection.py`, `core/fitness.py`)
+
+The cluster is the unit of selection. Each `ClusterProjection` carries a `ClusterGenome` assembled at the end of `build_projection()` by `_build_genomes()`. The genome is a typed heritable object that survives fission (via `centroid_at_formation` and atom inheritance) and recombines on merge.
+
+Key genome fields:
+- `atoms: list[AtomFact]` — SAFE-pipeline atomic propositions (verified against external sources). Deduplicated at word-Jaccard ≥ 0.70. Populated from `VERIFICATION.metadata["atoms"]` by `_build_atoms()`.
+- `knowledge_base: ClusterKnowledgeBase` — aggregated SEARCH-signal lineage (3 channels: scout SEARCH by agent_id, developer SEARCH by parent_id, validator atom source_tags). `parametric_content_ratio` measures what fraction of members have no search lineage.
+- `phenotype: Phenotype` — centroid, `centroid_at_formation` (snapshot set in `ClusterRegistry.create()` and `_reanchor()`), drift, stability, novelty_density.
+- `sensitivity: GenomeSensitivity` — atom-level (not support-level) load-bearing atom IDs.
+- `trajectory: FitnessTrajectory` — composite_fitness history accumulated across genome cache refreshes in `run_swarm.py`; enables `_trajectory_score()`.
+- `composite_fitness: float` — 7-term compositor in `core/fitness.py`. Hard cap: `semantic_strength ≤ 0.35` (prevents LLM-judged term dominating). Tier 2: centroid_stability, novelty_density (model embeddings). Tier 3 only: entity_resolution (Wikidata, default off).
+
+The genome drives selection: `_cp_priority()` and `build_plan()` use `composite_fitness` when available; the LLM planner digest includes `composite_fitness` and `grounding`; `_score_cohesive_candidate()` weights clusters by `composite_fitness`.
+
+**Do not break:** the no-leak rule applies to genomes. Prompts may render `AtomFact.text` (proposition text), `atom_id`, and scalar fields. The `extracted_from` list carries signal IDs only — never ancestry text.
+
 ### Knowledge base (`core/knowledge_base.py`)
 
-Cross-run consensus/rejection memory. Persisted between runs and influences strength dynamics on subsequent invocations. `--ignore-kb` disables for the current run; `--reset-kb` quarantines existing entries. Hand-picked thresholds (`_CLUSTER_SIM_THRESHOLD`, `_KB_MATCH_THRESHOLD`, `_KB_REJECTION_PENALTY`) need calibration once the real retriever is producing empirical data — see DEFERRED.md.
+Cross-run consensus/rejection memory. **Schema v3** (bumped from v2) stores genome fields per entry: `genome_hash`, `genome_atoms`, `composite_fitness`, `fitness_breakdown`, `knowledge_base`. `kb_migrate.py` handles v2→v3 by adding null genome fields. Contradiction detection now has two channels: (1) embedding cosine ≥ 0.75, (2) atom text word-Jaccard ≥ 0.50. `--ignore-kb` disables for the current run; `--reset-kb` quarantines existing entries.
 
 ### Baseline mode (`core/baseline.py`)
 

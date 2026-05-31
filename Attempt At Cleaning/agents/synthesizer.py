@@ -1293,6 +1293,16 @@ class Synthesizer:
         for cp in candidates:
             rep = store.get(cp.representative_id)
             preview = _truncate(rep.content, 200) if rep else "(no rep)"
+            # Genome digest: include composite_fitness and grounding when available
+            # so the LLM planner can weight render priority by non-symbolic fitness
+            genome_str = ""
+            if cp.genome is not None:
+                genome_str = (
+                    f"  composite_fitness={cp.genome.composite_fitness:.3f}"
+                    f"  grounding={cp.genome.fitness_breakdown.get('grounding', 0):.2f}"
+                    f"  n_atoms={len(cp.genome.atoms)}"
+                    f"  load_bearing={len(cp.genome.sensitivity.load_bearing_atoms)}"
+                )
             lines.append(
                 f"- {cp.representative_id}  status={cp.status}  "
                 f"n_supports={len(cp.support_set)}  "
@@ -1301,7 +1311,8 @@ class Synthesizer:
                 f"support_diversity={cp.support_diversity}  "
                 f"support_depth={cp.support_depth}  "
                 f"verification_score={cp.verification_score:.2f}  "
-                f"dissent_pressure={cp.dissent_pressure:.2f}  "
+                f"dissent_pressure={cp.dissent_pressure:.2f}"
+                f"{genome_str}  "
                 f"representative=\"{preview}\""
             )
         digest = "\n".join(lines)

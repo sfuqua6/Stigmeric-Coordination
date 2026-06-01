@@ -27,7 +27,7 @@ other agents' content), which is safe under the no-leak rule.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Tuple
 
 from agents.base import BaseAgent, AgentRunStats, strip_reasoning
 from core.signal_store import SignalStore, Signal
@@ -50,6 +50,13 @@ class ScoutConfig:
     # The user prompt that scouts query around. Falls back to task_prompt
     # when not supplied.
     user_prompt: str = ""
+    # Topology cell assignment from core/topology.assign_topology_cells().
+    # When set, the scout's prompt includes a directional hint ("your assigned
+    # region of the answer space is ...") and deposits carry
+    # metadata["topology_coords"] for coverage tracking.
+    topology_cell: Optional[tuple] = None
+    # Human-readable description of the topology cell (pre-formatted).
+    topology_cell_desc: str = ""
 
 
 class Scout(BaseAgent):
@@ -131,10 +138,21 @@ class Scout(BaseAgent):
                 own_deposit_excerpts[-1][:SCOUT_RESEED_CHARS]
                 if own_deposit_excerpts else None
             )
+            # Topology cell hint: inject directional context without leaking
+            # other agents' content (safe under no-leak rule — this is task
+            # structure, not a signal's reasoning chain).
+            topo_hint = None
+            if self.config.topology_cell and self.config.topology_cell_desc:
+                topo_hint = (
+                    f"Your assigned region of the answer space is: "
+                    f"{self.config.topology_cell_desc}. "
+                    f"Generate a claim that lives in this region."
+                )
             prompt = self.build_prompt(
                 samples=[], chunk_offset=chunk_offset,
                 prior_own_content=prior_own,
                 retrieved_chunks=last_retrieved,
+                extra_context=topo_hint,
             )
             self._assert_no_leak(prompt, samples=[])
 
@@ -161,19 +179,22 @@ class Scout(BaseAgent):
                 [c.chunk_id for c in last_retrieved]
                 if last_retrieved else self.config.partition.chunk_ids
             )
+            deposit_meta = {
+                "scout_agent_id": self.agent_id,
+                "depositor_agent_id": self.agent_id,
+                "chunk_ids": source_chunk_ids,
+                "query": prior_queries[-1] if prior_queries else "",
+                "partition_id": self.config.partition.partition_id,
+            }
+            if self.config.topology_cell is not None:
+                deposit_meta["topology_coords"] = self.config.topology_cell
             sid = store.deposit(
                 signal_type=self.OUTPUT_TYPE,
                 content=content,
                 strength=self.DEFAULT_DEPOSIT_STRENGTH,
                 depositor=self.ROLE,
                 parent_id=None,
-                metadata={
-                    "scout_agent_id": self.agent_id,
-                    "depositor_agent_id": self.agent_id,
-                    "chunk_ids": source_chunk_ids,
-                    "query": prior_queries[-1] if prior_queries else "",
-                    "partition_id": self.config.partition.partition_id,
-                },
+                metadata=deposit_meta,
             )
             if sid is None:
                 consecutive_dups += 1
@@ -230,7 +251,8 @@ class Scout(BaseAgent):
                      store_count: int = 0, own_ids: tuple = (),
                      chunk_offset: int = 0,
                      prior_own_content: Optional[str] = None,
-                     retrieved_chunks: Optional[list] = None) -> str:
+                     retrieved_chunks: Optional[list] = None,
+                     extra_context: Optional[str] = None) -> str:
         # Phase 2C: if scouts ran agentic search, condition on retrieved
         # chunks rather than the contiguous partition. Falls back to the
         # partition path when search returned nothing or is disabled.
@@ -265,11 +287,14 @@ class Scout(BaseAgent):
                 f"Produce something genuinely different from that.\n"
             )
 
+        topology_hint = f"\n{extra_context}\n" if extra_context else ""
+
         return (
             f"TASK: {self.config.task_prompt}\n\n"
             f"{evidence_intro}\n\n"
             f"---EVIDENCE---\n{evidence_text}\n---END EVIDENCE---\n"
-            f"{reseed_hint}\n"
+            f"{reseed_hint}"
+            f"{topology_hint}\n"
             f"Produce ONE concise initial claim or observation grounded "
             f"in this evidence. Do not summarize everything; surface a "
             f"single specific point worth depositing as a first-order "

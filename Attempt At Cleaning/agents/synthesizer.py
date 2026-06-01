@@ -3099,10 +3099,18 @@ def _build_faithfulness_audit(
     from agents.base import _SCRATCHPAD_RE
 
     cluster_content: dict[str, str] = {}
+    # Genome atom texts: list of lowercased atom texts per cluster (for the
+    # genome-enhanced overlap check that replaces the 4-gram rep-content check
+    # when atom texts are available — more precise and fewer false positives).
+    cluster_atom_texts: dict[str, list[str]] = {}
     for cp in projection.surviving + projection.contested:
         rep = store.get(cp.representative_id)
         if rep:
             cluster_content[cp.representative_id] = rep.content.lower()
+        if cp.genome is not None and cp.genome.atoms:
+            cluster_atom_texts[cp.representative_id] = [
+                a.text.lower() for a in cp.genome.atoms if a.text
+            ]
 
     # Build the complete set of real signal IDs from the store (for existence check).
     valid_signal_ids: set[str] = {s.id for s in store.all()}
@@ -3154,18 +3162,34 @@ def _build_faithfulness_audit(
                 })
                 continue
 
-            # Check 2: 4-gram overlap with cluster representative content.
+            # Check 2: overlap check between paragraph and cited cluster content.
+            # Primary: 4-gram overlap against representative content.
+            # Fallback (genome-enhanced): 3-gram overlap against any atom text.
+            # An atom-text match is sufficient — atoms are precise propositions;
+            # if the paragraph correctly paraphrases an atom, no flag needed.
             if cid not in cluster_content:
                 continue  # not a cluster rep — skip overlap check
-            cluster_words = cluster_content[cid].split()
-            if len(cluster_words) < 4:
-                continue
             para_lower = para.lower()
-            found_overlap = any(
+
+            # Primary: 4-gram overlap against representative content
+            cluster_words = cluster_content[cid].split()
+            found_overlap = (len(cluster_words) >= 4 and any(
                 " ".join(cluster_words[j: j + 4]) in para_lower
                 for j in range(len(cluster_words) - 3)
-            )
-            if not found_overlap:
+            ))
+
+            # Genome fallback: 3-gram overlap against any atom text
+            if not found_overlap and cid in cluster_atom_texts:
+                for atom_text in cluster_atom_texts[cid]:
+                    atom_words = atom_text.split()
+                    if len(atom_words) >= 3 and any(
+                        " ".join(atom_words[j: j + 3]) in para_lower
+                        for j in range(len(atom_words) - 2)
+                    ):
+                        found_overlap = True
+                        break
+
+            if not found_overlap and len(cluster_words) >= 4:
                 flags.append({
                     "issue": "no 4-gram overlap between paragraph and cited cluster content",
                     "cited_id": cid,

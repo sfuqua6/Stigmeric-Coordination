@@ -259,10 +259,16 @@ def scout_parse(raw: str) -> ParsedDeposit:
 # ---------------------------------------------------------------------------
 
 def _atom_for_develop(genome) -> Optional[object]:
-    """Return the atom with the lowest verification_score (most under-supported)."""
+    """Return the atom most in need of development.
+
+    Primary key: lowest verification_score (most under-supported).
+    Tie-break: highest weight (load-bearing atoms benefit more from support).
+    This ensures that when all atoms are equally unverified (e.g., early in
+    the run before validators have run), we target the most important one.
+    """
     if genome is None or not genome.atoms:
         return None
-    return min(genome.atoms, key=lambda a: a.verification_score)
+    return min(genome.atoms, key=lambda a: (a.verification_score, -a.weight))
 
 
 def _atom_for_critique(genome) -> Optional[object]:

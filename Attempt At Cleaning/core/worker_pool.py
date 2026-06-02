@@ -826,6 +826,16 @@ class Worker:
             if "partition_id" not in meta:
                 meta["partition_id"] = self.agent_id
 
+        # Belt-and-suspenders for SUPPORT deposits: if the sampled target signal
+        # was pruned between _gather_target() and here, the store's parent-lookup
+        # inheritance returns None and partition_id would be empty, firing the
+        # assertion. Carry partition_id forward from the target we already sampled.
+        if (effective_type == "SUPPORT"
+                and "partition_id" not in meta
+                and target is not None
+                and target.partition_id):
+            meta["partition_id"] = target.partition_id
+
         sid = store.deposit(
             signal_type=effective_type,
             content=content,

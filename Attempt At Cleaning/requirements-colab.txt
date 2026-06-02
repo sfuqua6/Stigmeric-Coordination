@@ -1,20 +1,23 @@
 # Colab dependency set for the stigmergic swarm.
 #
-# Install once per session:
-#     pip install -r requirements-colab.txt
+# Install with the notebook's Cell 4 (smart CUDA-aware install), NOT directly
+# with `pip install -r requirements-colab.txt`, because vLLM must match the
+# Colab CUDA version. Cell 4 handles version selection automatically.
 #
-# vllm is the main heavy dep; it brings its own torch+CUDA wheel.
-# cohere + datasets + faiss-cpu power the primary retrieval path
-# (CohereCorpusRetriever — pre-computed Wikipedia embeddings).
-# The wikipedia / duckduckgo-search / requests / beautifulsoup4 set is
-# the secondary fallback chain when Cohere is unavailable.
+# If you must install manually:
+#   1. Check CUDA version: !nvcc --version
+#   2. CUDA 12.x:  pip install "vllm<0.20.0"   (last CUDA-12-built release)
+#      CUDA 13.x:  pip install vllm            (latest)
+#   3. Then: pip install -r requirements-colab.txt
 
-vllm
+# vllm is installed by the notebook Cell 4 (CUDA-version-aware).
+# Uncomment the line below ONLY if you know your CUDA version matches:
+# vllm
+
 sentence-transformers
 
-# bnb 4-bit for the HF fallback path in core/llm.py (when the vLLM cascade
-# exhausts all attempts and RealLLM takes over). 0.46.1 is the first
-# release with the Blackwell sm_120 kernels, so pin >= that.
+# bnb 4-bit for the HF fallback path in core/llm.py (when vLLM is unavailable
+# or for laptop mode). 0.46.1 is the first release with Blackwell sm_120 kernels.
 bitsandbytes>=0.46.1
 
 # Primary retrieval: Cohere pre-computed embeddings + FAISS
@@ -24,8 +27,7 @@ datasets
 faiss-cpu
 
 # Fallback retrieval: Wikipedia HTTP + DuckDuckGo
-# `ddgs` is the maintained rename of `duckduckgo-search`; the old package
-# stopped getting fixes and started returning 0-result lists on the live API.
+# `ddgs` is the maintained rename of `duckduckgo-search`
 wikipedia
 ddgs
 requests

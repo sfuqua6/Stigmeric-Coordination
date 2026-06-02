@@ -787,16 +787,19 @@ class Worker:
             # flattens back to depth 2.
             effective_parent = target.id
             effective_type = SUPPORT  # also lock the type for safety
-        elif action in (DEVELOP, REFINE) and target is not None:
-            # Force parent to the sampled target for DEVELOP and REFINE.
-            # When the model emits PARENT: none (or a wrong signal ID), the
-            # SUPPORT lands with no parent link and is invisible to projection's
-            # BFS — store.by_parent(target.id) never finds it, support_diversity
-            # stays 0, and every cluster is trapped at weakly_supported forever.
-            # The sampled target IS the signal we intend to develop; always wire to it.
+        elif action in (DEVELOP, REFINE, CRITIQUE, VALIDATE) and target is not None:
+            # Force parent to the sampled target. DEVELOP/REFINE fix (6.11)
+            # extended to CRITIQUE and VALIDATE: when the model emits PARENT: none,
+            # CRITIQUE_POS/NEG and VERIFICATION signals land orphaned — invisible
+            # to projection's BFS — so dissent_pressure and verification_score
+            # never accumulate. The sampled target is always the intended parent.
             effective_parent = target.id
         elif dyn_parent == "__NONE__":
-            effective_parent = None
+            # Only allow parentless deposits for SCOUT (no sampled target).
+            # For OBJECT (shows multiple reps; model may legitimately point to
+            # any of them) fall back to target.id rather than None so the
+            # OBJECTION is at least linked to the cluster representative.
+            effective_parent = None if target is None else target.id
         elif dyn_parent is not None:
             effective_parent = dyn_parent
         else:
@@ -833,6 +836,16 @@ class Worker:
             # query histories). Required by the INITIAL partition_id assertion.
             if "partition_id" not in meta:
                 meta["partition_id"] = self.agent_id
+
+        if action in (DEVELOP, CHAIN, REFINE):
+            # Use the depositing worker's own agent_id as partition_id.
+            # All DEVELOP deposits for the same INITIAL would otherwise inherit
+            # the same partition_id from the parent, giving
+            #   support_partitions = {(parent_partition, "develop")}
+            # → support_diversity = 1 regardless of how many workers contribute.
+            # Worker IDs are unique, so each worker's deposit produces a distinct
+            # (partition_id, depositor) pair → support_diversity grows correctly.
+            meta["partition_id"] = self.agent_id
 
         # Belt-and-suspenders for SUPPORT deposits: if the sampled target signal
         # was pruned between _gather_target() and here, the store's parent-lookup

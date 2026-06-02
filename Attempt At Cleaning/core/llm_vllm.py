@@ -44,7 +44,18 @@ if _CONFIG_TIER == "blackwell":
           "and VLLM_ATTENTION_BACKEND=TRITON_ATTN")
 
 try:
-    from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams  # type: ignore
+    # vLLM 0.7+ removed AsyncEngineArgs (renamed to EngineArgs). Try the old
+    # combined import first (0.4–0.6), then fall back to the new split import.
+    try:
+        from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams  # type: ignore
+    except ImportError:
+        from vllm import AsyncLLMEngine, SamplingParams  # type: ignore
+        try:
+            # 0.7+: EngineArgs lives in engine.arg_utils
+            from vllm.engine.arg_utils import EngineArgs as AsyncEngineArgs  # type: ignore
+        except ImportError:
+            # Some builds re-export it from the top-level namespace
+            from vllm import EngineArgs as AsyncEngineArgs  # type: ignore
     _VLLM_AVAILABLE = True
 except Exception:
     AsyncLLMEngine = None  # type: ignore

@@ -821,6 +821,10 @@ class Worker:
         if action == SCOUT:
             # Preserve scout-style metadata for projection's partition_origin parsing.
             meta["scout_agent_id"] = self.agent_id
+            # Each worker is its own partition in the continuous pool (independent
+            # query histories). Required by the INITIAL partition_id assertion.
+            if "partition_id" not in meta:
+                meta["partition_id"] = self.agent_id
 
         sid = store.deposit(
             signal_type=effective_type,

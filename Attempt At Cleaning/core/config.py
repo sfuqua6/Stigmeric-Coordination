@@ -700,24 +700,66 @@ MODEL_BUNDLES = {
         "tertiary":  {"model": "mistralai/Mistral-Nemo-Instruct-2407", "dtype": "float16",
                       "gpu_memory_utilization": 0.30},
     },
-    # --small bundles: 3B-class models that fit on a T4 (16 GB) or any L4/A100.
-    # Two engine slots (primary=Qwen2.5-3B, fast=Phi-3.5-mini) preserve
-    # family diversity at <6 GB combined VRAM weight.
+    # --small bundles: T4-safe (16 GB). Two engine slots preserve family
+    # diversity at a combined ~9 GB weight footprint.
+    #
+    # Previous fast engine was Phi-3.5-mini-instruct (3.8B, ~7.6 GB fp16).
+    # After Qwen2.5-3B claims 0.60×16 = 9.6 GB, only 6.4 GB remains —
+    # less than Phi's weight size. Model load OOMed before KV cache was
+    # allocated. Replaced with Qwen2.5-1.5B-Instruct (~3 GB fp16).
+    #
+    # VRAM budget: primary 0.60×16 = 9.6 GB (3B weights ~6 GB + KV ~3.6 GB)
+    #              fast    0.28×16 = 4.5 GB (1.5B weights ~3 GB + KV ~1.5 GB)
+    #              total   14.1 GB → 1.9 GB free on T4.
+    #
+    # enable_prefix_caching=False: Phi-3.5 used sliding-window attention,
+    # which caused a NotImplementedError with prefix caching enabled. The
+    # 1.5B replacement doesn't have this issue, but the flag is kept off
+    # on both T4 engines to minimise KV-cache allocator overhead.
     "small": {
-        "primary": {"model": "Qwen/Qwen2.5-3B-Instruct",        "dtype": "float16",
+        "primary": {"model": "Qwen/Qwen2.5-3B-Instruct",       "dtype": "float16",
+                    "max_num_seqs": 32, "max_model_len": 2048,
+                    "gpu_memory_utilization": 0.60,
+                    "enable_prefix_caching": False},
+        "fast":    {"model": "Qwen/Qwen2.5-1.5B-Instruct",     "dtype": "float16",
                     "max_num_seqs": 48, "max_model_len": 2048,
-                    "gpu_memory_utilization": 0.55},
-        "fast":    {"model": "microsoft/Phi-3.5-mini-instruct",  "dtype": "float16",
-                    "max_num_seqs": 64, "max_model_len": 2048,
-                    "gpu_memory_utilization": 0.30},
+                    "gpu_memory_utilization": 0.28,
+                    "enable_prefix_caching": False},
     },
     "small_coding": {
-        "primary": {"model": "Qwen/Qwen2.5-Coder-3B-Instruct",  "dtype": "float16",
+        "primary": {"model": "Qwen/Qwen2.5-Coder-3B-Instruct", "dtype": "float16",
+                    "max_num_seqs": 32, "max_model_len": 2048,
+                    "gpu_memory_utilization": 0.60,
+                    "enable_prefix_caching": False},
+        "fast":    {"model": "Qwen/Qwen2.5-1.5B-Instruct",     "dtype": "float16",
                     "max_num_seqs": 48, "max_model_len": 2048,
-                    "gpu_memory_utilization": 0.55},
-        "fast":    {"model": "microsoft/Phi-3.5-mini-instruct",  "dtype": "float16",
-                    "max_num_seqs": 64, "max_model_len": 2048,
-                    "gpu_memory_utilization": 0.30},
+                    "gpu_memory_utilization": 0.28,
+                    "enable_prefix_caching": False},
+    },
+    # DeepSeek V4 Flash bundle — requires 2× H100 80 GB or 2× H200.
+    # V4-Flash: 284B total / 13B active MoE, FP8 mixed-precision native weights
+    # (~80 GB). Per-token cost ≈ dense 13B; capacity ≈ 284B. Day-0 vLLM support
+    # (April 2026). tensor_parallel_size=2 splits the 80 GB weight load
+    # across both GPUs (40 GB each); each GPU keeps 0.50 × 80 GB = 40 GB
+    # for weights + KV cache.
+    #
+    # fast engine (Qwen2.5-7B): sits on both GPUs at TP=2 but is small
+    # enough (~14 GB total → 7 GB/GPU) that the remaining VRAM per GPU
+    # (~40 - 7 = 33 GB) goes entirely to KV cache.
+    #
+    # Role routing: V4-Flash on scout/hater/synthesizer (needs depth);
+    #               Qwen2.5-7B on forager/critic/validator (throughput).
+    "v4flash": {
+        "primary": {"model": "deepseek-ai/DeepSeek-V4-Flash",
+                    "dtype": "float8_e4m3fn",
+                    "tensor_parallel_size": 2,
+                    "max_num_seqs": 32, "max_model_len": 8192,
+                    "gpu_memory_utilization": 0.50},
+        "fast":    {"model": "Qwen/Qwen2.5-7B-Instruct",
+                    "dtype": "float16",
+                    "tensor_parallel_size": 2,
+                    "max_num_seqs": 64, "max_model_len": 4096,
+                    "gpu_memory_utilization": 0.12},
     },
     # A100-80GB coding bundle: primary=Qwen2.5-Coder-32B fp8 (~32 GiB),
     # fast=Qwen2.5-Coder-7B float16 (~14 GiB). Total budget 0.83 → 66 GB.
@@ -845,6 +887,18 @@ ROLE_TO_ENGINE = {
         "hater":       "fast",    # no MoE secondary on A100-80; route to 7B fast
         "validator":   "fast",
         "synthesizer": "primary",
+    },
+    # v4flash: V4-Flash (primary) handles depth-critical roles;
+    # Qwen2.5-7B (fast) handles high-throughput structured roles.
+    # Different model families on critic vs hater preserves adversarial diversity.
+    "v4flash": {
+        "scout":       "primary",   # V4-Flash: 1M ctx sees full signal store
+        "forager":     "fast",      # Qwen2.5-7B: fast support generation
+        "developer":   "fast",
+        "critic":      "fast",      # Qwen family: cross-family critique diversity
+        "hater":       "primary",   # V4-Flash: adversarial challenge with depth
+        "validator":   "fast",      # structured output; 7B sufficient
+        "synthesizer": "primary",   # V4-Flash: multi-cluster synthesis needs capacity
     },
 }
 

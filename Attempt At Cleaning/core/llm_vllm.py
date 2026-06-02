@@ -164,15 +164,24 @@ class VLLMBackend:
         # Forward any other knobs the caller passed (e.g. tensor_parallel_size).
         for k, v in extra_engine_args.items():
             engine_kwargs[k] = v
-        # AsyncEngineArgs may not accept `enable_prefix_caching` or
-        # `speculative_config` on older vLLM versions. Drop unknowns
-        # gracefully so a stale install still loads.
+        # AsyncEngineArgs may not accept certain kwargs depending on vLLM version.
+        # Drop unknowns gracefully so a stale install or version bump still loads.
+        # Known version-sensitive keys:
+        #   enable_prefix_caching  — added in vLLM 0.4, removed/renamed later
+        #   speculative_config     — dict form added in vLLM 0.5
+        #   disable_sliding_window — vLLM 0.4-0.6 workaround for Phi-3.5 SWA;
+        #                            absorbed into engine internals in later versions
+        _OPTIONAL_KWARGS = (
+            "enable_prefix_caching",
+            "speculative_config",
+            "disable_sliding_window",
+        )
         try:
             engine_args = AsyncEngineArgs(**engine_kwargs)
         except TypeError as exc:
             msg = str(exc)
             dropped = []
-            for opt_key in ("enable_prefix_caching", "speculative_config"):
+            for opt_key in _OPTIONAL_KWARGS:
                 if opt_key in msg and opt_key in engine_kwargs:
                     engine_kwargs.pop(opt_key, None)
                     dropped.append(opt_key)

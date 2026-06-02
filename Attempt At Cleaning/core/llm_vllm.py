@@ -43,19 +43,69 @@ if _CONFIG_TIER == "blackwell":
     print("[llm-vllm] Blackwell detected: forcing VLLM_USE_FLASHINFER_SAMPLER=0 "
           "and VLLM_ATTENTION_BACKEND=TRITON_ATTN")
 
-try:
-    # vLLM 0.7+ removed AsyncEngineArgs (renamed to EngineArgs). Try the old
-    # combined import first (0.4–0.6), then fall back to the new split import.
-    try:
-        from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams  # type: ignore
-    except ImportError:
-        from vllm import AsyncLLMEngine, SamplingParams  # type: ignore
+def _import_vllm():
+    """Resolve vLLM symbols across the API changes introduced in 0.7–0.22.
+
+    Version history:
+      0.4–0.6  from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
+      0.7–0.21 AsyncEngineArgs → EngineArgs (vllm.engine.arg_utils);
+               from vllm import AsyncLLMEngine still worked
+      0.22+    AsyncLLMEngine no longer re-exported at top-level;
+               canonical location: vllm.engine.async_llm_engine.AsyncLLMEngine
+               (which is itself an alias for vllm.v1.engine.async_llm.AsyncLLM)
+
+    Returns (AsyncLLMEngine, AsyncEngineArgs, SamplingParams) or raises ImportError.
+    """
+    import importlib
+
+    # SamplingParams has been at vllm top-level across all versions.
+    from vllm import SamplingParams  # type: ignore  # noqa: F401
+
+    # --- AsyncLLMEngine: try locations from newest to oldest ---
+    _engine_class = None
+    for _mod_path, _cls_name in (
+        ("vllm.engine.async_llm_engine", "AsyncLLMEngine"),  # 0.7–0.22 submodule
+        ("vllm.v1.engine.async_llm",     "AsyncLLM"),         # 0.22+ V1 canonical
+        ("vllm",                          "AsyncLLMEngine"),   # 0.4–0.6 top-level
+    ):
         try:
-            # 0.7+: EngineArgs lives in engine.arg_utils
-            from vllm.engine.arg_utils import EngineArgs as AsyncEngineArgs  # type: ignore
-        except ImportError:
-            # Some builds re-export it from the top-level namespace
-            from vllm import EngineArgs as AsyncEngineArgs  # type: ignore
+            _mod = importlib.import_module(_mod_path)
+            _engine_class = getattr(_mod, _cls_name)
+            print(f"[llm-vllm] AsyncLLMEngine resolved from {_mod_path}.{_cls_name}")
+            break
+        except (ImportError, AttributeError):
+            continue
+    if _engine_class is None:
+        raise ImportError(
+            "AsyncLLMEngine not found in any known vLLM location. "
+            "Tried: vllm.engine.async_llm_engine, vllm.v1.engine.async_llm, vllm"
+        )
+
+    # --- EngineArgs (was AsyncEngineArgs): try locations from newest to oldest ---
+    _engine_args_class = None
+    for _mod_path, _cls_name in (
+        ("vllm.engine.arg_utils", "EngineArgs"),       # 0.7–0.22
+        ("vllm.engine.arg_utils", "AsyncEngineArgs"),  # transitional
+        ("vllm",                  "EngineArgs"),        # some builds re-export
+        ("vllm",                  "AsyncEngineArgs"),   # 0.4–0.6 top-level
+    ):
+        try:
+            _mod = importlib.import_module(_mod_path)
+            _engine_args_class = getattr(_mod, _cls_name)
+            print(f"[llm-vllm] EngineArgs resolved from {_mod_path}.{_cls_name}")
+            break
+        except (ImportError, AttributeError):
+            continue
+    if _engine_args_class is None:
+        raise ImportError(
+            "EngineArgs/AsyncEngineArgs not found in any known vLLM location."
+        )
+
+    return _engine_class, _engine_args_class, SamplingParams
+
+
+try:
+    AsyncLLMEngine, AsyncEngineArgs, SamplingParams = _import_vllm()  # type: ignore
     _VLLM_AVAILABLE = True
 except Exception:
     AsyncLLMEngine = None  # type: ignore
@@ -309,16 +359,21 @@ class VLLMBackend:
         self._request_counter += 1
         req_id = f"req-{self._request_counter}"
         final_output = None
-        # Only pass lora_request when LoRA is enabled and an adapter was
-        # supplied; the AsyncLLMEngine.generate signature accepts it as a
-        # keyword in vllm 0.4+, and rejecting it cleanly via a try/except
-        # would mask real schedule errors. Branching at the call site is
-        # the cleaner shape.
+        # vLLM V1 (0.8+/0.22+) made request_id keyword-only in generate().
+        # Try positional first (0.4–0.7 shape); fall back to keyword.
         if self._lora_enabled and lora_request is not None:
-            stream = self._engine.generate(formatted, params, req_id,
-                                            lora_request=lora_request)
+            try:
+                stream = self._engine.generate(formatted, params, req_id,
+                                                lora_request=lora_request)
+            except TypeError:
+                stream = self._engine.generate(formatted, params,
+                                                request_id=req_id,
+                                                lora_request=lora_request)
         else:
-            stream = self._engine.generate(formatted, params, req_id)
+            try:
+                stream = self._engine.generate(formatted, params, req_id)
+            except TypeError:
+                stream = self._engine.generate(formatted, params, request_id=req_id)
         async for output in stream:
             final_output = output
         if final_output is None or not getattr(final_output, "outputs", None):

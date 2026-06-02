@@ -1353,10 +1353,17 @@ def _log_progress(iter_n: int, elapsed: float, detector,
     surv = len(proj.surviving) if proj else 0
     weak = len(proj.weakly_supported) if proj else 0
     cold = (pool_state is not None and not pool_state.cold_start_done)
+    # Live store counts — always read directly from the store so we can
+    # distinguish "snapshot is stale" (n_init_live > 0, shares=SCOUT 100%)
+    # from "deposits are silently failing" (n_init_live = 0 despite SCOUT share).
+    _live_stats = store.stats().get("by_type", {})
+    _n_init_live = _live_stats.get("INITIAL", 0)
+    _n_supp_live = _live_stats.get("SUPPORT", 0)
     print(
         f"[swarm t={elapsed:.0f}s iter={iter_n}] "
         f"clusters: {surv} surviving, {weak} weakly\n"
         f"  shares: {shares_str}\n"
+        f"  store: INITIAL={_n_init_live} SUPPORT={_n_supp_live}\n"
         f"  cold_start={cold} quality_met={detector.state.quality_met} "
         f"since_new_surv={detector.state.iterations_since_quality if detector.state.quality_met else detector.state.iterations_since_new_surviving} "
         f"reason={detector.state.reason or '-'}"

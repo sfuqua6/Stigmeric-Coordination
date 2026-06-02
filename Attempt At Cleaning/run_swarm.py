@@ -1953,7 +1953,7 @@ def main():
             config.USE_MODEL_BUNDLES = True
             config.HETEROGENEOUS_CONFIG_FILE = "heterogeneous_small.json"
             print(f"[pipeline] --small: continuous pool using bundle {bundle!r} "
-                  f"(Qwen2.5-3B-Instruct + Phi-3.5-mini)")
+                  f"(Qwen2.5-3B-Instruct + Qwen2.5-1.5B-Instruct)")
             if heterogeneous:
                 print("[pipeline] --small: note — --heterogeneous ignored in "
                       "continuous-pool mode (use --legacy-rounds for GGUF "
@@ -1964,7 +1964,7 @@ def main():
             config.HETEROGENEOUS_CONFIG_FILE = "heterogeneous_small.json"
             print("[pipeline] --small --heterogeneous: "
                   "using configs/heterogeneous_small.json "
-                  "(Qwen2.5-3B + Phi-3.5-mini)")
+                  "(Qwen2.5-3B + Qwen2.5-1.5B)")
         else:
             # Legacy-rounds single-model or baseline.
             config.MODEL_NAME = config.SMALL_MODEL

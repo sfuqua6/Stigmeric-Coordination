@@ -58,56 +58,73 @@ def _import_vllm():
     """
     import importlib
 
-    # SamplingParams has been at vllm top-level across all versions.
-    from vllm import SamplingParams  # type: ignore  # noqa: F401
+    # SamplingParams — stable at vllm top-level; failure here means vLLM is broken.
+    try:
+        from vllm import SamplingParams  # type: ignore  # noqa: F401
+        print("[llm-vllm] SamplingParams ok")
+    except Exception as _sp_exc:
+        raise ImportError(
+            f"from vllm import SamplingParams failed: {_sp_exc}. "
+            "vLLM may have a broken CUDA extension or partial install."
+        ) from _sp_exc
 
-    # --- AsyncLLMEngine: try locations from newest to oldest ---
+    # --- AsyncLLMEngine: try all known locations, log each failure ---
+    _engine_errors = []
     _engine_class = None
     for _mod_path, _cls_name in (
         ("vllm.engine.async_llm_engine", "AsyncLLMEngine"),  # 0.7–0.22 submodule
-        ("vllm.v1.engine.async_llm",     "AsyncLLM"),         # 0.22+ V1 canonical
-        ("vllm",                          "AsyncLLMEngine"),   # 0.4–0.6 top-level
+        ("vllm.v1.engine.async_llm",     "AsyncLLM"),        # 0.22+ V1 native class
+        ("vllm",                          "AsyncLLMEngine"),  # 0.4–0.6 top-level
     ):
         try:
             _mod = importlib.import_module(_mod_path)
             _engine_class = getattr(_mod, _cls_name)
-            print(f"[llm-vllm] AsyncLLMEngine resolved from {_mod_path}.{_cls_name}")
+            print(f"[llm-vllm] AsyncLLMEngine <- {_mod_path}.{_cls_name}")
             break
-        except (ImportError, AttributeError):
-            continue
+        except Exception as _e:
+            _engine_errors.append(f"  {_mod_path}.{_cls_name}: {type(_e).__name__}: {_e}")
     if _engine_class is None:
         raise ImportError(
-            "AsyncLLMEngine not found in any known vLLM location. "
-            "Tried: vllm.engine.async_llm_engine, vllm.v1.engine.async_llm, vllm"
+            "AsyncLLMEngine not found in any known vLLM location.\n"
+            + "\n".join(_engine_errors)
         )
 
-    # --- EngineArgs (was AsyncEngineArgs): try locations from newest to oldest ---
+    # --- EngineArgs (was AsyncEngineArgs): try all known locations ---
+    # vLLM 0.22 V1 module has its own AsyncEngineArgs — check it first.
+    _args_errors = []
     _engine_args_class = None
     for _mod_path, _cls_name in (
-        ("vllm.engine.arg_utils", "EngineArgs"),       # 0.7–0.22
-        ("vllm.engine.arg_utils", "AsyncEngineArgs"),  # transitional
-        ("vllm",                  "EngineArgs"),        # some builds re-export
-        ("vllm",                  "AsyncEngineArgs"),   # 0.4–0.6 top-level
+        ("vllm.v1.engine.async_llm", "AsyncEngineArgs"),  # 0.22+ V1 native
+        ("vllm.engine.arg_utils",    "EngineArgs"),        # 0.7–0.22
+        ("vllm.engine.arg_utils",    "AsyncEngineArgs"),   # transitional
+        ("vllm",                     "EngineArgs"),         # some builds re-export
+        ("vllm",                     "AsyncEngineArgs"),    # 0.4–0.6 top-level
     ):
         try:
             _mod = importlib.import_module(_mod_path)
             _engine_args_class = getattr(_mod, _cls_name)
-            print(f"[llm-vllm] EngineArgs resolved from {_mod_path}.{_cls_name}")
+            print(f"[llm-vllm] EngineArgs <- {_mod_path}.{_cls_name}")
             break
-        except (ImportError, AttributeError):
-            continue
+        except Exception as _e:
+            _args_errors.append(f"  {_mod_path}.{_cls_name}: {type(_e).__name__}: {_e}")
     if _engine_args_class is None:
         raise ImportError(
-            "EngineArgs/AsyncEngineArgs not found in any known vLLM location."
+            "EngineArgs/AsyncEngineArgs not found in any known vLLM location.\n"
+            + "\n".join(_args_errors)
         )
 
     return _engine_class, _engine_args_class, SamplingParams
 
 
+_vllm_import_error = None
 try:
     AsyncLLMEngine, AsyncEngineArgs, SamplingParams = _import_vllm()  # type: ignore
     _VLLM_AVAILABLE = True
-except Exception:
+except Exception as _vllm_exc:
+    _vllm_import_error = _vllm_exc
+    print(f"[llm-vllm] WARNING: vLLM import failed — "
+          f"{type(_vllm_exc).__name__}: {_vllm_exc}\n"
+          "[llm-vllm] Run `import vllm` in a Colab cell to verify, then re-run Cell 4.")
     AsyncLLMEngine = None  # type: ignore
     AsyncEngineArgs = None  # type: ignore
     SamplingParams = None  # type: ignore
@@ -183,8 +200,12 @@ class VLLMBackend:
                  engine_tag: Optional[str] = None,
                  **extra_engine_args):
         if not _VLLM_AVAILABLE:
+            _detail = (f" Import error: {type(_vllm_import_error).__name__}: "
+                       f"{_vllm_import_error}"
+                       if _vllm_import_error is not None else "")
             raise RuntimeError(
-                "vllm is not installed. `pip install vllm` to use VLLMBackend."
+                f"vllm is not installed or failed to import.{_detail} "
+                "`pip install vllm` to use VLLMBackend."
             )
         print(f"[llm-vllm] loading {model_name} "
               f"(dtype={dtype}, max_num_seqs={max_num_seqs}, "

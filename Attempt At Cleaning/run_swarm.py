@@ -940,6 +940,25 @@ async def run_continuous_pipeline(
     # Single-engine path: traditional make_llm() backed by vLLM cascade / HF.
     router = None
     use_bundle = bundle is not None or config.USE_MODEL_BUNDLES
+
+    # Guard: bundles require vLLM. If vLLM failed to import (e.g. CUDA version
+    # mismatch — libcudart.so.13 on a CUDA-12 host), skip the bundle and fall
+    # through to make_llm() which handles HF transformers + bitsandbytes 4-bit.
+    if use_bundle:
+        from core.llm_vllm import _VLLM_AVAILABLE as _vllm_ok
+        if not _vllm_ok:
+            print(
+                "[pipeline] WARNING: vLLM is unavailable (CUDA version mismatch or "
+                "missing library). Skipping bundle and falling back to single-model "
+                "HF transformers + bitsandbytes 4-bit path. The pipeline will still "
+                "run; throughput will be lower than vLLM batch-mode.\n"
+                "[pipeline] To fix: re-run Cell 4 in the Colab notebook — it detects "
+                "your CUDA version and installs the matching vLLM wheel."
+            )
+            use_bundle = False
+            bundle = None
+            config.USE_MODEL_BUNDLES = False
+
     if use_bundle:
         router = make_bundle_router(task_type, override_bundle=bundle)
         config.ACTIVE_BUNDLE = router.bundle_name

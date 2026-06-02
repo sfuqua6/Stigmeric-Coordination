@@ -787,6 +787,14 @@ class Worker:
             # flattens back to depth 2.
             effective_parent = target.id
             effective_type = SUPPORT  # also lock the type for safety
+        elif action in (DEVELOP, REFINE) and target is not None:
+            # Force parent to the sampled target for DEVELOP and REFINE.
+            # When the model emits PARENT: none (or a wrong signal ID), the
+            # SUPPORT lands with no parent link and is invisible to projection's
+            # BFS — store.by_parent(target.id) never finds it, support_diversity
+            # stays 0, and every cluster is trapped at weakly_supported forever.
+            # The sampled target IS the signal we intend to develop; always wire to it.
+            effective_parent = target.id
         elif dyn_parent == "__NONE__":
             effective_parent = None
         elif dyn_parent is not None:

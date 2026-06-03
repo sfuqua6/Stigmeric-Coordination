@@ -158,13 +158,13 @@ class GroqBackend:
 # Override the whole assignment via GROQ_ROLE_MODELS_JSON env var (JSON dict).
 
 _DEFAULT_GROQ_ROLE_MODELS = {
-    "scout":       "llama-3.1-70b-versatile",
+    "scout":       "llama-3.3-70b-versatile",
     "forager":     "mixtral-8x7b-32768",
     "developer":   "mixtral-8x7b-32768",
     "critic":      "llama-3.1-8b-instant",
     "hater":       "gemma2-9b-it",
     "validator":   "llama-3.1-8b-instant",
-    "synthesizer": "llama-3.1-70b-versatile",
+    "synthesizer": "llama-3.3-70b-versatile",
 }
 
 

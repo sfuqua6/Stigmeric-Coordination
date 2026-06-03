@@ -31,24 +31,88 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import time
 from typing import Optional
 
 
-# Per-model semaphore caps so the 30 RPM ceiling is respected under the
-# asyncio scheduler. 70B / reasoning models get a tighter cap (slower per
-# token); small/fast models get a wider one.
-_SEM_LIMITS = {
-    "llama-3.3-70b-versatile":                    8,
-    "llama-3.3-70b-specdec":                      8,
-    "llama-3.1-8b-instant":                       16,
-    "llama3-8b-8192":                             16,
-    "deepseek-r1-distill-llama-70b":              6,
-    "qwen-qwq-32b":                               6,
-    "meta-llama/llama-4-scout-17b-16e-instruct":  10,
-    "meta-llama/llama-4-maverick-17b-128e-instruct": 8,
+# ---------------------------------------------------------------------------
+# Per-model RPM budgets (Groq free tier, 2026)
+# We target 80% of the published limit so one other concurrent user of the
+# same key doesn't immediately tip us into 429s.
+# ---------------------------------------------------------------------------
+_RPM_LIMITS: dict[str, int] = {
+    "llama-3.3-70b-versatile":                       24,   # pub 30
+    "llama-3.3-70b-specdec":                         24,
+    "llama-3.1-8b-instant":                          24,   # pub 30
+    "llama3-8b-8192":                                24,
+    "deepseek-r1-distill-llama-70b":                 24,
+    "qwen-qwq-32b":                                  24,
+    "meta-llama/llama-4-scout-17b-16e-instruct":     24,
+    "meta-llama/llama-4-maverick-17b-128e-instruct": 24,
 }
-_DEFAULT_SEM_LIMIT = 10
+_DEFAULT_RPM = 24
+
+# ---------------------------------------------------------------------------
+# Token-bucket rate limiter (one shared instance per model, across all
+# GroqBackend instances that use the same model name).
+# ---------------------------------------------------------------------------
+
+class _TokenBucket:
+    """Async token bucket: smooths request bursts to stay within RPM quota.
+
+    Workers call `await bucket.acquire()` before sending to Groq. If the
+    bucket is empty they sleep just long enough for one token to refill —
+    so throughput is capped at RPM/60 req/s without wasted 429 round-trips.
+    """
+
+    def __init__(self, rpm: int):
+        self._rate = rpm / 60.0          # tokens added per second
+        self._burst = max(3, rpm // 6)  # allow short burst before throttling
+        self._tokens = float(self._burst)
+        self._last = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = time.monotonic()
+            self._tokens = min(
+                self._burst,
+                self._tokens + (now - self._last) * self._rate,
+            )
+            self._last = now
+            if self._tokens < 1.0:
+                wait = (1.0 - self._tokens) / self._rate
+                await asyncio.sleep(wait)
+                self._tokens = 0.0
+            else:
+                self._tokens -= 1.0
+
+
+# Global registry: model_name -> shared _TokenBucket
+_RATE_LIMITERS: dict[str, _TokenBucket] = {}
+
+
+def _rate_limiter_for(model: str) -> _TokenBucket:
+    if model not in _RATE_LIMITERS:
+        rpm = _RPM_LIMITS.get(model, _DEFAULT_RPM)
+        _RATE_LIMITERS[model] = _TokenBucket(rpm)
+    return _RATE_LIMITERS[model]
+
+
+# Per-model semaphore caps on concurrent in-flight requests (orthogonal to
+# RPM: this prevents >N simultaneous open HTTP connections per model).
+_SEM_LIMITS = {
+    "llama-3.3-70b-versatile":                    6,
+    "llama-3.3-70b-specdec":                      6,
+    "llama-3.1-8b-instant":                       12,
+    "llama3-8b-8192":                             12,
+    "deepseek-r1-distill-llama-70b":              4,
+    "qwen-qwq-32b":                               4,
+    "meta-llama/llama-4-scout-17b-16e-instruct":  8,
+    "meta-llama/llama-4-maverick-17b-128e-instruct": 6,
+}
+_DEFAULT_SEM_LIMIT = 8
 
 # Fallback used when a model returns a decommissioned-400. Must be a model
 # that is reliably active on the free tier. llama-3.1-8b-instant has been
@@ -93,8 +157,8 @@ class GroqBackend:
         self._model = model
         self._api_key = api_key
         self._client = _get_groq_client(api_key)
-        limit = _SEM_LIMITS.get(model, _DEFAULT_SEM_LIMIT)
-        self._sem = asyncio.Semaphore(limit)
+        self._sem = asyncio.Semaphore(_SEM_LIMITS.get(model, _DEFAULT_SEM_LIMIT))
+        self._rl = _rate_limiter_for(model)   # shared across backends for same model
         self._call_count = 0
         self._total_ms = 0.0
 
@@ -111,16 +175,20 @@ class GroqBackend:
     ) -> str:
         """Send prompt to Groq and return the completion text.
 
-        Self-heals on decommissioned-model 400s: switches to _FALLBACK_MODEL
-        in-place and retries once. Logs the swap the first time it happens
-        per model name (not per call) to avoid spamming.
+        Flow:
+          1. Token-bucket acquire — smoothly blocks if we're at the RPM cap.
+          2. Semaphore acquire — caps concurrent open connections per model.
+          3. HTTP call with exponential-backoff retry on 429 / transient errors.
+          4. Auto-heal on decommissioned-400: swap model to fallback, retry.
         """
+        await self._rl.acquire()
         async with self._sem:
             return await self._call_with_retry(prompt, max_tokens, temperature)
 
     async def _call_with_retry(
         self, prompt: str, max_tokens: int, temperature: float, _attempt: int = 0
     ) -> str:
+        _MAX_RETRIES = 5
         t0 = time.monotonic()
         try:
             resp = await self._client.chat.completions.create(
@@ -142,25 +210,35 @@ class GroqBackend:
                     _DECOMMISSIONED.add(self._model)
                     print(f"[groq] {self._model} decommissioned — "
                           f"auto-switching to {_FALLBACK_MODEL}")
+                old = self._model
                 self._model = _FALLBACK_MODEL
                 self.name = f"groq:{_FALLBACK_MODEL}"
+                # Adopt the fallback's rate limiter so we don't bypass its quota.
+                self._rl = _rate_limiter_for(_FALLBACK_MODEL)
+                await self._rl.acquire()
                 return await self._call_with_retry(prompt, max_tokens, temperature, 1)
 
-            # Rate-limit (429) — back off and retry once.
-            if "429" in exc_str and _attempt == 0:
-                await asyncio.sleep(5.0)
-                return await self._call_with_retry(prompt, max_tokens, temperature, 1)
+            # Rate-limit (429) — exponential backoff with jitter, up to MAX_RETRIES.
+            if "429" in exc_str and _attempt < _MAX_RETRIES:
+                delay = min(60.0, 5.0 * (2 ** _attempt)) + random.uniform(0, 2)
+                if _attempt == 0:
+                    print(f"[groq] {self._model} rate-limited (429), "
+                          f"backing off {delay:.1f}s (attempt {_attempt+1}/{_MAX_RETRIES})")
+                await asyncio.sleep(delay)
+                await self._rl.acquire()   # re-acquire token for the retry
+                return await self._call_with_retry(prompt, max_tokens, temperature, _attempt + 1)
 
-            # Transient network error — one retry.
-            if _attempt == 0 and any(
+            # Transient network error — up to 2 retries with short back-off.
+            if _attempt < 2 and any(
                 k in type(exc).__name__ for k in ("Timeout", "Connection", "Network")
             ):
-                await asyncio.sleep(2.0)
-                return await self._call_with_retry(prompt, max_tokens, temperature, 1)
+                await asyncio.sleep(2.0 * (1 + _attempt))
+                await self._rl.acquire()
+                return await self._call_with_retry(prompt, max_tokens, temperature, _attempt + 1)
 
             # Give up — return empty string so the worker skips this iteration
             # rather than crashing the pool.
-            print(f"[groq] {self._model} generate() failed: "
+            print(f"[groq] {self._model} generate() failed after {_attempt} retries: "
                   f"{type(exc).__name__}: {str(exc)[:200]}")
             return ""
 

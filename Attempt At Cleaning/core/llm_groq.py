@@ -264,15 +264,18 @@ class GroqBackend:
 # Override the whole assignment via GROQ_ROLE_MODELS_JSON env var (JSON dict).
 
 _DEFAULT_GROQ_ROLE_MODELS = {
-    # Depth roles: Llama 3.3 70B for broad reasoning.
-    "scout":       "llama-3.3-70b-versatile",
+    # Scout: llama-4-scout-17b (fast, confirmed working at 1695ms avg).
+    # 70B was burning the daily token quota (TPD) on scout alone.
+    # Scout fires ~15-20% of iterations; 70B is reserved for synthesis only.
+    "scout":       "meta-llama/llama-4-scout-17b-16e-instruct",
+    # Synthesizer: 70B for the single end-of-run cluster rendering pass.
+    # One call per surviving cluster — TPD burn is bounded and justified.
     "synthesizer": "llama-3.3-70b-versatile",
-    # Development: Llama 4 Scout — newer generation, different from 3.3.
-    # Auto-falls back to llama-3.1-8b-instant if decommissioned.
+    # Development: llama-4-scout — newer generation, different family from 70B.
     "forager":     "meta-llama/llama-4-scout-17b-16e-instruct",
     "developer":   "meta-llama/llama-4-scout-17b-16e-instruct",
-    # Adversarial: DeepSeek R1 distill — reasoning model for genuine
-    # adversarial pressure. Auto-falls back if decommissioned.
+    # Adversarial: DeepSeek R1 distill — reasoning model gives genuine
+    # adversarial pressure. Auto-falls back to 8B if decommissioned.
     "hater":       "deepseek-r1-distill-llama-70b",
     # Fast structured roles: 8B instant is the most stable free-tier model.
     "critic":      "llama-3.1-8b-instant",

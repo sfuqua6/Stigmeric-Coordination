@@ -187,13 +187,29 @@ class PoolState:
         self.search_timestamps.append(now)
         return True
 
-    def record_action(self, action: str, target_id: Optional[str]) -> int:
-        """Append a successful action to the running log. iteration_counter
-        is incremented by the worker_loop itself on every attempt, so this
-        method only logs deposits."""
-        self.action_log.append(action)
-        if target_id is not None:
-            self.recent_targets[target_id] += 1
+    def record_action(self, action: str, target_id: Optional[str] = None,
+                      deposit_succeeded: bool = True) -> int:
+        """Log an action to the share window and optionally record its target.
+
+        Call with deposit_succeeded=False after the LLM call (unconditional):
+        logs to action_log so share enforcement sees attempted behaviour even
+        when the deposit fails (e.g. empty string from rate-limited LLM).
+
+        Call with deposit_succeeded=True after a confirmed store.deposit():
+        skips the action_log append (already done) and records target_id in
+        recent_targets so the cooldown penalises targets that succeeded.
+
+        Without the unconditional attempt logging, actions that consistently
+        fail never advance their share count, so the floor enforcement
+        permanently boosts them while they permanently fail — a stuck loop.
+        """
+        if not deposit_succeeded:
+            self.action_log.append(action)
+        else:
+            # Only update recent_targets; action_log was already appended
+            # on the attempt.
+            if target_id is not None:
+                self.recent_targets[target_id] += 1
         return self.iteration_counter
 
     def share(self, action: str) -> float:
@@ -731,6 +747,14 @@ class Worker:
             max_tokens=spec.max_tokens, temperature=spec.temperature,
         )
 
+        # Record the ATTEMPT unconditionally so the share window reflects
+        # actual worker behaviour even when the deposit will fail (e.g. empty
+        # string from a rate-limited LLM). Target is NOT added to recent_targets
+        # here — that happens only on successful deposit below.
+        async with pool_state.lock:
+            pool_state.record_action(action, target_id=None,
+                                     deposit_succeeded=False)
+
         # Phase 5: log the first N validator raw outputs to validator_raw.log
         # so a failed JSON parse vs. failed prompt is diagnosable post-run.
         if action == VALIDATE:
@@ -868,12 +892,14 @@ class Worker:
         if sid is None:
             return None
 
-        # Bookkeeping
+        # Bookkeeping — action already logged on attempt above; only record
+        # the target here so recent_targets tracks successful deposits only.
         self.recent_actions.append(action)
         if target is not None:
             self.recent_targets.append(target.id)
         async with pool_state.lock:
-            pool_state.record_action(action, target.id if target else None)
+            pool_state.record_action(action, target.id if target else None,
+                                     deposit_succeeded=True)
         if action == SCOUT:
             self._own_scout_excerpts.append(content)
 

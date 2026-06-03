@@ -531,6 +531,10 @@ class SignalStore:
 
             # Weight each cluster: base = sum of member strengths.
             # If worker has a centroid, multiply by cosine sim to cluster centroid.
+            # Diversity penalty: divide by log(1 + size) so dominant clusters
+            # don't monopolise sampling as they grow — each new member adds
+            # diminishing marginal weight. Without this, trail amplification +
+            # cluster-aware sampling creates a winner-takes-all feedback loop.
             cluster_weights = []
             for cl, members in live_clusters:
                 base_w = sum(s.strength for s in members) + 0.1
@@ -538,7 +542,8 @@ class SignalStore:
                     sim = float(sum(a * b for a, b in zip(worker_centroid, cl.centroid)))
                     # sim in [-1, 1]; shift to [0.1, 1.1] so no cluster is zeroed out
                     base_w *= max(0.1, (sim + 1.0) / 2.0 + 0.1)
-                cluster_weights.append(max(0.01, base_w))
+                size_penalty = math.log1p(len(members))
+                cluster_weights.append(max(0.01, base_w / size_penalty))
 
             # Pick a cluster
             chosen_cl, chosen_members = random.choices(

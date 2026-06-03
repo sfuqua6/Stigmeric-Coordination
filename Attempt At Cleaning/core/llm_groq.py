@@ -36,18 +36,28 @@ from typing import Optional
 
 
 # Per-model semaphore caps so the 30 RPM ceiling is respected under the
-# asyncio scheduler. 70B models get a tighter cap (slower per token);
-# smaller/MoE models get a wider one.
+# asyncio scheduler. 70B / reasoning models get a tighter cap (slower per
+# token); small/fast models get a wider one.
 _SEM_LIMITS = {
-    "llama-3.1-70b-versatile":  8,
-    "llama-3.3-70b-versatile":  8,
-    "mixtral-8x7b-32768":       16,
-    "gemma2-9b-it":             16,
-    "llama-3.1-8b-instant":     16,
-    "llama3-8b-8192":           16,
-    "qwen-qwq-32b":             8,
+    "llama-3.3-70b-versatile":                    8,
+    "llama-3.3-70b-specdec":                      8,
+    "llama-3.1-8b-instant":                       16,
+    "llama3-8b-8192":                             16,
+    "deepseek-r1-distill-llama-70b":              6,
+    "qwen-qwq-32b":                               6,
+    "meta-llama/llama-4-scout-17b-16e-instruct":  10,
+    "meta-llama/llama-4-maverick-17b-128e-instruct": 8,
 }
-_DEFAULT_SEM_LIMIT = 12
+_DEFAULT_SEM_LIMIT = 10
+
+# Fallback used when a model returns a decommissioned-400. Must be a model
+# that is reliably active on the free tier. llama-3.1-8b-instant has been
+# the most stable across Groq deprecation cycles.
+_FALLBACK_MODEL = "llama-3.1-8b-instant"
+
+# Set of model names already confirmed decommissioned this session (logged
+# once per model, not once per call).
+_DECOMMISSIONED: set = set()
 
 
 def _get_groq_client(api_key: str):
@@ -88,6 +98,9 @@ class GroqBackend:
         self._call_count = 0
         self._total_ms = 0.0
 
+    def _is_decommissioned_error(self, exc_str: str) -> bool:
+        return "decommissioned" in exc_str or "no longer supported" in exc_str
+
     async def generate(
         self,
         prompt: str,
@@ -98,7 +111,9 @@ class GroqBackend:
     ) -> str:
         """Send prompt to Groq and return the completion text.
 
-        Retries once on rate-limit (429) with a 5-second back-off.
+        Self-heals on decommissioned-model 400s: switches to _FALLBACK_MODEL
+        in-place and retries once. Logs the swap the first time it happens
+        per model name (not per call) to avoid spamming.
         """
         async with self._sem:
             return await self._call_with_retry(prompt, max_tokens, temperature)
@@ -120,18 +135,31 @@ class GroqBackend:
             return text.strip()
         except Exception as exc:
             exc_str = str(exc)
-            # Groq / OpenAI SDK surface rate limit as status 429.
+
+            # Decommissioned model (400) — swap to fallback and retry once.
+            if self._is_decommissioned_error(exc_str) and _attempt == 0:
+                if self._model not in _DECOMMISSIONED:
+                    _DECOMMISSIONED.add(self._model)
+                    print(f"[groq] {self._model} decommissioned — "
+                          f"auto-switching to {_FALLBACK_MODEL}")
+                self._model = _FALLBACK_MODEL
+                self.name = f"groq:{_FALLBACK_MODEL}"
+                return await self._call_with_retry(prompt, max_tokens, temperature, 1)
+
+            # Rate-limit (429) — back off and retry once.
             if "429" in exc_str and _attempt == 0:
                 await asyncio.sleep(5.0)
                 return await self._call_with_retry(prompt, max_tokens, temperature, 1)
-            # Connection / timeout on first attempt → one more try.
+
+            # Transient network error — one retry.
             if _attempt == 0 and any(
                 k in type(exc).__name__ for k in ("Timeout", "Connection", "Network")
             ):
                 await asyncio.sleep(2.0)
                 return await self._call_with_retry(prompt, max_tokens, temperature, 1)
-            # Give up — surface empty string so the worker deposits nothing rather
-            # than crashing the pool.
+
+            # Give up — return empty string so the worker skips this iteration
+            # rather than crashing the pool.
             print(f"[groq] {self._model} generate() failed: "
                   f"{type(exc).__name__}: {str(exc)[:200]}")
             return ""
@@ -158,13 +186,19 @@ class GroqBackend:
 # Override the whole assignment via GROQ_ROLE_MODELS_JSON env var (JSON dict).
 
 _DEFAULT_GROQ_ROLE_MODELS = {
+    # Depth roles: Llama 3.3 70B for broad reasoning.
     "scout":       "llama-3.3-70b-versatile",
-    "forager":     "mixtral-8x7b-32768",
-    "developer":   "mixtral-8x7b-32768",
-    "critic":      "llama-3.1-8b-instant",
-    "hater":       "gemma2-9b-it",
-    "validator":   "llama-3.1-8b-instant",
     "synthesizer": "llama-3.3-70b-versatile",
+    # Development: Llama 4 Scout — newer generation, different from 3.3.
+    # Auto-falls back to llama-3.1-8b-instant if decommissioned.
+    "forager":     "meta-llama/llama-4-scout-17b-16e-instruct",
+    "developer":   "meta-llama/llama-4-scout-17b-16e-instruct",
+    # Adversarial: DeepSeek R1 distill — reasoning model for genuine
+    # adversarial pressure. Auto-falls back if decommissioned.
+    "hater":       "deepseek-r1-distill-llama-70b",
+    # Fast structured roles: 8B instant is the most stable free-tier model.
+    "critic":      "llama-3.1-8b-instant",
+    "validator":   "llama-3.1-8b-instant",
 }
 
 

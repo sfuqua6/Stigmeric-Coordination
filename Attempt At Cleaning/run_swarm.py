@@ -968,14 +968,27 @@ async def run_continuous_pipeline(
         await router.warmup(n=3)
         llm = next(iter(router.engines.values())) if router.engines else None
     else:
-        llm = make_llm()
-        # Phase 0: JIT warmup so the slot-mapping kernel doesn't stall the
-        # first real iteration. Only meaningful on vLLM; MockLLM/HF skip.
-        if hasattr(llm, "warmup"):
-            try:
-                await llm.warmup(n=5)
-            except Exception as exc:
-                print(f"[pipeline] warmup raised {type(exc).__name__}: {exc}")
+        # Groq API path: when GROQ_API_KEY is set, route each role to a
+        # different Groq-hosted model family. This is the correct solution for
+        # T4 (or any single-GPU environment): a genuine architectural diversity
+        # without sequential loading. Workers still run via run_pool() with
+        # router=router; engine_for(role) returns the right GroqBackend.
+        _groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+        if _groq_key and not config.USE_MOCK_LLM:
+            from core.llm_groq import GroqRouter
+            router = GroqRouter(api_key=_groq_key)
+            # llm is the scout backend (used for topology generation and any
+            # path that expects a single llm before run_pool is called).
+            llm = router.engine_for("scout")
+        else:
+            llm = make_llm()
+            # Phase 0: JIT warmup so the slot-mapping kernel doesn't stall the
+            # first real iteration. Only meaningful on vLLM; MockLLM/HF skip.
+            if hasattr(llm, "warmup"):
+                try:
+                    await llm.warmup(n=5)
+                except Exception as exc:
+                    print(f"[pipeline] warmup raised {type(exc).__name__}: {exc}")
 
     store = SignalStore()
 
@@ -1006,8 +1019,10 @@ async def run_continuous_pipeline(
     # concurrency to 1 — workers still queue cleanly.
     print(f"\n[pipeline] continuous pool — task={task_type!r} prompt={user_prompt!r}")
     if router is not None:
-        print(f"[pipeline] llm backend: bundle:{router.bundle_name} "
-              f"({len(router.engines)} engines)")
+        _rb = router.bundle_name
+        _label = (f"groq ({len(router.engines)} models)" if _rb == "groq"
+                  else f"bundle:{_rb} ({len(router.engines)} engines)")
+        print(f"[pipeline] llm backend: {_label}")
     else:
         print(f"[pipeline] llm backend: {llm.name}")
     print(f"[pipeline] n_workers={n_workers}")
@@ -1150,7 +1165,12 @@ async def run_continuous_pipeline(
         json.dumps(signal_dump, indent=2), encoding="utf-8"
     )
 
-    backend_label = ("bundle:" + router.bundle_name) if router is not None else (llm.name if llm else "unknown")
+    _rb = router.bundle_name if router is not None else None
+    backend_label = (
+        ("groq:" + ":".join(sorted(set(router._role_models.values()))))
+        if _rb == "groq"
+        else (("bundle:" + _rb) if _rb else (llm.name if llm else "unknown"))
+    )
     model_assignment = router.manifest() if router is not None else (
         {"all": llm.name} if llm is not None else {}
     )

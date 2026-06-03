@@ -75,6 +75,8 @@ from .config import (
     DELTA_DEDUP_AMPLIFY,
     DELTA_BOOST_BETA,
     CLUSTERING_ENABLED_TYPES,
+    PEER_PRUNE_MIN_MEMBERS,
+    PEER_PRUNE_FACTOR,
 )
 from .signal_types import VERIFICATION, CONTRARIAN_TYPES
 from .cluster_registry import ClusterRegistry
@@ -847,8 +849,32 @@ class SignalStore:
             s.strength = _from_logit(s._logit)
 
     def prune_weak(self) -> int:
+        """Remove signals below the prune threshold.
+
+        Peer-relative protection: clusters with >= PEER_PRUNE_MIN_MEMBERS live
+        member signals have their prune floor halved (PRUNE_THRESHOLD *
+        PEER_PRUNE_FACTOR). This prevents the richest cluster from being
+        uniformly decayed below the absolute floor while isolated weak signals
+        survive by never accumulating enough decay to matter.
+        """
         with self._lock:
-            doomed = [sid for sid, s in self._signals.items() if s.strength < PRUNE_THRESHOLD]
+            # Count live members per cluster for peer-relative protection.
+            cluster_live: dict = {}
+            for s in self._signals.values():
+                if s.cluster_id:
+                    cluster_live[s.cluster_id] = cluster_live.get(s.cluster_id, 0) + 1
+            protected = {
+                cid for cid, n in cluster_live.items()
+                if n >= PEER_PRUNE_MIN_MEMBERS
+            }
+
+            doomed = []
+            for sid, s in self._signals.items():
+                floor = PRUNE_THRESHOLD
+                if s.cluster_id in protected:
+                    floor = PRUNE_THRESHOLD * PEER_PRUNE_FACTOR
+                if s.strength < floor:
+                    doomed.append(sid)
             for sid in doomed:
                 self._delete_locked(sid)
             return len(doomed)

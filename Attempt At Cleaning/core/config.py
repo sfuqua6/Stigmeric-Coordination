@@ -437,6 +437,22 @@ SURVIVAL_BROAD_SUPPORT = 4
 # Validation
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Peer-relative pruning (prevents the best cluster from being uniformly cut)
+# ---------------------------------------------------------------------------
+# When a cluster has >= PEER_PRUNE_MIN_MEMBERS live member signals, its
+# members are protected: they survive if strength >= PRUNE_THRESHOLD *
+# PEER_PRUNE_FACTOR rather than the raw PRUNE_THRESHOLD. This stops the
+# richest cluster from being uniformly decayed below the absolute floor
+# while weaker isolated signals survive by not accumulating decay.
+#
+# Setting PEER_PRUNE_FACTOR=1.0 disables the protection (same as before).
+# PEER_PRUNE_MIN_MEMBERS=3 catches clusters that have attracted at least
+# 3 distinct INITIAL/SUPPORT signals — indicative of genuine scout consensus
+# rather than a lone unresponded-to claim.
+PEER_PRUNE_MIN_MEMBERS: int = 3
+PEER_PRUNE_FACTOR: float = 0.5   # rich clusters prune at 50% of the normal floor
+
 assert 0.0 < DECAY_RATE < 1.0
 assert 0.0 < PRUNE_THRESHOLD < 1.0
 assert PRUNE_THRESHOLD >= DECAY_RATE
@@ -452,6 +468,8 @@ assert CHUNK_WORDS > 0 and CHUNK_OVERLAP >= 0 and CHUNK_OVERLAP < CHUNK_WORDS
 assert LLM_CONCURRENCY >= 1
 assert SCOUT_MAX_DEPOSITS_PER_ROUND >= 1
 assert SCOUT_RESEED_CHARS >= 0
+assert PEER_PRUNE_MIN_MEMBERS >= 1
+assert 0.0 < PEER_PRUNE_FACTOR <= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +546,10 @@ CLUSTER_JOIN_THRESHOLD           = _float_env("SWARM_CLUSTER_JOIN_THRESHOLD",   
 CLUSTER_SPLIT_THRESHOLD          = _float_env("SWARM_CLUSTER_SPLIT_THRESHOLD",          CLUSTER_SPLIT_THRESHOLD)
 CLUSTER_REANCHOR_EVERY           = _int_env(  "SWARM_CLUSTER_REANCHOR_EVERY",           CLUSTER_REANCHOR_EVERY)
 
+# Peer-relative pruning knobs
+PEER_PRUNE_MIN_MEMBERS = _int_env(  "SWARM_PEER_PRUNE_MIN_MEMBERS", PEER_PRUNE_MIN_MEMBERS)
+PEER_PRUNE_FACTOR      = _float_env("SWARM_PEER_PRUNE_FACTOR",      PEER_PRUNE_FACTOR)
+
 # ---------------------------------------------------------------------------
 # Fix P — Planner (position-space SynthesisPlan)
 # ---------------------------------------------------------------------------
@@ -585,6 +607,8 @@ assert 0.0 < CLUSTER_SIM_THRESHOLD < 1.0
 assert 0.0 < CLUSTER_JOIN_THRESHOLD < 1.0
 assert 0.0 < CLUSTER_SPLIT_THRESHOLD < CLUSTER_JOIN_THRESHOLD
 assert CLUSTER_REANCHOR_EVERY >= 1
+assert PEER_PRUNE_MIN_MEMBERS >= 1
+assert 0.0 < PEER_PRUNE_FACTOR <= 1.0
 
 # ---------------------------------------------------------------------------
 # Heterogeneous model routing (Pattern 1: sequential per-phase loading)

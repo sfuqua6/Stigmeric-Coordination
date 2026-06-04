@@ -1047,7 +1047,14 @@ class Synthesizer:
         # critic sees clean prose without the Section 3/4 deterministic
         # noise. Skipped when sections is empty (no-consensus fallback
         # already returned above).
-        if _SYNTHESIZER_REVISION_ROUNDS > 0 and sections:
+        #
+        # SKIPPED on API backends (Groq): the full answer exceeds the prompt
+        # budget available to free-tier 70B, so the revise call only sees the
+        # first 3000 chars and produces a 75%-shorter draft that fails the
+        # "too short" guard. Revision makes quality strictly worse on Groq;
+        # the 70B TPD budget is better spent on cluster rendering.
+        _is_api_backend = "Groq" in type(self.llm).__name__
+        if _SYNTHESIZER_REVISION_ROUNDS > 0 and sections and not _is_api_backend:
             try:
                 answer = await self._revision_loop(
                     answer, projection, store,
@@ -1056,6 +1063,14 @@ class Synthesizer:
             except Exception as exc:
                 print(f"[synthesizer] revision loop crashed: "
                       f"{type(exc).__name__}: {exc}; keeping original assembly")
+        elif _is_api_backend and _SYNTHESIZER_REVISION_ROUNDS > 0:
+            print("[synthesizer] revision skipped (API backend — prompt budget insufficient)")
+
+        # Resolve inline [INITIAL_XXXXX] citation tags to numbered footnotes
+        # before stamping Section 4. External readers see bare signal IDs as
+        # unfilled template tokens; numbered footnotes with a 120-char excerpt
+        # make the prose self-contained and readable.
+        answer = resolve_inline_citations(answer, store)
 
         # Section 4 — Citations: deterministic stamp appended to the answer.
         # Pass merge_groups so the reader can see when the planner treated
@@ -2916,6 +2931,66 @@ def _stamp_citations(
         lines.append("")
 
     return answer.rstrip() + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Inline citation resolution
+# ---------------------------------------------------------------------------
+
+_INLINE_SIGNAL_RE = re.compile(r"\[((INITIAL|SUPPORT|VERIFICATION|OBJECTION|CRITIQUE[_A-Z]*)_\d{4,5})\]")
+
+
+def resolve_inline_citations(answer: str, store) -> str:
+    """Replace [SIGNAL_ID] tags with numbered footnote references.
+
+    External readers see [INITIAL_00178] as an unfilled template token.
+    This converts them to [1]-style references and appends a numbered
+    footnote block at the end of the prose (before Section 4 CITATIONS).
+
+    Only INITIAL signals get footnote text (they are the cluster heads
+    with substantive content). SUPPORT/VERIFICATION/etc retain their ID
+    since they appear mainly in Section 4 which already explains them.
+    """
+    # Find all unique INITIAL signal IDs in the prose (in order of appearance)
+    seen_initials: dict[str, int] = {}  # id -> footnote number
+    counter = 0
+
+    def _replacer(m: re.Match) -> str:
+        nonlocal counter
+        sig_id = m.group(1)
+        sig_type = m.group(2)
+        if sig_type != "INITIAL":
+            return m.group(0)  # leave non-INITIAL IDs unchanged
+        if sig_id not in seen_initials:
+            counter += 1
+            seen_initials[sig_id] = counter
+        return f"[{seen_initials[sig_id]}]"
+
+    resolved = _INLINE_SIGNAL_RE.sub(_replacer, answer)
+
+    if not seen_initials:
+        return resolved
+
+    # Build footnote block
+    footnote_lines = ["\n\n---\n**Sources referenced above:**\n"]
+    for sig_id, n in seen_initials.items():
+        sig = store.get(sig_id) if store is not None else None
+        if sig:
+            excerpt = sig.content[:120].replace("\n", " ").strip()
+            if len(sig.content) > 120:
+                excerpt += "..."
+        else:
+            excerpt = sig_id
+        footnote_lines.append(f"[{n}] {excerpt}")
+
+    # Insert footnotes before Section 4 (CITATIONS) if present, else append.
+    cite_marker = "\n## 4. CITATIONS"
+    if cite_marker in resolved:
+        resolved = resolved.replace(cite_marker, "\n".join(footnote_lines) + cite_marker, 1)
+    else:
+        resolved = resolved + "\n".join(footnote_lines)
+
+    return resolved
 
 
 # ---------------------------------------------------------------------------

@@ -574,8 +574,8 @@ assert 0.0 <= DISSENT_WEIGHT <= 1.0
 # ---------------------------------------------------------------------------
 # Fix R — Renderer guards
 # ---------------------------------------------------------------------------
-RENDER_POSITION_MAX_WORDS = 80   # hard word cap for Section-1 position paragraphs
-RENDER_DISSENT_MAX_WORDS  = 90   # hard word cap for Section-2 dissent paragraphs
+RENDER_POSITION_MAX_WORDS = 200  # hard word cap for Section-1 position paragraphs
+RENDER_DISSENT_MAX_WORDS  = 220  # hard word cap for Section-2 dissent paragraphs
 
 RENDER_POSITION_MAX_WORDS = _int_env("SWARM_RENDER_POSITION_MAX_WORDS", RENDER_POSITION_MAX_WORDS)
 RENDER_DISSENT_MAX_WORDS  = _int_env("SWARM_RENDER_DISSENT_MAX_WORDS",  RENDER_DISSENT_MAX_WORDS)

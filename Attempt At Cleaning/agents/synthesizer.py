@@ -2943,41 +2943,48 @@ _INLINE_SIGNAL_RE = re.compile(r"\[((INITIAL|SUPPORT|VERIFICATION|OBJECTION|CRIT
 def resolve_inline_citations(answer: str, store) -> str:
     """Replace [SIGNAL_ID] tags with numbered footnote references.
 
-    External readers see [INITIAL_00178] as an unfilled template token.
-    This converts them to [1]-style references and appends a numbered
-    footnote block at the end of the prose (before Section 4 CITATIONS).
+    External readers see [INITIAL_00178] or [SUPPORT_00088] as unfilled
+    template tokens. This converts all inline signal IDs to [1]-style
+    references and appends a numbered footnote block before Section 4.
 
-    Only INITIAL signals get footnote text (they are the cluster heads
-    with substantive content). SUPPORT/VERIFICATION/etc retain their ID
-    since they appear mainly in Section 4 which already explains them.
+    INITIAL signals (cluster heads) get a 120-char excerpt.
+    SUPPORT signals (evidence) get a 70-char excerpt — they appear more
+    frequently so shorter is better for footnote block length.
+    VERIFICATION/OBJECTION/CRITIQUE retain their IDs (Section 4 covers them).
     """
-    # Find all unique INITIAL signal IDs in the prose (in order of appearance)
-    seen_initials: dict[str, int] = {}  # id -> footnote number
+    _RESOLVED_TYPES = {"INITIAL", "SUPPORT"}
+    seen: dict[str, int] = {}   # signal_id -> footnote number
     counter = 0
 
     def _replacer(m: re.Match) -> str:
         nonlocal counter
         sig_id = m.group(1)
         sig_type = m.group(2)
-        if sig_type != "INITIAL":
-            return m.group(0)  # leave non-INITIAL IDs unchanged
-        if sig_id not in seen_initials:
+        if sig_type not in _RESOLVED_TYPES:
+            return m.group(0)
+        if sig_id not in seen:
             counter += 1
-            seen_initials[sig_id] = counter
-        return f"[{seen_initials[sig_id]}]"
+            seen[sig_id] = counter
+        return f"[{seen[sig_id]}]"
 
     resolved = _INLINE_SIGNAL_RE.sub(_replacer, answer)
 
-    if not seen_initials:
+    if not seen:
         return resolved
 
-    # Build footnote block
+    # Build footnote block — INITIAL first (longer excerpt), then SUPPORT.
+    initials = {k: v for k, v in seen.items() if k.startswith("INITIAL")}
+    supports = {k: v for k, v in seen.items() if k.startswith("SUPPORT")}
+    ordered = sorted(initials.items(), key=lambda x: x[1]) + \
+              sorted(supports.items(), key=lambda x: x[1])
+
     footnote_lines = ["\n\n---\n**Sources referenced above:**\n"]
-    for sig_id, n in seen_initials.items():
+    for sig_id, n in ordered:
         sig = store.get(sig_id) if store is not None else None
         if sig:
-            excerpt = sig.content[:120].replace("\n", " ").strip()
-            if len(sig.content) > 120:
+            limit = 120 if sig_id.startswith("INITIAL") else 70
+            excerpt = sig.content[:limit].replace("\n", " ").strip()
+            if len(sig.content) > limit:
                 excerpt += "..."
         else:
             excerpt = sig_id

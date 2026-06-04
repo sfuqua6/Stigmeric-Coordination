@@ -274,9 +274,12 @@ _DEFAULT_GROQ_ROLE_MODELS = {
     # Development: llama-4-scout — newer generation, different family from 70B.
     "forager":     "meta-llama/llama-4-scout-17b-16e-instruct",
     "developer":   "meta-llama/llama-4-scout-17b-16e-instruct",
-    # Adversarial: DeepSeek R1 distill — reasoning model gives genuine
-    # adversarial pressure. Auto-falls back to 8B if decommissioned.
-    "hater":       "deepseek-r1-distill-llama-70b",
+    # Adversarial: Llama 4 Maverick — different architecture from Scout
+    # (Maverick is 128-expert MoE vs Scout's 16-expert), genuinely distinct
+    # from the 8B critic. DeepSeek R1 distill was the previous default but
+    # was consistently decommissioned mid-run, falling back to 8B and
+    # collapsing adversarial diversity (hater == critic == validator).
+    "hater":       "meta-llama/llama-4-maverick-17b-128e-instruct",
     # Fast structured roles: 8B instant is the most stable free-tier model.
     "critic":      "llama-3.1-8b-instant",
     "validator":   "llama-3.1-8b-instant",

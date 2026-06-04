@@ -99,6 +99,21 @@ _TEMPLATE_LEAK_PATTERNS = [
     re.compile(r"\bthe\s+absence\s+of\s+empirical\s+proof\b", re.IGNORECASE),
     re.compile(r"\bin\s+my\s+(?:corpus\s+)?partition\b", re.IGNORECASE),
     re.compile(r"\bconsidering\s+the\s+absence\s+of\b", re.IGNORECASE),
+    # Meta-commentary about the artifact/task rather than a substantive claim.
+    # Emitted by 8B models when given irrelevant retrieval chunks; they describe
+    # what they're supposed to do rather than doing it.
+    re.compile(r"\bthe\s+artifact\s+(?:presents|provides|lacks|contains|describes|discusses)\b", re.IGNORECASE),
+    re.compile(r"\bthis\s+artifact\s+(?:presents|provides|lacks|contains|describes|discusses)\b", re.IGNORECASE),
+    # Failed search acknowledgment deposited as a signal — the model announces
+    # that the retrieved evidence is irrelevant to the task.
+    re.compile(r"\bthe\s+(?:provided\s+)?evidence\s+does\s+not\s+(?:directly\s+)?(?:relate|seem\s+to\s+be\s+relevant|support|address)\b", re.IGNORECASE),
+    re.compile(r"\bunfortunately,?\s+the\s+(?:provided\s+)?evidence\b", re.IGNORECASE),
+    re.compile(r"\bwhile\s+the\s+(?:provided\s+)?evidence\s+does\s+not\b", re.IGNORECASE),
+    re.compile(r"\bthe\s+evidence\s+(?:provided\s+)?(?:doesn'?t|does\s+not)\s+(?:seem|appear)\s+(?:to\s+be\s+)?relevant\b", re.IGNORECASE),
+    # Off-topic content detectors — when retrieval goes badly wrong and the model
+    # produces a claim about something entirely unrelated to the task (e.g. plastic
+    # waste, general pollution when the task is about car bans).
+    re.compile(r"\baddress(?:ing)?\s+(?:plastic|single-use)\s+waste\b", re.IGNORECASE),
 ]
 
 

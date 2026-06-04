@@ -1179,7 +1179,15 @@ class Worker:
                 from core.query_planner import (
                     plan_step_back, plan_hyde_query, find_cached_query,
                 )
-                atoms = await _safe_decompose(target.content, chosen_llm)
+                # Limit atoms per validation call. vLLM batches atom calls
+                # internally so 3 atoms costs ~1× wall-clock; on the Groq API
+                # path each atom is a separate serial HTTP round-trip, so 3
+                # atoms = 3× latency + 3× RPM consumption. Detect API paths
+                # by checking for the groq-specific class name and cap to 1.
+                _is_api_llm = "Groq" in type(chosen_llm).__name__
+                _safe_max_atoms = 1 if _is_api_llm else 3
+                atoms = await _safe_decompose(target.content, chosen_llm,
+                                              max_atoms=_safe_max_atoms)
                 atom_results: list[dict] = []
                 for atom in atoms:
                     atom_text = atom["text"]

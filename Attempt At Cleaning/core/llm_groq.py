@@ -351,6 +351,12 @@ class GroqRouter:
         print(f"[groq] GroqRouter initialised ({len(self._backends)} distinct models):")
         for role, model in sorted(self._role_models.items()):
             print(f"[groq]   {role:12s} → {model}")
+        # Groq throughput is ~2.5s/iter vs ~1.3s/iter for vLLM. The default
+        # 900s cap kills runs that are still productive. Recommend extending:
+        cur_cap = os.environ.get("SWARM_MAX_TIME_S", "900")
+        if float(cur_cap) <= 900:
+            print(f"[groq] TIP: default cap is {cur_cap}s. "
+                  f"Set SWARM_MAX_TIME_S=1800 for a full run.")
 
     # ------------------------------------------------------------------
     # MultiEngineRouter contract

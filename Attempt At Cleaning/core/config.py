@@ -425,6 +425,11 @@ SURVIVAL_TASK_PROFILES = {
     "analysis":        {"requires_verification": False, "credibility_chain_depth": 3},
     "problem_solving": {"requires_verification": False, "credibility_chain_depth": 3},
     "creative":        {"requires_verification": False, "credibility_chain_depth": 2},
+    # stock: numeric claims are checkable against market data, so survival
+    # requires verification (like coding). support_diversity_min=2 because only
+    # a few lens scouts + developers produce SUPPORT for any one claim.
+    "stock":           {"requires_verification": True,  "credibility_chain_depth": 999,
+                        "support_diversity_min": 2},
 }
 # Default profile for unknown task types: behave like analysis.
 SURVIVAL_DEFAULT_PROFILE = {"requires_verification": False, "credibility_chain_depth": 3}

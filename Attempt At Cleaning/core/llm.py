@@ -282,9 +282,15 @@ def make_llm(force_mock: bool = False):
         from .config import _TIER as _detected_tier
     except Exception:
         _detected_tier = None
+    # SWARM_BACKEND is overloaded: run_swarm.py uses 'hybrid'/'local' to choose
+    # the ROUTER, while make_llm() reads the same var to choose the local engine.
+    # Treat 'hybrid'/'local' as auto so the local model still gets vLLM on a
+    # Colab GPU. (Bug: 'hybrid' was neither 'vllm' nor '' -> want_vllm=False ->
+    # the slow HF cascade -> 16 cold workers stalled at iter=0.)
     want_vllm = (
         explicit_backend == "vllm"
-        or (explicit_backend == "" and (colab_flag or _detected_tier is not None))
+        or (explicit_backend in ("", "hybrid", "local")
+            and (colab_flag or _detected_tier is not None))
     )
     # Diagnostic banner — makes it obvious in Colab logs what ladder is
     # about to run and what env vars control it.

@@ -988,6 +988,15 @@ async def run_continuous_pipeline(
             from core.llm_hybrid import HybridRouter
             router = HybridRouter(api_key=_groq_key)
             llm = router.engine_for("scout")   # local model; used for topology gen
+            # Warm up the local model (the plain-local path does this) so the
+            # first real generations don't each pay the JIT/slot-mapping cost —
+            # critical on the HF backend, where many cold workers otherwise stall.
+            if hasattr(llm, "warmup"):
+                try:
+                    await llm.warmup(n=5)
+                except Exception as exc:
+                    print(f"[pipeline] hybrid local warmup raised "
+                          f"{type(exc).__name__}: {exc}")
             print(f"[pipeline] hybrid backend (local + Groq): {router.manifest()}")
         elif _groq_key and not config.USE_MOCK_LLM:
             from core.llm_groq import GroqRouter

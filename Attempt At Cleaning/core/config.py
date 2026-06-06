@@ -360,6 +360,19 @@ TAVILY_QUERIES_PER_RUN = 4     # cap on live Tavily calls per run (free-tier gua
 CLUSTER_JOIN_THRESHOLD = 0.88     # cosine sim above which a signal joins an existing cluster
 CLUSTER_SPLIT_THRESHOLD = 0.78    # sim below which a member is ejected during reanchor
 CLUSTER_REANCHOR_EVERY = 8        # recompute medoid every N deposits into a cluster
+# Anti-mega-blob: joining an already-large cluster requires HIGHER similarity, so
+# a vague central claim can't swallow the field (the "one blob + dust" pathology
+# seen in real runs). effective_join = min(MAX, JOIN + PENALTY*log2(size)).
+# PENALTY=0 reproduces the old fixed-threshold behaviour (used in tests/ablation).
+CLUSTER_JOIN_SIZE_PENALTY = 0.03  # per-doubling similarity penalty for large clusters
+CLUSTER_JOIN_MAX_THRESHOLD = 0.97 # cap so a cluster never becomes literally un-joinable
+# Periodic divisive re-cluster (corrective): force-split a cluster whose cohesion
+# (mean member-to-medoid cosine sim) drops below this — it's a blob of distinct
+# sub-positions greedily merged. Run every CLUSTER_RECLUSTER_EVERY iters + before
+# projection. Lets the natural structure emerge after the field has spoken,
+# instead of locking in order-dependent greedy joins.
+CLUSTER_COHESION_MIN = 0.80
+CLUSTER_RECLUSTER_EVERY = 25      # iterations between global re-cluster passes (0 = off)
 CLUSTERING_ENABLED_TYPES = {"INITIAL", "SUPPORT", "OBJECTION"}
 
 # ---------------------------------------------------------------------------
@@ -550,6 +563,10 @@ HYBRID_RETRIEVAL      = os.environ.get("SWARM_HYBRID_RETRIEVAL", "").strip() not
 CLUSTER_JOIN_THRESHOLD           = _float_env("SWARM_CLUSTER_JOIN_THRESHOLD",           CLUSTER_JOIN_THRESHOLD)
 CLUSTER_SPLIT_THRESHOLD          = _float_env("SWARM_CLUSTER_SPLIT_THRESHOLD",          CLUSTER_SPLIT_THRESHOLD)
 CLUSTER_REANCHOR_EVERY           = _int_env(  "SWARM_CLUSTER_REANCHOR_EVERY",           CLUSTER_REANCHOR_EVERY)
+CLUSTER_JOIN_SIZE_PENALTY        = _float_env("SWARM_CLUSTER_JOIN_SIZE_PENALTY",        CLUSTER_JOIN_SIZE_PENALTY)
+CLUSTER_JOIN_MAX_THRESHOLD       = _float_env("SWARM_CLUSTER_JOIN_MAX_THRESHOLD",       CLUSTER_JOIN_MAX_THRESHOLD)
+CLUSTER_COHESION_MIN             = _float_env("SWARM_CLUSTER_COHESION_MIN",             CLUSTER_COHESION_MIN)
+CLUSTER_RECLUSTER_EVERY          = _int_env(  "SWARM_CLUSTER_RECLUSTER_EVERY",          CLUSTER_RECLUSTER_EVERY)
 
 # Peer-relative pruning knobs
 PEER_PRUNE_MIN_MEMBERS = _int_env(  "SWARM_PEER_PRUNE_MIN_MEMBERS", PEER_PRUNE_MIN_MEMBERS)
@@ -612,6 +629,8 @@ assert 0.0 < CLUSTER_SIM_THRESHOLD < 1.0
 assert 0.0 < CLUSTER_JOIN_THRESHOLD < 1.0
 assert 0.0 < CLUSTER_SPLIT_THRESHOLD < CLUSTER_JOIN_THRESHOLD
 assert CLUSTER_REANCHOR_EVERY >= 1
+assert CLUSTER_JOIN_SIZE_PENALTY >= 0.0
+assert CLUSTER_JOIN_THRESHOLD <= CLUSTER_JOIN_MAX_THRESHOLD < 1.0
 assert PEER_PRUNE_MIN_MEMBERS >= 1
 assert 0.0 < PEER_PRUNE_FACTOR <= 1.0
 

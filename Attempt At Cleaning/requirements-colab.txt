@@ -35,3 +35,9 @@ beautifulsoup4
 
 tqdm
 huggingface_hub
+
+# Groq API backend (core/llm_groq.py) — heterogeneous per-role model routing with
+# NO GPU. Uses the openai client against Groq's OpenAI-compatible endpoint; the
+# `groq` SDK is used if present. Required for any GROQ_API_KEY run on Colab.
+openai
+# groq            # optional: slightly cleaner error messages than the openai client

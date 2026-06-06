@@ -619,6 +619,12 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
 
         store.decay_all()
         pruned = store.prune_weak()
+        # Corrective re-cluster once per round (see continuous-pool note): split
+        # incohesive blobs so projection/synth see distinct positions, not a blob.
+        if config.CLUSTER_RECLUSTER_EVERY:
+            _n_split = store.recluster("INITIAL")
+            if _n_split:
+                print(f"[recluster] round {round_num}: split {_n_split} incohesive cluster(s)")
 
         elapsed = time.time() - round_start
 
@@ -974,7 +980,16 @@ async def run_continuous_pipeline(
         # without sequential loading. Workers still run via run_pool() with
         # router=router; engine_for(role) returns the right GroqBackend.
         _groq_key = os.environ.get("GROQ_API_KEY", "").strip()
-        if _groq_key and not config.USE_MOCK_LLM:
+        _backend = os.environ.get("SWARM_BACKEND", "").strip().lower()
+        if _backend == "hybrid" and _groq_key and not config.USE_MOCK_LLM:
+            # Hybrid: local GPU model for high-volume roles (scout/dev/critic/
+            # validator) + Groq for the few high-value roles (synth/hater). Best
+            # fit for FREE Groq — tiny quota burn, full model-family diversity.
+            from core.llm_hybrid import HybridRouter
+            router = HybridRouter(api_key=_groq_key)
+            llm = router.engine_for("scout")   # local model; used for topology gen
+            print(f"[pipeline] hybrid backend (local + Groq): {router.manifest()}")
+        elif _groq_key and not config.USE_MOCK_LLM:
             from core.llm_groq import GroqRouter
             router = GroqRouter(api_key=_groq_key)
             # llm is the scout backend (used for topology generation and any
@@ -1047,6 +1062,7 @@ async def run_continuous_pipeline(
     # Orchestrator tick loop — every 2s, snapshot state, log, check halt.
     _last_genome_refresh_iter = 0
     _GENOME_REFRESH_EVERY = 25   # refresh genome cache every N worker iterations
+    _last_recluster_iter = 0
     while not stop_event.is_set():
         await asyncio.sleep(2.0)
         elapsed = time.time() - pipeline_start
@@ -1061,6 +1077,19 @@ async def run_continuous_pipeline(
         iter_n = ps.iteration_counter if ps else 0
         detector.tick(iter_n, elapsed)
         _log_progress(iter_n, elapsed, detector, ps, store, task_type=task_type)
+
+        # Periodic divisive re-cluster (corrective): break up incohesive blobs so
+        # the synthesizer is handed distinct positions, not one vague mega-cluster
+        # + dust. Pure-Python; gated like the genome refresh. Runs BEFORE it so the
+        # genome cache rebuilds on the cleaned partition.
+        if config.CLUSTER_RECLUSTER_EVERY and (iter_n - _last_recluster_iter) >= config.CLUSTER_RECLUSTER_EVERY:
+            try:
+                n_split = store.recluster("INITIAL")
+                if n_split:
+                    print(f"[recluster] iter={iter_n}: split {n_split} incohesive cluster(s)")
+            except Exception as exc:
+                print(f"[recluster] failed: {type(exc).__name__}: {exc}")
+            _last_recluster_iter = iter_n
 
         # Genome cache refresh: rebuild projection and update the shared dict
         # so workers get up-to-date atom-targeted prompts. Done every

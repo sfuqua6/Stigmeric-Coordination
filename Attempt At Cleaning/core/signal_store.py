@@ -853,6 +853,18 @@ class SignalStore:
             s._logit += delta
             s.strength = _from_logit(s._logit)
 
+    def recluster(self, signal_type: str = "INITIAL") -> int:
+        """Run a divisive re-cluster pass (corrective): force-split incohesive
+        cluster blobs so similarity re-decides the partition. Intended to be
+        called every CLUSTER_RECLUSTER_EVERY iterations and once before
+        projection. Returns the number of splits made. Held under the store lock.
+
+        Hook (run loop): after decay_all()/prune_weak() each round, or on an
+        iteration counter — e.g. `if iter % CLUSTER_RECLUSTER_EVERY == 0: store.recluster()`.
+        """
+        with self._lock:
+            return self._cluster_registry.recluster_type(signal_type)
+
     def prune_weak(self) -> int:
         """Remove signals below the prune threshold.
 

@@ -53,11 +53,15 @@ def _int_env(key: str, default: int) -> int:
 MIN_ITERATIONS = _int_env("SWARM_MIN_ITERATIONS", 50)
 MIN_TIME_S = _float_env("SWARM_MIN_TIME_S", 60.0)
 MIN_INITIALS_FOR_HALT = _int_env("SWARM_MIN_INITIALS_FOR_HALT", 6)
-# Require at least this many inter-cluster edges before halting. Prevents
-# premature halt when clusters exist but haven't been cross-referenced by
-# the field (which typically happens within a few iterations of the first
-# surviving cluster forming). 0 disables the floor.
-MIN_INTER_CLUSTER_EDGES = _int_env("SWARM_MIN_INTER_CLUSTER_EDGES", 1)
+# Require at least this many inter-cluster edges before an EARLY (quality/
+# saturation) halt. DEFAULT NOW 0 (disabled): this floor was tuned in the
+# mega-blob era, when one giant cluster generated lots of (mostly spurious,
+# empty-dissent) edges. The cluster size-penalty fix removed the blob, so
+# cohesive distinct clusters legitimately form FEW or ZERO edges — and this
+# floor was then blocking convergence forever (see forevergroq: 4.2 h /
+# 3000+ iters, quality_met=True the whole time, 0 edges). Set >0 only if you
+# re-introduce edge-based gating. (Never blocks the absolute caps either way.)
+MIN_INTER_CLUSTER_EDGES = _int_env("SWARM_MIN_INTER_CLUSTER_EDGES", 0)
 
 # Quality gate thresholds.
 QUALITY_SUPPORT_DIV = 4
@@ -219,7 +223,19 @@ class ConvergenceDetector:
     # ------------------------------------------------------------------
 
     def satisfied(self, iteration_counter: int, elapsed_s: float) -> bool:
-        # Hard floors
+        # ABSOLUTE caps FIRST — a run must NEVER exceed these, regardless of the
+        # soft floors below. (forevergroq bug: the inter-cluster-edge floor sat
+        # ABOVE the cap checks and returned False whenever no edge formed, so the
+        # pool ran 4+ hours / 3000+ iters past MAX_TIME_S. A cap that a floor can
+        # veto is not a cap.)
+        if iteration_counter >= self.max_iterations:
+            self.state.reason = "cap_iterations"
+            return True
+        if elapsed_s >= self.max_time_s:
+            self.state.reason = "cap_time"
+            return True
+
+        # Hard floors — prevent halting EARLY (below the caps) before these hold.
         if iteration_counter < self.min_iterations:
             return False
         if elapsed_s < self.min_time_s:
@@ -232,7 +248,8 @@ class ConvergenceDetector:
                 return False
 
         # Inter-cluster edge floor: ensure the field has had enough cross-cluster
-        # activity to populate at least one typed edge before halting.
+        # activity to populate at least one typed edge before an EARLY halt.
+        # (Does NOT block the absolute caps above.)
         if (MIN_INTER_CLUSTER_EDGES > 0
                 and self.state.n_inter_cluster_edges_last < MIN_INTER_CLUSTER_EDGES):
             return False
@@ -248,14 +265,6 @@ class ConvergenceDetector:
         if (self.state.iterations_since_new_surviving >= SAT_NO_NEW_SURVIVING
                 and self._strength_delta() < SAT_STRENGTH_DELTA):
             self.state.reason = "saturation"
-            return True
-
-        # Cap halt
-        if iteration_counter >= self.max_iterations:
-            self.state.reason = "cap_iterations"
-            return True
-        if elapsed_s >= self.max_time_s:
-            self.state.reason = "cap_time"
             return True
 
         return False

@@ -2,6 +2,8 @@
 few high-value ones. Injected fakes; no GPU, no network, no openai/groq package.
 """
 
+import asyncio
+
 import pytest
 
 from core.llm_hybrid import HybridRouter
@@ -19,11 +21,18 @@ class _FakeBackend:
     def __init__(self, model):
         self._model = model
         self.name = f"groq:{model}"
+        self._call_count = 0
+        self.preflight_calls = 0
 
     def stats(self):
-        return {"model": self._model, "calls": 0, "avg_latency_ms": 0.0}
+        return {"model": self._model, "calls": self._call_count, "avg_latency_ms": 0.0}
+
+    async def preflight(self):
+        self.preflight_calls += 1
+        return (self._call_count > 0, self._model)
 
     async def generate(self, *a, **k):
+        self._call_count += 1
         return ""
 
 
@@ -86,3 +95,40 @@ def test_requires_key_when_no_backends_injected(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(ValueError):
         HybridRouter(api_key="", local_llm=_FakeLLM("x"))
+
+
+def test_preflight_pings_each_groq_backend(monkeypatch):
+    r = _router(monkeypatch)
+    asyncio.run(r.preflight())
+    for be in r._groq_backends.values():
+        assert be.preflight_calls == 1
+
+
+def test_silent_roles_flags_zero_call_backend(monkeypatch):
+    r = _router(monkeypatch)
+    # synthesizer's backend did work; hater's produced nothing all run.
+    r._groq_backends["70b"]._call_count = 5
+    r._groq_backends["mav"]._call_count = 0
+    assert r.silent_roles() == ["hater"]
+
+
+def test_silent_roles_empty_when_all_active(monkeypatch):
+    r = _router(monkeypatch)
+    for be in r._groq_backends.values():
+        be._call_count = 3
+    assert r.silent_roles() == []
+
+
+def test_silent_roles_ignores_disabled_roles(monkeypatch):
+    r = _router(monkeypatch)
+    r._groq_backends["70b"]._call_count = 5
+    r._groq_backends["mav"]._call_count = 0
+    r.disabled_roles.add("hater")
+    assert r.silent_roles() == []   # hater suppressed by task type, not a failure
+
+
+def test_manifest_reports_swapped_model(monkeypatch):
+    r = _router(monkeypatch)
+    # Simulate a runtime/preflight fallback swap on the hater's backend.
+    r._groq_backends["mav"]._model = "llama-3.1-8b-instant"
+    assert r.manifest()["hater"] == "groq:llama-3.1-8b-instant"

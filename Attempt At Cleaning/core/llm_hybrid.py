@@ -24,6 +24,7 @@ Tune:      SWARM_HYBRID_GROQ_ROLES="synthesizer,hater"   (which roles hit Groq)
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Optional
 
@@ -33,11 +34,14 @@ from typing import Optional
 _DEFAULT_GROQ_ROLES = {"synthesizer", "hater"}
 
 # Per-role Groq model for the Groq-routed roles. 70B for synthesis depth; a
-# distinct family (Llama-4 Maverick MoE) for the hater so adversarial pressure is
-# architecturally different from the local model. Override via GROQ_ROLE_<ROLE>.
+# 70B versatile for the hater so adversarial pressure comes from a model family
+# (large Llama) distinct from the local model. The previous Llama-4 Maverick
+# default 404'd on this tier and left the hater with 0 calls for whole runs
+# (see lastgroqrun.txt); preflight + the unavailable-error fallback now guard
+# against that. Override via GROQ_ROLE_<ROLE> (e.g. a local Colab model).
 _DEFAULT_HYBRID_GROQ_MODELS = {
     "synthesizer": "llama-3.3-70b-versatile",
-    "hater":       "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "hater":       "llama-3.3-70b-versatile",
 }
 _GROQ_FALLBACK_MODEL = "llama-3.1-8b-instant"
 
@@ -132,9 +136,39 @@ class HybridRouter:
                  "hater", "synthesizer")
         out = {}
         for r in roles:
-            out[r] = (f"groq:{self._groq_models[r]}" if r in self._groq_roles
-                      else f"local:{self._local_name()}")
+            if r in self._groq_roles:
+                # Report the backend's *live* model so a preflight/runtime swap
+                # (404/decommissioned -> fallback) is visible, not the stale
+                # requested name.
+                be = self._groq_backends.get(self._groq_models[r])
+                model = getattr(be, "_model", self._groq_models[r]) if be else self._groq_models[r]
+                out[r] = f"groq:{model}"
+            else:
+                out[r] = f"local:{self._local_name()}"
         return out
+
+    async def preflight(self) -> None:
+        """Ping each Groq model once so a bad/gated model name swaps to the
+        fallback before the run instead of zeroing a role mid-run. The hater
+        404'ing for a whole run (lastgroqrun.txt) is exactly what this prevents."""
+        await asyncio.gather(
+            *[b.preflight() for b in self._groq_backends.values()],
+            return_exceptions=True,
+        )
+
+    def silent_roles(self) -> list:
+        """Active Groq roles whose backend made 0 calls all run — a degraded
+        run (e.g. the hater that 404'd and produced nothing). Caller surfaces
+        this loudly. Note: preflight pings each model, so an unreachable model
+        whose fallback is also down is what shows up here."""
+        out = []
+        for role in self._groq_roles:
+            if role in self.disabled_roles:
+                continue
+            be = self._groq_backends.get(self._groq_models[role])
+            if be is not None and getattr(be, "_call_count", 0) == 0:
+                out.append(role)
+        return sorted(out)
 
     def engines_summary(self) -> dict:
         return self.manifest()

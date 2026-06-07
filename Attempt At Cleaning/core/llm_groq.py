@@ -163,8 +163,26 @@ class GroqBackend:
         self._total_ms = 0.0
         self._n_429 = 0
 
-    def _is_decommissioned_error(self, exc_str: str) -> bool:
-        return "decommissioned" in exc_str or "no longer supported" in exc_str
+    def _is_unavailable_error(self, exc_str: str) -> bool:
+        """Model is gone or inaccessible — a fallback swap can recover the run.
+
+        Covers two distinct Groq failure classes that both leave a role dead:
+          - Decommissioned (400): "decommissioned" / "no longer supported".
+          - Not found / no access (404): a bad or gated model name, e.g.
+            "The model `X` does not exist or you do not have access to it."
+        Both must trigger the fallback; otherwise a single bad model name
+        silently disables a whole role for the entire run (see lastgroqrun.txt:
+        hater 404'd 34x and made 0 calls).
+        """
+        s = exc_str.lower()
+        return (
+            "decommissioned" in s
+            or "no longer supported" in s
+            or "does not exist" in s
+            or "do not have access" in s
+            or "notfounderror" in s
+            or "404" in s
+        )
 
     async def generate(
         self,
@@ -205,13 +223,14 @@ class GroqBackend:
         except Exception as exc:
             exc_str = str(exc)
 
-            # Decommissioned model (400) — swap to fallback and retry once.
-            if self._is_decommissioned_error(exc_str) and _attempt == 0:
+            # Unavailable model (decommissioned-400 or not-found/no-access-404)
+            # — swap to fallback and retry once.
+            if self._is_unavailable_error(exc_str) and _attempt == 0:
                 if self._model not in _DECOMMISSIONED:
                     _DECOMMISSIONED.add(self._model)
-                    print(f"[groq] {self._model} decommissioned — "
+                    print(f"[groq] {self._model} unavailable "
+                          f"(decommissioned or not accessible) — "
                           f"auto-switching to {_FALLBACK_MODEL}")
-                old = self._model
                 self._model = _FALLBACK_MODEL
                 self.name = f"groq:{_FALLBACK_MODEL}"
                 # Adopt the fallback's rate limiter so we don't bypass its quota.
@@ -252,6 +271,27 @@ class GroqBackend:
             "avg_latency_ms": round(self._total_ms / max(1, self._call_count), 1),
         }
 
+    async def preflight(self) -> tuple[bool, str]:
+        """Ping the model once so an unavailable name swaps to the fallback
+        *before* the run rather than silently zeroing a role for 30 minutes.
+
+        generate()'s retry path performs the decommissioned/404 swap, so after
+        this call `self._model` reflects the model that will actually be used.
+        Returns (usable, effective_model). A swap that lands on a working
+        fallback still counts as usable.
+        """
+        requested = self._model
+        before = self._call_count
+        await self.generate("ping", max_tokens=1, temperature=0.0)
+        ok = self._call_count > before
+        if self._model != requested:
+            print(f"[groq] preflight: {requested} unavailable — "
+                  f"role(s) using it now route to {self._model}")
+        elif not ok:
+            print(f"[groq] preflight: {requested} did not respond "
+                  f"(role may be degraded)")
+        return ok, self._model
+
 
 # ---------------------------------------------------------------------------
 # Default role → Groq model assignment
@@ -277,12 +317,15 @@ _DEFAULT_GROQ_ROLE_MODELS = {
     # Development: llama-4-scout — newer generation, different family from 70B.
     "forager":     "meta-llama/llama-4-scout-17b-16e-instruct",
     "developer":   "meta-llama/llama-4-scout-17b-16e-instruct",
-    # Adversarial: Llama 4 Maverick — different architecture from Scout
-    # (Maverick is 128-expert MoE vs Scout's 16-expert), genuinely distinct
-    # from the 8B critic. DeepSeek R1 distill was the previous default but
-    # was consistently decommissioned mid-run, falling back to 8B and
-    # collapsing adversarial diversity (hater == critic == validator).
-    "hater":       "meta-llama/llama-4-maverick-17b-128e-instruct",
+    # Adversarial: 70B versatile — large model, genuinely distinct from the
+    # 8B critic/validator and from the local Qwen-14B, so adversarial pressure
+    # comes from a different model family. Previous defaults (Llama-4 Maverick,
+    # DeepSeek R1 distill) 404'd / decommissioned on the free tier and left the
+    # hater with 0 calls for whole runs (see lastgroqrun.txt). Preflight +
+    # _is_unavailable_error fallback now catch that, but the default is set to
+    # a model proven accessible on this tier. Override via GROQ_ROLE_HATER
+    # (e.g. point at a local Colab model for true architectural diversity).
+    "hater":       "llama-3.3-70b-versatile",
     # Fast structured roles: 8B instant is the most stable free-tier model.
     "critic":      "llama-3.1-8b-instant",
     "validator":   "llama-3.1-8b-instant",
@@ -395,6 +438,28 @@ class GroqRouter:
 
     def stats(self) -> list:
         return [b.stats() for b in self._backends.values()]
+
+    def silent_roles(self) -> list:
+        """Active roles whose backend made 0 calls all run — i.e. the role
+        produced nothing (e.g. an unavailable model that even the fallback
+        couldn't recover). Caller surfaces this loudly; a silent role means a
+        degraded run, not a healthy one."""
+        out = []
+        for role, model in self._role_models.items():
+            if role in self.disabled_roles:
+                continue
+            be = self._backends.get(model)
+            if be is not None and be._call_count == 0:
+                out.append(role)
+        return sorted(out)
+
+    async def preflight(self) -> None:
+        """Ping each distinct Groq model once so a bad/gated model name swaps
+        to the fallback before the run rather than zeroing a role mid-run."""
+        await asyncio.gather(
+            *[b.preflight() for b in self._backends.values()],
+            return_exceptions=True,
+        )
 
     async def teardown(self) -> None:
         total_calls = sum(b._call_count for b in self._backends.values())

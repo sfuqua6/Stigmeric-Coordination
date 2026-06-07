@@ -62,6 +62,10 @@ def test_recluster_is_idempotent_on_cohesive_clusters(monkeypatch):
 
 def test_recluster_preserves_lineage_largest_child_keeps_id(monkeypatch):
     monkeypatch.setattr(cfg, "CLUSTER_COHESION_MIN", 0.80)
+    # y is dot=0.6 to x: a distinct minority only under a split bar above 0.6.
+    # Pin it (production split is now ~0.55/0.42 for MiniLM, where 0.6 counts as
+    # in-cluster); this test exercises the lineage-preservation mechanism.
+    monkeypatch.setattr(cfg, "CLUSTER_SPLIT_THRESHOLD", 0.78)
     # make x-position the majority so it should keep the original cluster id
     monkeypatch.setattr("core.cluster_registry.CLUSTER_REANCHOR_EVERY", 10_000)
     monkeypatch.setattr(cfg, "CLUSTER_JOIN_SIZE_PENALTY", 0.0)

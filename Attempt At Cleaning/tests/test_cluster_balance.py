@@ -56,6 +56,10 @@ def test_penalty_zero_reproduces_fixed_threshold(monkeypatch):
 
 
 def test_old_rule_swallows_query_into_blob(monkeypatch):
+    # Synthetic sims (0.85/0.90/0.95) are hand-calibrated to a 0.88 base, so
+    # pin it here — this test exercises the size-penalty mechanism, not the
+    # production threshold (which is now tier-aware ~0.72/0.55 for MiniLM).
+    monkeypatch.setattr(cfg, "CLUSTER_JOIN_THRESHOLD", 0.88)
     monkeypatch.setattr(cfg, "CLUSTER_JOIN_SIZE_PENALTY", 0.0)   # old behaviour
     reg = ClusterRegistry()
     cid_big, cid_small = _build(reg)
@@ -64,6 +68,8 @@ def test_old_rule_swallows_query_into_blob(monkeypatch):
 
 
 def test_size_penalty_redirects_query_to_specific_cluster(monkeypatch):
+    # See note above: pin the 0.88 base the synthetic sims were designed for.
+    monkeypatch.setattr(cfg, "CLUSTER_JOIN_THRESHOLD", 0.88)
     monkeypatch.setattr(cfg, "CLUSTER_JOIN_SIZE_PENALTY", 0.03)  # the fix
     reg = ClusterRegistry()
     cid_big, cid_small = _build(reg)

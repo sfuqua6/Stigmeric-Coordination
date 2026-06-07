@@ -969,6 +969,10 @@ async def run_continuous_pipeline(
         router = make_bundle_router(task_type, override_bundle=bundle)
         config.ACTIVE_BUNDLE = router.bundle_name
         await router.load()
+        # Preflight any Groq-backed bundle so unavailable model names swap to
+        # the fallback before the run instead of zeroing a role mid-run.
+        if hasattr(router, "preflight"):
+            await router.preflight()
         _print_bundle_banner(router)
         # Warm every engine in parallel (cheap once they're loaded).
         await router.warmup(n=3)
@@ -987,6 +991,10 @@ async def run_continuous_pipeline(
             # fit for FREE Groq — tiny quota burn, full model-family diversity.
             from core.llm_hybrid import HybridRouter
             router = HybridRouter(api_key=_groq_key)
+            # Preflight: ping each Groq model so a bad/gated name (e.g. the
+            # llama-4-maverick hater that 404'd for a whole run) swaps to the
+            # fallback now, not silently mid-run.
+            await router.preflight()
             llm = router.engine_for("scout")   # local model; used for topology gen
             # Warm up the local model (the plain-local path does this) so the
             # first real generations don't each pay the JIT/slot-mapping cost —
@@ -1001,6 +1009,9 @@ async def run_continuous_pipeline(
         elif _groq_key and not config.USE_MOCK_LLM:
             from core.llm_groq import GroqRouter
             router = GroqRouter(api_key=_groq_key)
+            # Preflight: swap any unavailable model to the fallback before the
+            # run rather than zeroing a role mid-run.
+            await router.preflight()
             # llm is the scout backend (used for topology generation and any
             # path that expects a single llm before run_pool is called).
             llm = router.engine_for("scout")
@@ -1351,6 +1362,19 @@ async def run_continuous_pipeline(
         except Exception:
             pass
 
+        # Silent-role check: a role whose backend made 0 calls all run produced
+        # nothing (e.g. the hater that 404'd in lastgroqrun.txt). That is a
+        # degraded run, so report it loudly and don't claim quality was met.
+        silent_roles = []
+        if router is not None and hasattr(router, "silent_roles"):
+            try:
+                silent_roles = list(router.silent_roles())
+            except Exception:
+                silent_roles = []
+        if silent_roles:
+            print(f"\n[pipeline] *** WARNING: roles produced 0 calls "
+                  f"(degraded run): {silent_roles} ***", file=sys.stderr)
+
         summary = {
             "task_type": task_type,
             "user_prompt": user_prompt,
@@ -1361,7 +1385,9 @@ async def run_continuous_pipeline(
             "prefix_caching_enabled": True,
             "total_iterations": int(total_iterations),
             "wall_clock_s": round(final_elapsed, 1),
-            "quality_met": bool(detector.state.quality_met),
+            "quality_met": bool(detector.state.quality_met) and not silent_roles,
+            "silent_roles": silent_roles,
+            "degraded": bool(silent_roles),
             "convergence_reason": detector.state.reason or "unknown",
             "action_shares": {k: round(v, 4) for k, v in final_shares.items()},
             "n_clusters": {

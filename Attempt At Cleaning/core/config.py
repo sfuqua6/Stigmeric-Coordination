@@ -354,11 +354,34 @@ RRF_K = 60                     # RRF smoothing constant
 WEB_PARTITION_COUNT = 2        # scouts assigned dedicated web-search partitions
 TAVILY_QUERIES_PER_RUN = 4     # cap on live Tavily calls per run (free-tier guard)
 
+# --- Search QUALITY (core/search_tool.py): garbage-in fix ---
+# #1: DDG returns only short snippets. Fetch the actual page for the top-K
+#     results and extract the main text (requests + beautifulsoup) so scouts
+#     condition on real content, not 200-char blurbs. Snippet kept on any fetch
+#     failure (graceful — can't regress below current behaviour).
+SEARCH_FETCH_PAGES     = os.environ.get("SWARM_SEARCH_FETCH_PAGES", "1").strip() not in ("", "0", "false", "False")
+SEARCH_FETCH_TOP_K     = int(os.environ.get("SWARM_SEARCH_FETCH_TOP_K", "3"))
+SEARCH_FETCH_TIMEOUT_S = float(os.environ.get("SWARM_SEARCH_FETCH_TIMEOUT_S", "5"))
+SEARCH_FETCH_MIN_CHARS = int(os.environ.get("SWARM_SEARCH_FETCH_MIN_CHARS", "400"))
+# #2: relevance GATE — drop chunks whose query↔chunk cosine is below this (off-
+#     topic noise the reranker only reordered). 0 disables; always keeps >=2.
+SEARCH_RELEVANCE_MIN   = float(os.environ.get("SWARM_SEARCH_RELEVANCE_MIN", "0.15"))
+
 # ---------------------------------------------------------------------------
 # Fix C' — ClusterRegistry (deposit-time clustering)
 # ---------------------------------------------------------------------------
-CLUSTER_JOIN_THRESHOLD = 0.88     # cosine sim above which a signal joins an existing cluster
-CLUSTER_SPLIT_THRESHOLD = 0.78    # sim below which a member is ejected during reanchor
+# These MUST be calibrated to the embedding space (all-MiniLM-L6-v2), where
+# cosine for paraphrases of the same claim lands ~0.5-0.8, not ~0.9. The old
+# flat JOIN=0.88 was effectively near-duplicate-only: every claim became its
+# own singleton cluster, so support_diversity / survival ran on singletons and
+# the synthesizer emitted 10+ unmerged paraphrases (see outputs/lastgroqrun.txt
+# — every CLUSTER AUDIT line read members_in_cluster=1). Aligned with the same
+# tier-aware scale as CLUSTER_SIM_THRESHOLD (0.72 Colab / 0.55 laptop) so
+# at-deposit clustering actually merges. Anti-mega-blob is handled by the size
+# penalty + reanchor/recluster split machinery below, which lets the base
+# threshold be this low safely.
+CLUSTER_JOIN_THRESHOLD = 0.72 if _TIER is not None else 0.55   # cosine sim to join an existing cluster
+CLUSTER_SPLIT_THRESHOLD = 0.55 if _TIER is not None else 0.42  # sim below which a member is ejected during reanchor
 CLUSTER_REANCHOR_EVERY = 8        # recompute medoid every N deposits into a cluster
 # Anti-mega-blob: joining an already-large cluster requires HIGHER similarity, so
 # a vague central claim can't swallow the field (the "one blob + dust" pathology
@@ -370,8 +393,9 @@ CLUSTER_JOIN_MAX_THRESHOLD = 0.97 # cap so a cluster never becomes literally un-
 # (mean member-to-medoid cosine sim) drops below this — it's a blob of distinct
 # sub-positions greedily merged. Run every CLUSTER_RECLUSTER_EVERY iters + before
 # projection. Lets the natural structure emerge after the field has spoken,
-# instead of locking in order-dependent greedy joins.
-CLUSTER_COHESION_MIN = 0.80
+# instead of locking in order-dependent greedy joins. MUST sit below JOIN, else
+# the recluster pass immediately re-shatters every cluster the join just formed.
+CLUSTER_COHESION_MIN = 0.60 if _TIER is not None else 0.48
 CLUSTER_RECLUSTER_EVERY = 25      # iterations between global re-cluster passes (0 = off)
 CLUSTERING_ENABLED_TYPES = {"INITIAL", "SUPPORT", "OBJECTION"}
 

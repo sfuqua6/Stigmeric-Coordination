@@ -34,7 +34,7 @@ def test_iter_cap_fires_even_with_zero_edges():
 def test_quality_halt_fires_when_met_and_held_even_with_zero_edges():
     # The good outcome: quality met + held -> halt (floor default 0 no longer
     # blocks it). This is exactly what forevergroq SHOULD have done.
-    d = _det()
+    d = _det(max_time=900.0)   # high cap so the condition under test is reached, not the cap
     d.state.n_surviving_last = 3
     d.state.quality_met = True
     d.state.iterations_since_quality = cv.QUALITY_HOLD_ITERATIONS
@@ -47,7 +47,7 @@ def test_edge_floor_still_blocks_EARLY_halt_when_enabled(monkeypatch):
     # Below the caps, with the floor explicitly re-enabled, zero edges blocks an
     # early quality halt (but NOT the caps — covered above).
     monkeypatch.setattr(cv, "MIN_INTER_CLUSTER_EDGES", 1)
-    d = _det()
+    d = _det(max_time=900.0)   # high cap so the condition under test is reached, not the cap
     d.state.n_surviving_last = 3
     d.state.quality_met = True
     d.state.iterations_since_quality = cv.QUALITY_HOLD_ITERATIONS

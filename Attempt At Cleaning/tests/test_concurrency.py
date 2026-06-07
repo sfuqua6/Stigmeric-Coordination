@@ -32,39 +32,28 @@ class TestInternalBatchingAttribute(unittest.TestCase):
         self.assertFalse(LlamaCppLLM._uses_internal_batching)
 
 
-def _purge_core_modules():
-    """Force a fresh re-import of core.config.
-
-    `del sys.modules['core.config']` alone is not enough: the parent `core`
-    package still has a `config` attribute pointing at the old module, and
-    `from core import config` resolves via that attribute (skipping the
-    re-load). Pop the parent too.
-    """
-    for m in list(sys.modules):
-        if m == "core" or m.startswith("core."):
-            del sys.modules[m]
-
-
 class TestConcurrencyTierAware(unittest.TestCase):
     def test_laptop_concurrency_is_one(self):
         import os
+        import importlib
         if os.environ.get("COLAB"):
             self.skipTest("COLAB env set; can't test the laptop path")
-        _purge_core_modules()
-        from core import config
-        if config._TIER is not None:
-            self.skipTest(f"detected tier {config._TIER}; can't test the laptop path")
-        self.assertEqual(config.LLM_CONCURRENCY, 1)
+        import core.config as _cfg
+        importlib.reload(_cfg)
+        if _cfg._TIER is not None:
+            self.skipTest(f"detected tier {_cfg._TIER}; can't test the laptop path")
+        self.assertEqual(_cfg.LLM_CONCURRENCY, 1)
 
     def test_colab_forced_concurrency_is_32(self):
         import os
+        import importlib
         from unittest.mock import patch
+        import core.config as _cfg
         with patch.dict(os.environ, {"COLAB": "1"}, clear=False):
-            _purge_core_modules()
-            from core import config
-            self.assertEqual(config.LLM_CONCURRENCY, 32)
-        # Restore so subsequent tests see the laptop value
-        _purge_core_modules()
+            importlib.reload(_cfg)
+            self.assertEqual(_cfg.LLM_CONCURRENCY, 32)
+        # Restore: reload without COLAB so subsequent tests see the laptop value
+        importlib.reload(_cfg)
 
 
 class TestSemaphoreSkipContract(unittest.TestCase):

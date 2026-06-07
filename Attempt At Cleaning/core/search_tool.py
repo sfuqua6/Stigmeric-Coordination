@@ -295,6 +295,7 @@ def _diversify(
     Called after backend search returns raw results.
     """
     chunks = apply_source_cap(chunks, MAX_CHUNKS_PER_SOURCE)
+    chunks = _relevance_filter(chunks, query)   # drop off-topic noise before reranking
 
     if HYBRID_RETRIEVAL and len(chunks) > 1:
         bm25_pairs = _bm25_rank(chunks, query)
@@ -318,6 +319,102 @@ def _diversify(
 
     chunks = apply_mmr(chunks[:max_results * 2], query, lam=MMR_LAMBDA)
     return chunks[:max_results]
+
+
+# ---------------------------------------------------------------------------
+# Search QUALITY: page-content fetch + relevance gate (the garbage-in fix)
+# ---------------------------------------------------------------------------
+
+def _url_of(chunk: CorpusChunk) -> str:
+    """Recover the result URL from a chunk's source_tag ('title | url')."""
+    tag = getattr(chunk, "source_tag", "") or ""
+    return (tag.rsplit("|", 1)[-1] if "|" in tag else tag).strip()
+
+
+def _fetch_page_text(url: str, timeout: float) -> str:
+    """Fetch a URL and extract its main readable text (requests + BeautifulSoup).
+
+    Returns '' on ANY failure so the caller keeps the snippet (can't regress).
+    Strips script/style/nav/header/footer/aside; prefers <article>/<main>; keeps
+    substantial <p>s; collapses whitespace; caps at _MAX_CONTENT_CHARS.
+    """
+    if not url:
+        return ""
+    if not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return ""
+    try:
+        resp = requests.get(url, timeout=timeout, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; SwarmBot/1.0)"})
+        if resp.status_code != 200 or "html" not in resp.headers.get("content-type", "").lower():
+            return ""
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "header", "footer",
+                         "aside", "form", "noscript", "figure"]):
+            tag.decompose()
+        root = soup.find("article") or soup.find("main") or soup.body or soup
+        paras = [p.get_text(" ", strip=True) for p in root.find_all("p")]
+        text = " ".join(p for p in paras if len(p) > 40)
+        if len(text) < 200:                       # sparse <p> markup — take all text
+            text = root.get_text(" ", strip=True)
+        return re.sub(r"\s+", " ", text).strip()[:_MAX_CONTENT_CHARS]
+    except Exception:
+        return ""
+
+
+def _enrich_with_pages(chunks: list[CorpusChunk]) -> list[CorpusChunk]:
+    """Replace the top-K chunks' DDG snippet with fetched page content (parallel,
+    budgeted). Snippet is kept wherever the fetch fails or returns too little."""
+    from . import config as _cfg
+    if not _cfg.SEARCH_FETCH_PAGES or not chunks:
+        return chunks
+    from concurrent.futures import ThreadPoolExecutor
+    targets = chunks[:max(1, _cfg.SEARCH_FETCH_TOP_K)]
+    timeout = _cfg.SEARCH_FETCH_TIMEOUT_S
+    try:
+        with ThreadPoolExecutor(max_workers=min(4, len(targets))) as ex:
+            texts = list(ex.map(lambda c: _fetch_page_text(_url_of(c), timeout), targets))
+    except Exception:
+        return chunks
+    n = 0
+    for c, t in zip(targets, texts):
+        if t and len(t) >= _cfg.SEARCH_FETCH_MIN_CHARS and len(t) > len(c.text):
+            c.text = t
+            n += 1
+    if n:
+        print(f"[search] enriched {n}/{len(targets)} chunks with full page content")
+    return chunks
+
+
+def _relevance_filter(chunks: list[CorpusChunk], query: str) -> list[CorpusChunk]:
+    """Drop chunks whose cosine sim to `query` is below SEARCH_RELEVANCE_MIN
+    (off-topic noise the reranker only reordered). Always keeps the 2 most
+    relevant so a strict threshold never empties the result. No-op without an
+    embedder or when the gate is disabled (<=0)."""
+    from . import config as _cfg
+    min_sim = _cfg.SEARCH_RELEVANCE_MIN
+    if min_sim <= 0 or len(chunks) <= 2:
+        return chunks
+    embedder = _get_embedder()
+    if embedder is None:
+        return chunks
+    try:
+        q = embedder.encode(query, normalize_embeddings=True)
+        cs = embedder.encode([c.text[:500] for c in chunks], normalize_embeddings=True)
+        sims = (cs @ q).tolist()
+    except Exception:
+        return chunks
+    ranked = sorted(zip(sims, chunks), key=lambda x: x[0], reverse=True)
+    kept = [c for s, c in ranked if s >= min_sim] or []
+    if len(kept) < 2:                             # never drop below the 2 best
+        kept = [c for _, c in ranked[:2]]
+    if len(kept) < len(chunks):
+        print(f"[search] relevance gate: kept {len(kept)}/{len(chunks)} (>= {min_sim:.2f})")
+    return kept
 
 
 def _build_followup_query(query: str, task_type: Optional[str] = None) -> str:
@@ -440,6 +537,7 @@ def _ddg_search(query: str, max_results: int) -> list[CorpusChunk]:
         print(f"[search] ddg call failed: {type(exc).__name__}: {exc}")
         return []
     out = _dedupe_chunks(raw, max_results)
+    out = _enrich_with_pages(out)   # fetch real page content for the top results
     return out
 
 
@@ -468,6 +566,20 @@ def _cohere_search(query: str, max_results: int) -> list[CorpusChunk]:
 _PRIMARY_LOGGED = False
 
 
+def _ddg_available() -> bool:
+    """Return True if either the ddgs or duckduckgo_search package is present."""
+    try:
+        from ddgs import DDGS  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    try:
+        from duckduckgo_search import DDGS  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def _log_primary_once() -> None:
     global _PRIMARY_LOGGED
     if _PRIMARY_LOGGED:
@@ -475,15 +587,19 @@ def _log_primary_once() -> None:
     _PRIMARY_LOGGED = True
     if os.environ.get("TAVILY_API_KEY", "").strip():
         print("[search] tavily key found; primary=tavily")
+    elif _ddg_available():
+        print("[search] no TAVILY_API_KEY; primary=duckduckgo (fallback)")
     else:
-        # Probe for DDG package import. Tavily is unavailable so this is the
-        # primary path.
-        try:
-            from duckduckgo_search import DDGS  # noqa: F401
-            print("[search] no TAVILY_API_KEY; primary=duckduckgo (fallback)")
-        except ImportError:
-            print("[search] no TAVILY_API_KEY and duckduckgo_search not "
-                  "installed; falling back to cohere store only")
+        import warnings
+        warnings.warn(
+            "[search] WARNING: no web search backend available — "
+            "neither TAVILY_API_KEY is set nor ddgs/duckduckgo_search is installed. "
+            "Scouts will receive zero evidence and deposit ungrounded claims. "
+            "Install: pip install ddgs   or set TAVILY_API_KEY.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        print("[search] *** NO SEARCH BACKEND *** scouts will get empty evidence")
 
 
 # ---------------------------------------------------------------------------

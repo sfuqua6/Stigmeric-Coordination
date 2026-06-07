@@ -161,6 +161,7 @@ class GroqBackend:
         self._rl = _rate_limiter_for(model)   # shared across backends for same model
         self._call_count = 0
         self._total_ms = 0.0
+        self._n_429 = 0
 
     def _is_decommissioned_error(self, exc_str: str) -> bool:
         return "decommissioned" in exc_str or "no longer supported" in exc_str
@@ -220,6 +221,7 @@ class GroqBackend:
 
             # Rate-limit (429) — exponential backoff with jitter, up to MAX_RETRIES.
             if "429" in exc_str and _attempt < _MAX_RETRIES:
+                self._n_429 += 1
                 delay = min(60.0, 5.0 * (2 ** _attempt)) + random.uniform(0, 2)
                 if _attempt == 0:
                     print(f"[groq] {self._model} rate-limited (429), "
@@ -246,6 +248,7 @@ class GroqBackend:
         return {
             "model": self._model,
             "calls": self._call_count,
+            "n_429": self._n_429,
             "avg_latency_ms": round(self._total_ms / max(1, self._call_count), 1),
         }
 
@@ -394,11 +397,13 @@ class GroqRouter:
         return [b.stats() for b in self._backends.values()]
 
     async def teardown(self) -> None:
-        total = sum(b._call_count for b in self._backends.values())
-        print(f"[groq] total calls this run: {total}")
+        total_calls = sum(b._call_count for b in self._backends.values())
+        total_429 = sum(b._n_429 for b in self._backends.values())
+        print(f"[groq] total calls this run: {total_calls}  429s: {total_429}")
         for b in self._backends.values():
             s = b.stats()
+            rate_note = f"  *** {s['n_429']} rate-limits (429)" if s["n_429"] else ""
             print(f"[groq]   {s['model']}: {s['calls']} calls, "
-                  f"avg {s['avg_latency_ms']} ms/call")
+                  f"avg {s['avg_latency_ms']} ms/call{rate_note}")
         self._backends.clear()
         self.engines.clear()

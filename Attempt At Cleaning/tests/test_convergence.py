@@ -59,3 +59,21 @@ def test_min_floors_prevent_early_halt():
     d = _det()
     # below MIN_ITERATIONS / MIN_TIME_S and below caps -> not satisfied
     assert d.satisfied(iteration_counter=1, elapsed_s=1.0) is False
+
+
+def test_oscillating_surviving_count_halts_via_cap():
+    """Boundary-oscillation: surviving count flickers 6↔8 so saturation never
+    fires (iterations_since_new_surviving is reset each tick). The cap must
+    still fire — this is the forevergroq scenario."""
+    d = _det(max_time=900.0, max_iter=100)
+    d.state.n_surviving_last = 6
+    # Simulate oscillation: alternately set to 8 and back to 6; each tick
+    # resets iterations_since_new_surviving to 0 so saturation never fires.
+    for i in range(60, 100):
+        d.state.n_surviving_last = 8 if i % 2 == 0 else 6
+        d.state.iterations_since_new_surviving = 0   # reset as if new cluster appeared
+        assert d.satisfied(iteration_counter=i, elapsed_s=float(i)) is False, \
+            f"should not halt early at iter={i}"
+    # At cap: must halt regardless of oscillation
+    assert d.satisfied(iteration_counter=100, elapsed_s=500.0) is True
+    assert d.state.reason == "cap_iterations"

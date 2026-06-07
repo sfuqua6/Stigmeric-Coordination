@@ -90,7 +90,7 @@ class TestBaselineCoordinator(unittest.TestCase):
     def test_returns_baseline_result(self):
         llm = _make_llm(["Answer one", "Answer two", "Answer three"] * 4)
         coord = BaselineCoordinator(n_agents=4, max_tokens=50)
-        result = asyncio.get_event_loop().run_until_complete(coord.run(
+        result = asyncio.run(coord.run(
             task_type="debate",
             user_prompt="Is AI good?",
             task_prompt="Argue both sides of: Is AI good?",
@@ -104,7 +104,7 @@ class TestBaselineCoordinator(unittest.TestCase):
     def test_n_calls_matches_n_agents(self):
         llm = _make_llm(["response"] * 8)
         coord = BaselineCoordinator(n_agents=8, max_tokens=50)
-        result = asyncio.get_event_loop().run_until_complete(coord.run(
+        result = asyncio.run(coord.run(
             task_type="debate",
             user_prompt="test",
             task_prompt="test",
@@ -116,7 +116,7 @@ class TestBaselineCoordinator(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             llm = _make_llm(["Unique response X", "Unique response Y"] * 3)
             coord = BaselineCoordinator(n_agents=4, max_tokens=50)
-            asyncio.get_event_loop().run_until_complete(coord.run(
+            asyncio.run(coord.run(
                 task_type="debate",
                 user_prompt="test prompt",
                 task_prompt="test prompt",
@@ -129,7 +129,7 @@ class TestBaselineCoordinator(unittest.TestCase):
     def test_summary_dict_has_required_keys(self):
         llm = _make_llm(["A", "B", "C"] * 3)
         coord = BaselineCoordinator(n_agents=3, max_tokens=50)
-        result = asyncio.get_event_loop().run_until_complete(coord.run(
+        result = asyncio.run(coord.run(
             task_type="analysis",
             user_prompt="What is entropy?",
             task_prompt="Analyse: What is entropy?",
@@ -144,7 +144,7 @@ class TestBaselineCoordinator(unittest.TestCase):
     def test_empty_corpus_handled(self):
         llm = _make_llm(["answer"] * 4)
         coord = BaselineCoordinator(n_agents=4, max_tokens=50)
-        result = asyncio.get_event_loop().run_until_complete(coord.run(
+        result = asyncio.run(coord.run(
             task_type="debate",
             user_prompt="test",
             task_prompt="test",
@@ -156,7 +156,7 @@ class TestBaselineCoordinator(unittest.TestCase):
     def test_all_empty_responses_gives_fallback_message(self):
         llm = _make_llm(["", "  ", ""] * 3)
         coord = BaselineCoordinator(n_agents=3, max_tokens=50)
-        result = asyncio.get_event_loop().run_until_complete(coord.run(
+        result = asyncio.run(coord.run(
             task_type="debate",
             user_prompt="test",
             task_prompt="test",

@@ -76,7 +76,7 @@ class TestStaticCritic(unittest.TestCase):
             task_prompt="Implement fizzbuzz",
         )
 
-        asyncio.get_event_loop().run_until_complete(critic.run(self.store, 2))
+        asyncio.run(critic.run(self.store, 2))
         pos_crits = self.store.by_type(CRITIQUE_POSITIVE)
         self.assertGreater(len(pos_crits), 0, "Valid code should produce CRITIQUE_POSITIVE")
 
@@ -92,7 +92,7 @@ class TestStaticCritic(unittest.TestCase):
             strategy=strat, strategy_name=name,
             task_prompt="Implement fizzbuzz",
         )
-        asyncio.get_event_loop().run_until_complete(critic.run(self.store, 2))
+        asyncio.run(critic.run(self.store, 2))
         neg_crits = self.store.by_type(CRITIQUE_NEGATIVE)
         self.assertGreater(len(neg_crits), 0, "Bad syntax should produce CRITIQUE_NEGATIVE")
 
@@ -132,7 +132,7 @@ class TestFizzbuzzEndToEnd(unittest.TestCase):
             agent_id="scout_R1_0", llm=self.llm,
             task_prompt="Implement fizzbuzz for numbers 1-100",
         )
-        asyncio.get_event_loop().run_until_complete(scout.run(self.store, 4))
+        asyncio.run(scout.run(self.store, 4))
         initials = self.store.by_type(INITIAL)
         # MockLLM may produce duplicates; at least one should get through
         self.assertGreater(len(initials), 0, "RequirementsScout must deposit at least one INITIAL")

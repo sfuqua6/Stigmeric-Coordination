@@ -1375,6 +1375,42 @@ async def run_continuous_pipeline(
             print(f"\n[pipeline] *** WARNING: roles produced 0 calls "
                   f"(degraded run): {silent_roles} ***", file=sys.stderr)
 
+        # Embedder + clustering health. groqrun1.txt merged ZERO clusters all run
+        # (every claim a singleton). Two distinct causes look identical in the
+        # per-cluster audit, so disambiguate here and print it loudly + persist
+        # it (survives the streamed-log truncation that hid the early NEW/JOIN
+        # lines): (a) embedder unavailable -> semantic clustering is OFF; or
+        # (b) embedder active but everything is still a singleton -> the join
+        # threshold is too high for this embedding space.
+        embedder = store.embedder_status()
+        embedder_ok = embedder in ("all-MiniLM-L6-v2", "active")
+        _all_cps = (_final_proj.surviving + _final_proj.contested
+                    + _final_proj.weakly_supported + _final_proj.rejected_by_field)
+        n_clusters_total = len(_all_cps)
+        largest_cluster = max((len(cp.member_ids) for cp in _all_cps), default=0)
+        multi_member = sum(1 for cp in _all_cps if len(cp.member_ids) > 1)
+        n_initial_signals = sum(len(cp.member_ids) for cp in _all_cps)
+        clustering_all_singletons = n_clusters_total >= 4 and largest_cluster <= 1
+        clustering = {
+            "embedder": embedder,
+            "n_initial_signals": n_initial_signals,
+            "n_clusters": n_clusters_total,
+            "largest_cluster": largest_cluster,
+            "multi_member_clusters": multi_member,
+        }
+        if not embedder_ok:
+            print(f"\n[pipeline] *** WARNING: embedder {embedder} — semantic "
+                  f"clustering + dedup OFF; every claim is its own cluster "
+                  f"({n_clusters_total} singletons). Install sentence-transformers "
+                  f"/ allow model download. ***", file=sys.stderr)
+        elif clustering_all_singletons:
+            print(f"\n[pipeline] *** WARNING: embedder active but ALL "
+                  f"{n_clusters_total} clusters are singletons — join threshold "
+                  f"(CLUSTER_JOIN_THRESHOLD) is too high for this embedding space; "
+                  f"lower it via SWARM_CLUSTER_JOIN_THRESHOLD. ***", file=sys.stderr)
+
+        degraded = bool(silent_roles) or not embedder_ok
+
         summary = {
             "task_type": task_type,
             "user_prompt": user_prompt,
@@ -1385,9 +1421,11 @@ async def run_continuous_pipeline(
             "prefix_caching_enabled": True,
             "total_iterations": int(total_iterations),
             "wall_clock_s": round(final_elapsed, 1),
-            "quality_met": bool(detector.state.quality_met) and not silent_roles,
+            "quality_met": bool(detector.state.quality_met) and not degraded,
             "silent_roles": silent_roles,
-            "degraded": bool(silent_roles),
+            "degraded": degraded,
+            "embedder": embedder,
+            "clustering": clustering,
             "convergence_reason": detector.state.reason or "unknown",
             "action_shares": {k: round(v, 4) for k, v in final_shares.items()},
             "n_clusters": {

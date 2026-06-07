@@ -1,0 +1,40 @@
+# Core dependencies (required)
+transformers>=4.40.0
+torch>=2.0.0
+sentence-transformers>=2.5.0
+# Pin <1.0: hub 1.x breaks sentence-transformers' model load (needs >=0.26,<1.0).
+# Otherwise the embedder silently fails -> no semantic clustering/dedup.
+huggingface-hub>=0.26.0,<1.0
+faiss-cpu>=1.8.0
+accelerate>=0.28.0
+numpy>=1.24.0
+tiktoken>=0.5.0
+sympy>=1.12  # Symbolic mathematics for verification
+
+# Document processing
+PyPDF2>=3.0.0
+
+# HIGHLY RECOMMENDED: 8-bit quantization
+# Reduces memory from 14GB -> 3.5GB (75% savings!)
+# Requires CUDA GPU
+bitsandbytes>=0.41.0
+
+# External knowledge search (for validation)
+# No API keys required - uses free public APIs
+duckduckgo-search>=4.0.0
+wikipedia>=1.4.0
+
+# Web content fetching (for web ingestion mode)
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Evaluation & Benchmarking
+lm-eval>=0.4.0  # Standard LLM benchmarks (MMLU, TruthfulQA, etc.)
+
+# Installation options:
+# 1. Minimal (CPU only, no search): pip install transformers torch numpy tiktoken PyPDF2
+# 2. With quantization (GPU): Add bitsandbytes
+# 3. With search: Add duckduckgo-search wikipedia
+# 4. With web ingestion: Add requests beautifulsoup4
+# 5. With evaluation: Add lm-eval
+# 6. Full (recommended): pip install -r requirements.txt

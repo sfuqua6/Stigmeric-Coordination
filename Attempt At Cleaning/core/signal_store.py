@@ -165,12 +165,34 @@ class _DisabledEmbedder:
 _NULL_EMBEDDER = _DisabledEmbedder()
 
 
+# Process-wide embedder cache + load-status. Loaded once (the model is ~90 MB
+# and stateless), logged once. _EMBEDDER_STATUS is "all-MiniLM-L6-v2" on success
+# or a short failure reason — surfaced in summary.json so a silently-degraded run
+# is visible. A None embedder disables semantic clustering AND dedup, which makes
+# every claim its own singleton cluster (see groqrun1.txt: 0 merges all run).
+_EMBEDDER_SENTINEL = "unset"
+_EMBEDDER_CACHE = _EMBEDDER_SENTINEL
+_EMBEDDER_STATUS = "unset"
+
+
 def _try_load_embedder():
+    global _EMBEDDER_CACHE, _EMBEDDER_STATUS
+    if _EMBEDDER_CACHE is not _EMBEDDER_SENTINEL:
+        return _EMBEDDER_CACHE
     try:
         from sentence_transformers import SentenceTransformer
-        return SentenceTransformer("all-MiniLM-L6-v2")
-    except Exception:
-        return None
+        _EMBEDDER_CACHE = SentenceTransformer("all-MiniLM-L6-v2")
+        _EMBEDDER_STATUS = "all-MiniLM-L6-v2"
+        print("[store] embedder loaded: all-MiniLM-L6-v2 "
+              "(semantic clustering + dedup ON)")
+    except Exception as exc:
+        _EMBEDDER_CACHE = None
+        _EMBEDDER_STATUS = f"UNAVAILABLE: {type(exc).__name__}: {str(exc)[:120]}"
+        print(f"[store] *** embedder {_EMBEDDER_STATUS} *** — semantic clustering "
+              f"AND dedup are OFF; every claim becomes its own singleton cluster. "
+              f"Install sentence-transformers and ensure all-MiniLM-L6-v2 can "
+              f"download (HF network/rate-limit).")
+    return _EMBEDDER_CACHE
 
 
 # ---------------------------------------------------------------------------
@@ -948,6 +970,15 @@ class SignalStore:
         """Return cached unit-normalized embedding for a signal, or None."""
         with self._lock:
             return self._embeddings.get(signal_id)
+
+    def embedder_status(self) -> str:
+        """'all-MiniLM-L6-v2' if semantic clustering/dedup is active, else a
+        short reason it isn't. Surfaced in summary.json so a silently-degraded
+        run (None embedder -> all-singleton clusters) is visible."""
+        if self._embedder is None:
+            # Distinguish an explicitly-disabled store from a failed auto-load.
+            return _EMBEDDER_STATUS if _EMBEDDER_STATUS != "unset" else "disabled"
+        return _EMBEDDER_STATUS if _EMBEDDER_STATUS != "unset" else "active"
 
     def by_parent(self, parent_id: str) -> set[str]:
         """Return IDs of direct children of parent_id (read-only copy)."""

@@ -36,17 +36,18 @@ one real decision:
 
 ### Free Groq — limits & model options (verify at console.groq.com/settings/limits)
 Free tier ≈ **30 req/min per model** + a **daily token cap (TPD)**; the 70B has the
-tightest TPD. The hybrid design exists precisely for this: only **synthesizer**
-(~1 call/cluster) and **hater** (~1-2/round) hit Groq, so the free quota lasts.
+tightest TPD. By default ONLY the **hater** (~1-2/round) hits Groq — the token-heavy
+**synthesizer runs LOCAL** because its end-of-run burst exhausts the free TPD
+mid-render (saw this in groqrun1.txt: 429s, revision skipped, half-rendered).
 
 | Role on Groq | Model | Why |
 |---|---|---|
-| synthesizer | `llama-3.3-70b-versatile` | depth; few calls/run |
-| hater | `meta-llama/llama-4-maverick-17b-128e-instruct` | different family = real adversarial diversity |
+| hater | `llama-3.3-70b-versatile` | large model, distinct from local Qwen → real adversarial diversity |
 | *(alt)* | `llama-3.1-8b-instant` | fast/cheap fallback |
-| *(alt reasoning)* | `qwen-qwq-32b`, `deepseek-r1-distill-llama-70b` | r1-distill is sometimes decommissioned mid-run |
+| *(synthesizer, only w/ paid quota)* | `llama-3.3-70b-versatile` | depth; re-add via the role split below |
 
-Tune the split: `SWARM_HYBRID_GROQ_ROLES="synthesizer,hater"`, `GROQ_ROLE_HATER=...`.
+Tune the split: `SWARM_HYBRID_GROQ_ROLES="hater"` (default) or `"synthesizer,hater"`
+if you have paid Groq quota; `GROQ_ROLE_HATER=...` to swap the hater model.
 
 > **Push your local commits first** — Cell 3 clones `sfuqua6/Stigmeric-Coordination`.
 > Run cells top-to-bottom; on reconnect re-run 1-5."""))
@@ -94,7 +95,9 @@ cells.append(code(
 # Always: Groq client + core deps (light, work on CPU runtimes).
 subprocess.run([sys.executable,'-m','pip','install','-q',
     'openai','sentence-transformers','cohere','datasets','faiss-cpu',
-    'wikipedia','ddgs','requests','beautifulsoup4','tqdm','huggingface_hub'], check=True)
+    # huggingface_hub<1.0: hub 1.x breaks sentence-transformers' model load
+    # (silently -> no embedder -> singleton clusters; see groqrun1.txt).
+    'wikipedia','ddgs','requests','beautifulsoup4','tqdm','huggingface_hub>=0.26.0,<1.0'], check=True)
 print('core + openai (Groq) deps installed.')
 
 has_gpu = shutil.which('nvidia-smi') is not None
@@ -146,8 +149,10 @@ else: os.environ.pop('SWARM_BACKEND', None)
 
 # Groq is ~2.5s/iter and free-tier rate-limited — give the run room to converge.
 os.environ['SWARM_MAX_TIME_S'] = '1800'
-# Which roles ride Groq in hybrid (rest run local). Keep small for free quota.
-os.environ['SWARM_HYBRID_GROQ_ROLES'] = 'synthesizer,hater'
+# Which roles ride Groq in hybrid (rest run local). Default 'hater' only — the
+# synthesizer runs LOCAL (its token burst blows the free-tier daily limit). Use
+# 'synthesizer,hater' only if you have paid Groq quota.
+os.environ['SWARM_HYBRID_GROQ_ROLES'] = 'hater'
 # Optional: pin the local model (else tier auto-selects). e.g. T4: 3B, L4: 14B.
 # os.environ['SWARM_MODEL'] = 'Qwen/Qwen2.5-14B-Instruct'
 
@@ -200,7 +205,8 @@ else:
     if (latest/'answer.txt').exists(): print((latest/'answer.txt').read_text()[:4000])
     if (latest/'summary.json').exists():
         s = json.loads((latest/'summary.json').read_text())
-        for k in ('task_type','bundle','n_clusters','convergence_reason','wall_clock_s'):
+        for k in ('task_type','bundle','n_clusters','clustering','embedder',
+                  'degraded','silent_roles','convergence_reason','wall_clock_s'):
             if k in s: print(f'  {k}: {s[k]}')"""))
 
 cells.append(md(
@@ -208,8 +214,15 @@ cells.append(md(
 
 **Groq `429` / rate-limited or quota exhausted** — free tier. The token-bucket in
 `core/llm_groq.py` backs off automatically; if it persists, lower `--workers`, keep
-`SWARM_HYBRID_GROQ_ROLES` small (synthesizer,hater), or wait for the daily TPD reset.
+`SWARM_HYBRID_GROQ_ROLES` small (just `hater`), or wait for the daily TPD reset.
 Switch to local-only (Cell 6: blank key, `SWARM_BACKEND='local'`) to run with no Groq.
+
+**All clusters are singletons / `summary.json` shows `embedder: UNAVAILABLE`** — the
+sentence-transformers model failed to load (usually `huggingface-hub` 1.x vs the
+required `<1.0`), so semantic clustering + dedup are OFF. Cell 4 now pins a
+compatible hub; if it still fails, run `pip install "huggingface-hub>=0.26.0,<1.0"`
+and restart. If `embedder` is active but clusters are still all singletons, lower
+`SWARM_CLUSTER_JOIN_THRESHOLD` (e.g. 0.6).
 
 **`ImportError: libcudart.so.13`** (local/hybrid) — vLLM 0.20+ wants CUDA 13; Colab is
 CUDA 12. Cell 4 installs `vllm<0.20.0` automatically — re-run it; do NOT `pip install vllm`.

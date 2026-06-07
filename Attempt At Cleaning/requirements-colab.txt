@@ -15,6 +15,13 @@
 # vllm
 
 sentence-transformers
+# PIN huggingface-hub < 1.0: sentence-transformers requires >=0.26,<1.0, but a
+# fresh Colab pulls hub 1.x (via transformers/vllm), which makes
+# `SentenceTransformer("all-MiniLM-L6-v2")` raise ImportError at load. The store
+# swallows that and runs with NO embedder -> semantic clustering + dedup OFF ->
+# every claim becomes its own singleton cluster (see groqrun1.txt: 0 merges all
+# run). This pin keeps the embedder loadable. Must precede huggingface_hub below.
+huggingface-hub>=0.26.0,<1.0
 
 # bnb 4-bit for the HF fallback path in core/llm.py (when vLLM is unavailable
 # or for laptop mode). 0.46.1 is the first release with Blackwell sm_120 kernels.
@@ -34,7 +41,8 @@ requests
 beautifulsoup4
 
 tqdm
-huggingface_hub
+# NOTE: version-constrained above (<1.0) for sentence-transformers compatibility.
+huggingface_hub>=0.26.0,<1.0
 
 # Groq API backend (core/llm_groq.py) — heterogeneous per-role model routing with
 # NO GPU. Uses the openai client against Groq's OpenAI-compatible endpoint; the

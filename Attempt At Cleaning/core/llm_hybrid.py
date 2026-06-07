@@ -5,10 +5,18 @@ Best-of-both for FREE Groq (scarce RPM/TPD quota) + a Colab GPU:
   * HIGH-VOLUME roles (scout, developer, critic, validator) → ONE local model on
     the GPU. Unlimited throughput, ZERO Groq quota burn. This is where most of
     the swarm's calls go.
-  * LOW-VOLUME, HIGH-VALUE roles (synthesizer, hater) → Groq's big/diverse models.
-    70B-class synthesis (a handful of calls per run) + a different model FAMILY
-    for genuine adversarial diversity — at only ~10-15 Groq calls/run, so the
-    free quota lasts.
+  * LOW-VOLUME, HIGH-VALUE role (hater) → a Groq big/diverse model. A different
+    model FAMILY for genuine adversarial diversity, at only ~1-2 calls/round, so
+    the free quota lasts.
+
+The SYNTHESIZER runs LOCAL by default. It is the token-heavy phase (per-cluster
+renders + revision + edge composition = dozens of multi-thousand-token calls in
+one burst) and it runs at end-of-run when the GPU is otherwise idle. On Groq's
+free tier this burst exhausts the daily token limit (TPD) mid-render — see
+outputs/lastgroqrun.txt: "revision skipped (prompt budget insufficient)" + 3
+faithfulness flags + half-rendered clusters. Local has no TPD limit, so a 14B
+that *completes* beats a 70B that fails halfway. Put it back on Groq with
+SWARM_HYBRID_GROQ_ROLES="synthesizer,hater" if you have paid Groq quota.
 
 Same contract as core.llm_groq.GroqRouter (engine_for / role_disabled / manifest /
 teardown / bundle_name), so run_pool() and run_swarm.py use it identically — the
@@ -17,7 +25,7 @@ continuous pool already routes every role through router.engine_for(role)
 (run_swarm.py:1222).
 
 Activate:  SWARM_BACKEND=hybrid  +  GROQ_API_KEY  (and a GPU for the local model).
-Tune:      SWARM_HYBRID_GROQ_ROLES="synthesizer,hater"   (which roles hit Groq)
+Tune:      SWARM_HYBRID_GROQ_ROLES="hater"   (default; which roles hit Groq)
            GROQ_ROLE_SYNTHESIZER=...  / GROQ_ROLE_HATER=...   (per-role Groq model)
            SWARM_MODEL=...            (the local HF model; tier-auto otherwise)
 """
@@ -28,10 +36,12 @@ import asyncio
 import os
 from typing import Optional
 
-# Roles routed to Groq by default — the few low-volume, high-value ones. Everything
-# else runs on the local GPU model. Chosen for free-Groq economy: synthesizer fires
-# ~once per surviving cluster, haters ~1-2/round, so Groq quota burn is tiny.
-_DEFAULT_GROQ_ROLES = {"synthesizer", "hater"}
+# Roles routed to Groq by default. Only the hater (low-volume, ~1-2 calls/round)
+# — adversarial pressure from a distinct model family at negligible quota burn.
+# The synthesizer is deliberately NOT here: its end-of-run token burst blows the
+# free-tier daily limit (see module docstring + lastgroqrun.txt), so it runs on
+# the idle local GPU. Re-add it via SWARM_HYBRID_GROQ_ROLES if you have quota.
+_DEFAULT_GROQ_ROLES = {"hater"}
 
 # Per-role Groq model for the Groq-routed roles. 70B for synthesis depth; a
 # 70B versatile for the hater so adversarial pressure comes from a model family

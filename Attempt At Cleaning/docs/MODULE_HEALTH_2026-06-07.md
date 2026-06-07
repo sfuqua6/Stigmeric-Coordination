@@ -39,7 +39,7 @@ Risk = high (load-bearing, complex, few tests) / medium / low.
 | llm_vllm.py | vLLM backend wrapper with internal batching | llm_router | partial | medium | 350+ LOC; test_vllm_backend covers init + batching attribute |
 | output_diversity.py | semantic (embedding) + lexical (BLEU) diversity | run_swarm | yes | low | centroid_cosine_distance, self_bleu; test_output_diversity_json covers |
 | projection.py | signal→cluster→genome DAG projection | all synthesis + KB | yes | high | 2 K+ LOC; 40+ classes; complex fitness; test_projection extensive but large |
-| query_planner.py | query planning from signals | **DEAD** — nothing imports it | no | low | 200 LOC; candidate for removal; no imports found |
+| query_planner.py | emergent query refinement (step-back, HyDE, FLARE-light) | worker_pool (deferred) | no | medium | 200 LOC; deferred imports inside worker_pool at ~L940; no offline tests |
 | relationships.py | inter-signal typed-edge data structures | test_relationships only | yes | low | 100 LOC; data structures; test_relationships validates |
 | retrieval.py | corpus retrieval (Wikipedia + web + Cohere fallback) | run_swarm | yes | medium | 400+ LOC; test_retrieval covers |
 | role_registry.py | task→role class dispatch table | run_swarm | no | low | 50 LOC; simple dict; no explicit tests (tested implicitly via test_coding_roles) |
@@ -106,7 +106,7 @@ this one). These files should be deleted in Stage 6 (consolidation).
 
 | # | finding | module | action |
 |---|---------|--------|--------|
-| 1 | DEAD — nothing in this tree imports it | core/query_planner.py | delete in Stage 6 |
+| 1 | No offline tests (deferred-imported by worker_pool at L940+) | core/query_planner.py | add unit test in Stage 3 |
 | 2 | DEAD — entire legacy sub-package | swarm/ (6 files) | delete in Stage 6 |
 | 3 | DEAD — run_task.py not usable here (missing swarm.core imports) | run_task.py | document/delete in Stage 6 |
 | 4 | No offline tests | core/topology.py | add mock test in Stage 3 |

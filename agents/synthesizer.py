@@ -117,6 +117,30 @@ _REVISION_TEMPERATURE = 0.2
 _SYNTHESIZER_USE_EDGE_COMPOSITION = True
 _EDGE_COMPOSE_MAX_TOKENS = 2000
 
+# Global composition (two-stage synthesis). Stage 1 renders per-cluster
+# evidence briefs (unchanged). Stage 2 hands ONLY those briefs plus a compact
+# plan digest to a single writer call that composes one coherent, thesis-led
+# argument — merging redundant claims rather than bridging verbatim paragraphs.
+#
+# Context-compression invariant: the composer input is O(K × brief_size),
+# K = planned render set (≤ ~6 briefs). It never sees the signal store or the
+# corpus — everything it reads already survived field pressure and was
+# compressed by Stage 1. The swarm remains the compression engine; this call
+# is the read-out writer, not a second context window.
+#
+# Runs on API backends too (unlike the whole-answer revision loop): input is
+# bounded by the briefs, so the prompt-budget concern that disables revision
+# on Groq does not apply. Fallback chain on failure or guard violation:
+# global composition → edge composition → plain join.
+_SYNTHESIZER_USE_GLOBAL_COMPOSITION = True
+_GLOBAL_COMPOSE_MAX_TOKENS = 2200
+_GLOBAL_COMPOSE_TEMPERATURE = 0.3
+# Composed output must retain at least this fraction of the distinct citation
+# tags present in the input briefs (proof it actually used the material), and
+# clear a minimum length, else the caller falls back.
+_COMPOSE_MIN_TAG_RETENTION = 0.5
+_COMPOSE_MIN_CHARS = 200
+
 # Best-of-N cohesive composition (improvement 5.3). Run the integration call
 # N times with diverse cluster orderings and (for exploration) diverse
 # temperatures; score each candidate by cluster coverage + faithfulness
@@ -800,13 +824,16 @@ class Synthesizer:
 
         # ------------------------------------------------------------------
         # SECTIONED strategy (debate/analysis fallback): keep the existing
-        # multi-section render path. Executive summary appears first.
+        # multi-section render path. The answer now LEADS with the composed
+        # position synthesis (which opens with a direct thesis); the field
+        # telemetry that used to head the answer as "EXECUTIVE SUMMARY"
+        # moves to a PROCESS NOTES section at the end — it describes the
+        # swarm, not the answer, and burying the answer under cluster
+        # statistics was the single biggest readability failure in real runs.
         # ------------------------------------------------------------------
         exec_summary = await self._render_executive_summary(
             projection, store, plan_notes=plan_notes,
         )
-        if exec_summary:
-            sections.append(exec_summary)
 
         # ------------------------------------------------------------------
         # Section 1: per-cluster rendering, driven by the synthesis plan
@@ -892,25 +919,55 @@ class Synthesizer:
                         frag += "."
                     fragments.append(frag)
             if fragments:
-                # Stage B (improvement 5.4): compose paragraphs along the
-                # typed edge graph. Falls back to plain join when no edges
-                # touch the rendered cluster set or the call fails.
+                # Stage 2 (global composition): one bounded writer call over
+                # the briefs + plan digest produces a coherent thesis-led
+                # argument. Falls back to edge composition, then plain join.
+                composed = ""
                 if (
-                    _SYNTHESIZER_USE_EDGE_COMPOSITION
+                    _SYNTHESIZER_USE_GLOBAL_COMPOSITION
                     and len(fragments) > 1
-                    and getattr(projection, "inter_cluster_edges", [])
                 ):
                     try:
-                        composed = await self._compose_with_edges(
+                        composed = await self._compose_answer(
                             fragments, rendered_surviving, projection, store,
                         )
                     except Exception as exc:
-                        print(f"[synthesizer] _compose_with_edges crashed: "
-                              f"{type(exc).__name__}: {exc}; plain join")
+                        print(f"[synthesizer] _compose_answer crashed: "
+                              f"{type(exc).__name__}: {exc}; trying edge composition")
+                if not composed:
+                    # Stage B (improvement 5.4): compose paragraphs along the
+                    # typed edge graph. Falls back to plain join when no edges
+                    # touch the rendered cluster set or the call fails.
+                    if (
+                        _SYNTHESIZER_USE_EDGE_COMPOSITION
+                        and len(fragments) > 1
+                        and getattr(projection, "inter_cluster_edges", [])
+                    ):
+                        try:
+                            composed = await self._compose_with_edges(
+                                fragments, rendered_surviving, projection, store,
+                            )
+                        except Exception as exc:
+                            print(f"[synthesizer] _compose_with_edges crashed: "
+                                  f"{type(exc).__name__}: {exc}; plain join")
+                            composed = "\n\n".join(fragments)
+                    else:
                         composed = "\n\n".join(fragments)
-                else:
-                    composed = "\n\n".join(fragments)
                 sections.append("## 1. POSITION SYNTHESIS\n\n" + composed)
+            else:
+                # Every render call came back empty (e.g. API daily-token
+                # exhaustion: Groq generate() returns "" after retries).
+                # Never emit a Section-1-less answer — fall back to a
+                # deterministic extractive rendering of the planned clusters.
+                extractive = self._extractive_position(rendered_surviving, store)
+                if extractive:
+                    print("[synthesizer] all position renders empty — "
+                          "using extractive fallback for Section 1")
+                    sections.append(
+                        "## 1. POSITION SYNTHESIS\n\n"
+                        "*(extractive fallback — render calls unavailable; "
+                        "verbatim cluster content)*\n\n" + extractive
+                    )
 
         # ------------------------------------------------------------------
         # Section 2: Open questions and dissent — per contested cluster AND
@@ -938,6 +995,17 @@ class Synthesizer:
                     if frag[-1] not in ".!?\")'":
                         frag += "."
                     fragments.append(frag)
+            if not fragments and dissent_candidates:
+                # All dissent renders empty (API exhaustion) — extract the
+                # strongest dissent signal per cluster deterministically.
+                for cp in dissent_candidates[:3]:
+                    strongest = _strongest_signal_content(cp.dissent_set, store)
+                    if strongest:
+                        fragments.append(
+                            f"[{cp.representative_id}] drew dissent "
+                            f"(pressure={cp.dissent_pressure:.2f}): "
+                            f"{_truncate(strongest, _DISSENT_CHARS)}"
+                        )
             for ca, cb in contradictions:
                 fragments.append(
                     f"[INTER-CLUSTER CONTRADICTION] Clusters "
@@ -1038,8 +1106,13 @@ class Synthesizer:
                 )
 
         # ------------------------------------------------------------------
-        # Assemble sections
+        # Assemble sections — process notes (former executive summary) last.
         # ------------------------------------------------------------------
+        if exec_summary:
+            notes_body = exec_summary.replace(
+                "## EXECUTIVE SUMMARY", "", 1,
+            ).strip()
+            sections.append("---\n\n## PROCESS NOTES\n\n" + notes_body)
         answer = "\n\n".join(sections)
 
         # Revision loop (improvement 5.2): K rounds of critic → revise.
@@ -2214,6 +2287,140 @@ class Synthesizer:
             + "\n".join(lines)
             if lines else ""
         )
+
+    def _extractive_position(self, clusters: list, store: SignalStore) -> str:
+        """LLM-free Section 1: verbatim cluster content with citation tags.
+
+        Used when every position render returned empty (API daily-token
+        exhaustion). Deterministic and faithful by construction — the text
+        IS the signal content, so the 4-gram audit passes trivially.
+        """
+        paras: list[str] = []
+        for cp in clusters:
+            rep = store.get(cp.representative_id)
+            if rep is None:
+                continue
+            bits = [
+                f"[{cp.representative_id}] "
+                f"{_truncate(rep.content, _REPRESENTATIVE_CHARS)}"
+            ]
+            for sid in cp.support_set[:2]:
+                s = store.get(sid)
+                if s:
+                    bits.append(
+                        f"Supporting: [{sid}] "
+                        f"{_truncate(s.content, _SUPPORT_CHARS)}"
+                    )
+            paras.append(" ".join(bits))
+        return "\n\n".join(paras)
+
+    async def _compose_answer(
+        self,
+        briefs: list[str],
+        clusters: list,
+        projection: SynthesisProjection,
+        store: SignalStore,
+    ) -> str:
+        """Stage 2 of two-stage synthesis: compose the per-cluster evidence
+        briefs into ONE coherent, thesis-led argument with a single call.
+
+        Unlike _compose_with_edges (verbatim paragraphs + bridge sentences),
+        this is a true rewrite: the writer sees all briefs together and is
+        asked to merge redundant claims, order by argumentative logic, and
+        integrate dissent — the difference between an essay and a staple job.
+
+        Context-compression invariant (the swarm mechanic): the input is the
+        plan digest (IDs + scalar scores) plus the K rendered briefs ONLY.
+        The composer never sees the signal store or the corpus; everything it
+        reads already survived field pressure and was compressed by Stage 1.
+        Input size is O(K × brief), independent of store/corpus size.
+
+        No-leak rule: briefs are derived from Signal.content; the digest
+        carries cluster IDs and scalars. No ancestry text enters the prompt.
+
+        Returns "" on failure or guard violation so the caller can fall back
+        (edge composition → plain join). Guards: minimum length, and the
+        output must retain ≥ _COMPOSE_MIN_TAG_RETENTION of the distinct
+        citation tags present in the briefs — proof it composed the material
+        rather than free-writing. The post-hoc faithfulness audit then checks
+        the composed text against cluster content like any rendered prose.
+        """
+        digest_lines: list[str] = []
+        for cp in clusters:
+            digest_lines.append(
+                f"  [{cp.representative_id}] "
+                f"support_diversity={cp.support_diversity} "
+                f"verification={cp.verification_score:.2f} "
+                f"dissent={cp.dissent_pressure:.2f}"
+            )
+        briefs_block = "\n\n".join(
+            f"BRIEF {i + 1}:\n{b}" for i, b in enumerate(briefs)
+        )
+
+        prompt = (
+            f"TASK: {self.task_prompt}\n\n"
+            f"You are the final writer for a multi-agent analysis. Below are "
+            f"{len(briefs)} evidence briefs. Each was independently written "
+            f"from one surviving claim cluster and cites signal IDs in "
+            f"[BRACKETS]. The briefs overlap and repeat each other — your job "
+            f"is to write the position synthesis: one coherent, thesis-led "
+            f"argument that answers the task.\n\n"
+            f"Requirements:\n"
+            f"  1. Open with a 2-3 sentence direct answer to the task — "
+            f"thesis first, before any supporting detail.\n"
+            f"  2. Merge redundant claims: when several briefs state the same "
+            f"proposition, state it ONCE and attach all of their citation "
+            f"tags to that sentence.\n"
+            f"  3. Order the argument logically — strongest verified material "
+            f"first, complications and trade-offs after — not in brief order.\n"
+            f"  4. Keep every citation tag [LIKE_THIS] attached to the claim "
+            f"it supports. Do not invent tags. Do not drop a brief's only tag.\n"
+            f"  5. Use ONLY facts present in the briefs. No new examples, "
+            f"numbers, or background knowledge.\n"
+            f"  6. Where a brief acknowledges a counter-position, keep that "
+            f"acknowledgement in the argument.\n"
+            f"  7. Plain prose paragraphs. No markdown headers, no bullet "
+            f"lists, no mention of clusters, briefs, agents, or process.\n\n"
+            f"CLUSTER DIGEST (structural context — do not quote):\n"
+            + "\n".join(digest_lines)
+            + f"\n\nEVIDENCE BRIEFS:\n\n{briefs_block}\n\n"
+            f"POSITION SYNTHESIS:"
+        )
+
+        try:
+            raw = await self.llm.generate(
+                prompt, role=self.ROLE,
+                max_tokens=_GLOBAL_COMPOSE_MAX_TOKENS,
+                temperature=_GLOBAL_COMPOSE_TEMPERATURE,
+            )
+        except Exception as exc:
+            print(f"[synthesizer] global composition call failed: "
+                  f"{type(exc).__name__}: {exc}")
+            return ""
+
+        result = strip_reasoning((raw or "").strip())
+        if len(result) < _COMPOSE_MIN_CHARS:
+            print("[synthesizer] global composition output too short; "
+                  "falling back")
+            return ""
+
+        # Tag-retention guard: the composed answer must carry forward most
+        # of the citation tags from the briefs, else it free-wrote.
+        tag_re = re.compile(r"\[[A-Z][A-Z_]*_\d+\]")
+        input_tags = set()
+        for b in briefs:
+            input_tags.update(tag_re.findall(b))
+        if input_tags:
+            kept = sum(1 for t in input_tags if t in result)
+            retention = kept / len(input_tags)
+            if retention < _COMPOSE_MIN_TAG_RETENTION:
+                print(f"[synthesizer] global composition dropped too many "
+                      f"citation tags ({kept}/{len(input_tags)}); falling back")
+                return ""
+
+        print(f"[synthesizer] global composition: {len(briefs)} briefs -> "
+              f"{len(result)} chars")
+        return result
 
     async def _compose_with_edges(
         self,

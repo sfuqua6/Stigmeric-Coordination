@@ -1,0 +1,13 @@
+{
+  "n": 6,
+  "hit_rate": 0.0,
+  "mean_pnl_pct": 0.0,
+  "mean_long_return_pct": 0.0,
+  "equity_multiple": 1.0,
+  "sharpe_like": 0.0,
+  "baseline_buyhold_pct": 1.3995413174806088,
+  "baseline_spy_pct": null,
+  "edge_vs_buyhold_pct": -1.3995413174806088,
+  "calibration": [],
+  "verified_claim_ratio": null
+}

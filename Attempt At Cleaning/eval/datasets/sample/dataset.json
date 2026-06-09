@@ -1,0 +1,36 @@
+{
+  "snapshot_root": "eval/datasets/sample\\snapshots",
+  "price_root": "eval/datasets/sample\\prices",
+  "cases": [
+    {
+      "symbol": "NVDA",
+      "as_of": "2024-01-15",
+      "horizon_days": 5
+    },
+    {
+      "symbol": "NVDA",
+      "as_of": "2024-02-15",
+      "horizon_days": 5
+    },
+    {
+      "symbol": "NVDA",
+      "as_of": "2024-03-15",
+      "horizon_days": 5
+    },
+    {
+      "symbol": "AMD",
+      "as_of": "2024-01-15",
+      "horizon_days": 5
+    },
+    {
+      "symbol": "AMD",
+      "as_of": "2024-02-15",
+      "horizon_days": 5
+    },
+    {
+      "symbol": "AMD",
+      "as_of": "2024-03-15",
+      "horizon_days": 5
+    }
+  ]
+}

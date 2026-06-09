@@ -1,0 +1,50 @@
+{
+  "debate_quality": {
+    "total_signals": 4,
+    "signal_types": {
+      "DRAFT": 1,
+      "EVIDENCE": 1,
+      "CRITIQUE": 1,
+      "REFINEMENT": 1
+    },
+    "claims_count": 2,
+    "evidence_ratio": 0.5,
+    "critique_coverage": 0.5,
+    "diversity_score": 1.0,
+    "strength": {
+      "average": 0.788,
+      "max": 0.9,
+      "min": 0.6,
+      "strong_count": 3,
+      "medium_count": 1,
+      "weak_count": 0
+    }
+  },
+  "signal_quality": {
+    "provenance_ratio": 0.75,
+    "max_depth": 2,
+    "avg_depth": 1.75,
+    "avg_children_per_signal": 3.0,
+    "validation_coverage": 0.0,
+    "orphan_signals": 1
+  },
+  "convergence": {
+    "converged": true,
+    "convergence_iteration": 4,
+    "final_count": 4,
+    "peak_count": 4,
+    "avg_growth_per_iteration": 0.44,
+    "convergence_variance": 0.0
+  },
+  "performance": {
+    "runtime_seconds": 120.0,
+    "runtime_minutes": 2.0,
+    "total_actions": 50,
+    "total_signals_created": 4,
+    "actions_per_minute": 25.0,
+    "signals_per_minute": 2.0,
+    "llm_generations": 50,
+    "generations_per_minute": 25.0,
+    "avg_seconds_per_action": 2.4
+  }
+}

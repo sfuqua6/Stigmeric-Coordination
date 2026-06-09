@@ -74,11 +74,15 @@ cells.append(md("## Cell 3 — Clone / pull the repo"))
 cells.append(code(
 """import os, subprocess
 REPO_URL='https://github.com/sfuqua6/Stigmeric-Coordination.git'
+REPO_BRANCH='cleanup/restructure'   # branch to run (set 'main' after merge)
 REPO_ROOT='/content/swarm_repo'
 if not os.path.exists(REPO_ROOT):
-    subprocess.run(['git','clone',REPO_URL,REPO_ROOT], check=True)
+    subprocess.run(['git','clone','--branch',REPO_BRANCH,REPO_URL,REPO_ROOT],
+                   check=True)
 else:
-    subprocess.run(['git','-C',REPO_ROOT,'pull'], check=True)
+    subprocess.run(['git','-C',REPO_ROOT,'fetch','origin'], check=True)
+    subprocess.run(['git','-C',REPO_ROOT,'checkout',REPO_BRANCH], check=True)
+    subprocess.run(['git','-C',REPO_ROOT,'pull','origin',REPO_BRANCH], check=True)
 os.chdir(REPO_ROOT)
 print('cwd:', os.getcwd())
 print(subprocess.run(['git','-C',REPO_ROOT,'log','--oneline','-3'],

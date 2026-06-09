@@ -8,5 +8,7 @@ Superseded by the pipeline now at the repository root (formerly `Attempt At Clea
 which enforces the no-leak rule and information partitioning. Preserved for reference and
 for the ablation/benchmark harnesses that target the `swarm.*` package.
 
-**Running it:** imports use the `swarm.*` package, so run from this directory
-(e.g. `cd legacy && python run_task.py debate "..."` or `python tests/test_pipeline_sanity.py`).
+**Running it:** imports use the `swarm.*` package, so run from this directory with
+`PYTHONPATH=.` (e.g. `cd legacy && python run_task.py debate "..."` or
+`PYTHONPATH=. python tests/test_pipeline_sanity.py` — verified 11/11 passing 2026-06-09).
+On Windows consoles also set `PYTHONIOENCODING=utf-8` (the test banners use emoji).

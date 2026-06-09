@@ -799,6 +799,20 @@ class Worker:
         if not content or is_junk_output(content):
             return None
 
+        # Multi-claim scout sampling: the SCOUT response is a numbered
+        # portfolio of candidate claims; keep the one least similar to the
+        # recent INITIAL field. Selection is code-side (scalar similarity
+        # from the store) — nothing from other agents enters any prompt.
+        if action == SCOUT:
+            from core.actions import split_scout_claims, select_novel_claim
+            candidates = split_scout_claims(content)
+            if len(candidates) > 1:
+                content = select_novel_claim(candidates, store)
+            elif candidates:
+                content = candidates[0]
+            if not content:
+                return None
+
         # Dynamic TYPE/PARENT overrides (Phase 3A/3B compatibility)
         from core.actions import _parse_type, _parse_parent
         dyn_type = _parse_type(raw)
@@ -1309,8 +1323,14 @@ class Worker:
                       retrieved: list, query: str,
                       dissent: Optional[Signal]) -> Optional[str]:
         if action == SCOUT:
+            # Re-seed against the last few own deposits (not just the most
+            # recent one — that let a worker alternate two restatements).
+            from core.config import SCOUT_RESEED_CHARS, SCOUT_RESEED_DEPTH
             prior_own = (
-                self._own_scout_excerpts[-1][:175]
+                " | ".join(
+                    e[:SCOUT_RESEED_CHARS]
+                    for e in self._own_scout_excerpts[-SCOUT_RESEED_DEPTH:]
+                )
                 if self._own_scout_excerpts else None
             )
             return A.scout_prompt(self.task_prompt, retrieved, prior_own)

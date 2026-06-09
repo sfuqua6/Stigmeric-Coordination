@@ -33,7 +33,13 @@ from agents.base import BaseAgent, AgentRunStats, strip_reasoning
 from core.signal_store import SignalStore, Signal
 from core.signal_types import INITIAL, SEARCH
 from core.intake import ScoutPartition
-from core.config import MAX_TOKENS_SCOUT, SCOUT_MAX_DEPOSITS_PER_ROUND, SCOUT_RESEED_CHARS
+from core.config import (
+    MAX_TOKENS_SCOUT,
+    SCOUT_MAX_DEPOSITS_PER_ROUND,
+    SCOUT_RESEED_CHARS,
+    SCOUT_RESEED_DEPTH,
+    SCOUT_CLAIMS_PER_CALL,
+)
 from core.diversity import AgentContextRecord
 from core.filters import is_junk_output
 
@@ -135,7 +141,10 @@ class Scout(BaseAgent):
                         last_retrieved = retrieved
 
             prior_own = (
-                own_deposit_excerpts[-1][:SCOUT_RESEED_CHARS]
+                " | ".join(
+                    e[:SCOUT_RESEED_CHARS]
+                    for e in own_deposit_excerpts[-SCOUT_RESEED_DEPTH:]
+                )
                 if own_deposit_excerpts else None
             )
             # Topology cell hint: inject directional context without leaking
@@ -163,6 +172,18 @@ class Scout(BaseAgent):
                 temperature=self.TEMPERATURE,
             )
             content = strip_reasoning(raw.strip())
+            if not content:
+                continue
+
+            # Multi-claim sampling: keep the candidate claim least similar
+            # to the recent INITIAL field (scalar similarity from the store;
+            # no other agent's content enters this scout's prompt).
+            from core.actions import split_scout_claims, select_novel_claim
+            candidates = split_scout_claims(content)
+            if len(candidates) > 1:
+                content = select_novel_claim(candidates, store)
+            elif candidates:
+                content = candidates[0]
             if not content:
                 continue
 
@@ -284,20 +305,38 @@ class Scout(BaseAgent):
             excerpt = prior_own_content.replace("\n", " ").strip()
             reseed_hint = (
                 f'\nYou previously contributed: "{excerpt}"\n'
-                f"Produce something genuinely different from that.\n"
+                f"Every claim below must be genuinely different from that.\n"
             )
 
         topology_hint = f"\n{extra_context}\n" if extra_context else ""
 
+        k = SCOUT_CLAIMS_PER_CALL
+        if k <= 1:
+            ask = (
+                f"Produce ONE concise initial claim or observation grounded "
+                f"in this evidence. Do not summarize everything; surface a "
+                f"single specific point worth depositing as a first-order "
+                f"signal. One or two sentences only.\n\n"
+                f"CLAIM:"
+            )
+        else:
+            ask = (
+                f"Produce {k} DISTINCT initial claims grounded in this "
+                f"evidence, numbered 1. to {k}. Each claim: one or two "
+                f"sentences surfacing one specific point. Each must take a "
+                f"genuinely different angle — e.g. a specific mechanism, a "
+                f"counterexample or limitation, a cost or trade-off, an "
+                f"affected group, a quantitative detail, a second-order "
+                f"consequence. Do NOT write {k} paraphrases of the same "
+                f"obvious point; the most obvious claim may appear at most "
+                f"once.\n\n"
+                f"CLAIMS:\n1."
+            )
         return (
             f"TASK: {self.config.task_prompt}\n\n"
             f"{evidence_intro}\n\n"
             f"---EVIDENCE---\n{evidence_text}\n---END EVIDENCE---\n"
             f"{reseed_hint}"
             f"{topology_hint}\n"
-            f"Produce ONE concise initial claim or observation grounded "
-            f"in this evidence. Do not summarize everything; surface a "
-            f"single specific point worth depositing as a first-order "
-            f"signal. One or two sentences only.\n\n"
-            f"CLAIM:"
+            f"{ask}"
         )

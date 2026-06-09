@@ -218,6 +218,8 @@ def _type_parent_instruction() -> str:
 
 def scout_prompt(task_prompt: str, retrieved_chunks: list,
                  prior_own_content: Optional[str] = None) -> str:
+    from core.config import SCOUT_CLAIMS_PER_CALL
+    k = SCOUT_CLAIMS_PER_CALL
     if retrieved_chunks:
         blocks = []
         for c in retrieved_chunks[:5]:
@@ -235,15 +237,30 @@ def scout_prompt(task_prompt: str, retrieved_chunks: list,
     if prior_own_content:
         excerpt = prior_own_content.replace("\n", " ").strip()
         reseed = (f'\nYou previously contributed: "{excerpt}"\n'
-                  f"Produce something genuinely different from that.\n")
+                  f"Every claim below must be genuinely different from that.\n")
+    if k <= 1:
+        ask = (
+            f"Produce ONE concise initial claim or observation grounded in "
+            f"this evidence. One or two sentences only.\n\n"
+            f"CLAIM:"
+        )
+    else:
+        ask = (
+            f"Produce {k} DISTINCT initial claims grounded in this evidence, "
+            f"numbered 1. to {k}. Each claim: one or two sentences. Each must "
+            f"take a genuinely different angle — e.g. a specific mechanism, a "
+            f"counterexample or limitation, a cost or trade-off, an affected "
+            f"group, a quantitative detail, a second-order consequence. Do "
+            f"NOT write {k} paraphrases of the same obvious point; the most "
+            f"obvious claim may appear at most once.\n\n"
+            f"CLAIMS:\n1."
+        )
     return (
         f"TASK: {task_prompt}\n\n"
         f"{evidence_intro}\n\n"
         f"---EVIDENCE---\n{evidence_text}\n---END EVIDENCE---\n"
         f"{reseed}\n"
-        f"Produce ONE concise initial claim or observation grounded in this "
-        f"evidence. One or two sentences only.\n\n"
-        f"CLAIM:"
+        f"{ask}"
     )
 
 
@@ -252,6 +269,74 @@ def scout_parse(raw: str) -> ParsedDeposit:
     return ParsedDeposit(
         signal_type=INITIAL, content=content, strength=0.55,
     )
+
+
+# Numbered-claim splitter for multi-claim scout responses. Accepts "1.", "1)",
+# "2 ." etc. at line start. The prompt pre-seeds "1." so the first claim
+# usually arrives without its number — handled by treating leading text
+# before the first marker as claim 1.
+_CLAIM_MARKER_RE = _re.compile(r"^\s*(\d{1,2})[.)]\s+", _re.MULTILINE)
+
+
+def split_scout_claims(content: str) -> list[str]:
+    """Split a multi-claim scout response into individual claim candidates.
+
+    Returns [content] unchanged when no numbered structure is found, so
+    single-claim responses (and SCOUT_CLAIMS_PER_CALL=1 configs) flow
+    through identically to the old path. Junk candidates are filtered.
+    """
+    from core.filters import is_junk_output
+    text = (content or "").strip()
+    if not text:
+        return []
+    pieces: list[str] = []
+    matches = list(_CLAIM_MARKER_RE.finditer(text))
+    if not matches:
+        return [text]
+    # Text before the first marker is claim 1 (prompt pre-seeds "1.").
+    head = text[: matches[0].start()].strip()
+    if head:
+        pieces.append(head)
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[m.end(): end].strip()
+        if body:
+            pieces.append(body)
+    # Filter junk and trivially-short fragments; keep order (model's own
+    # confidence ordering breaks novelty-score ties at the caller).
+    cleaned = [
+        p.replace("\n", " ").strip()
+        for p in pieces
+        if len(p.split()) >= 4 and not is_junk_output(p)
+    ]
+    return cleaned if cleaned else [text]
+
+
+def select_novel_claim(candidates: list[str], store: SignalStore) -> str:
+    """Pick the candidate claim LEAST similar to the recent INITIAL field.
+
+    Similarity is store-side (embedding cosine, string-ratio fallback) and
+    returns scalars only — no signal content reaches the scout's prompt, so
+    the no-leak rule and the partition-diversity mechanic are intact. Ties
+    (including the empty-store case where every score is 0.0) resolve to the
+    earliest candidate, i.e. the model's own highest-confidence claim.
+    """
+    from core.config import SCOUT_NOVELTY_RECENT_N
+    if not candidates:
+        return ""
+    if len(candidates) == 1:
+        return candidates[0]
+    scored = [
+        (store.max_similarity_to_recent(c, INITIAL, SCOUT_NOVELTY_RECENT_N),
+         i, c)
+        for i, c in enumerate(candidates)
+    ]
+    scored.sort(key=lambda t: (t[0], t[1]))
+    best_sim, _, best = scored[0]
+    if best_sim > 0.0:
+        print(f"[scout multiclaim] {len(candidates)} candidates; "
+              f"selected least-similar (max_sim={best_sim:.2f})")
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -735,10 +820,15 @@ class ActionSpec:
     temperature: float
 
 
+from core.config import MAX_TOKENS_SCOUT as _MAX_TOKENS_SCOUT
+
 ACTION_REGISTRY: dict[str, ActionSpec] = {
     SCOUT: ActionSpec(
+        # max_tokens from config: the budget covers a K-claim portfolio
+        # (multi-claim sampling), not a single claim.
         SCOUT, INITIAL, scout_prompt, scout_parse,
-        ACTION_PRECONDITIONS[SCOUT], max_tokens=200, temperature=0.9,
+        ACTION_PRECONDITIONS[SCOUT], max_tokens=_MAX_TOKENS_SCOUT,
+        temperature=0.9,
     ),
     DEVELOP: ActionSpec(
         DEVELOP, SUPPORT, develop_prompt, develop_parse,

@@ -387,6 +387,35 @@ class SignalStore:
                 "max_strength": max(strengths) if strengths else 0.0,
             }
 
+    def max_similarity_to_recent(
+        self, content: str, signal_type: str, n: int = 30,
+    ) -> float:
+        """Max similarity of `content` against the n most recent signals of
+        `signal_type`. Embedding cosine when available, SequenceMatcher
+        fallback (via _similarity).
+
+        Used by multi-claim scout sampling to pick the candidate claim least
+        similar to the existing INITIAL field. No-leak safe: returns a scalar
+        only — callers never receive signal content, and nothing from the
+        store is rendered into any prompt by this path.
+        """
+        with self._lock:
+            recent = sorted(
+                (s for s in self._signals.values() if s.type == signal_type),
+                key=lambda s: s.timestamp, reverse=True,
+            )[:n]
+            if not recent:
+                return 0.0
+            e_new = self._encode(content)
+            best = 0.0
+            for s in recent:
+                sim = self._similarity(
+                    content, s.content, e_new, self._embeddings.get(s.id),
+                )
+                if sim > best:
+                    best = sim
+            return best
+
     # ---- checkpoint serialization (phase-isolated execution) -------------
     # Round-trips the store to/from a JSON file so subprocess-per-phase runs
     # can hand off state. Embeddings are NOT persisted; they are rebuilt

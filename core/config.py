@@ -137,7 +137,9 @@ USE_MOCK_LLM = os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", 
 # Per-agent generation length budget. Raised in Phase 1F (A100 + max_model_len=4096
 # supports these without truncation). Laptop overrides via SWARM_MAX_TOKENS_* env
 # vars if needed; the Colab tier block below tightens these further per tier.
-MAX_TOKENS_SCOUT = 200
+# Scout budget covers a K-claim portfolio (SCOUT_CLAIMS_PER_CALL below),
+# not a single claim — see multi-claim scout sampling.
+MAX_TOKENS_SCOUT = 400
 MAX_TOKENS_FORAGER = 300
 MAX_TOKENS_CRITIC = 200
 MAX_TOKENS_HATER = 300
@@ -168,6 +170,22 @@ SCOUT_MAX_DEPOSITS_PER_ROUND = 3#*5
 # Characters from a scout's last successful deposit to include in the re-seed hint.
 # Steers the scout away from its most recent claim without injecting other agents' work.
 SCOUT_RESEED_CHARS = 175
+# How many of the scout's own prior deposits to include in the re-seed hint
+# (was effectively 1 — only the most recent — which let a scout alternate
+# between two restatements forever).
+SCOUT_RESEED_DEPTH = 3
+
+# Multi-claim scout sampling. One scout call emits a numbered portfolio of
+# K distinct candidate claims; the deposit site keeps the candidate LEAST
+# similar to the recent INITIAL field (embedding cosine, string fallback).
+# Rationale: a single-claim prompt takes the model's most probable claim,
+# which is the same obvious thesis restatement for every worker. Sampling
+# K candidates and selecting for novelty converts diversity from "hope the
+# argmax differs" into explicit selection pressure. The selection is
+# code-side — no other agent's content enters the scout prompt (no-leak).
+SCOUT_CLAIMS_PER_CALL = 4
+# How many recent INITIALs the novelty selection compares against.
+SCOUT_NOVELTY_RECENT_N = 30
 
 # ---------------------------------------------------------------------------
 # Signal store dynamics
@@ -313,14 +331,14 @@ if _TIER is not None:
     # without bumping the input ceiling. Smaller tiers (t4/l4) keep tighter
     # caps because their KV cache cannot absorb the larger generations.
     if _TIER in ("a100_40", "a100_80", "h100", "blackwell"):
-        MAX_TOKENS_SCOUT       = 200
+        MAX_TOKENS_SCOUT       = 400   # K-claim portfolio (multi-claim sampling)
         MAX_TOKENS_FORAGER     = 300
         MAX_TOKENS_CRITIC      = 200
         MAX_TOKENS_HATER       = 300
         MAX_TOKENS_VALIDATOR   = 200   # 150 -> 200 (engages/quality JSON + reasoning fits)
         MAX_TOKENS_SYNTHESIZER = 2000  # 1500 -> 2000 (anti-parametric prompt is longer)
     else:
-        MAX_TOKENS_SCOUT       = 140
+        MAX_TOKENS_SCOUT       = 320   # K-claim portfolio (multi-claim sampling)
         MAX_TOKENS_FORAGER     = 200
         MAX_TOKENS_CRITIC      = 150
         MAX_TOKENS_HATER       = 200
@@ -510,6 +528,9 @@ assert CHUNK_WORDS > 0 and CHUNK_OVERLAP >= 0 and CHUNK_OVERLAP < CHUNK_WORDS
 assert LLM_CONCURRENCY >= 1
 assert SCOUT_MAX_DEPOSITS_PER_ROUND >= 1
 assert SCOUT_RESEED_CHARS >= 0
+assert SCOUT_RESEED_DEPTH >= 1
+assert SCOUT_CLAIMS_PER_CALL >= 1
+assert SCOUT_NOVELTY_RECENT_N >= 1
 assert PEER_PRUNE_MIN_MEMBERS >= 1
 assert 0.0 < PEER_PRUNE_FACTOR <= 1.0
 
@@ -563,6 +584,10 @@ MAX_TOKENS_CRITIC      = _int_env("SWARM_MAX_TOKENS_CRITIC",      MAX_TOKENS_CRI
 MAX_TOKENS_HATER       = _int_env("SWARM_MAX_TOKENS_HATER",       MAX_TOKENS_HATER)
 MAX_TOKENS_VALIDATOR   = _int_env("SWARM_MAX_TOKENS_VALIDATOR",   MAX_TOKENS_VALIDATOR)
 MAX_TOKENS_SYNTHESIZER = _int_env("SWARM_MAX_TOKENS_SYNTHESIZER", MAX_TOKENS_SYNTHESIZER)
+
+# Multi-claim scout sampling knobs
+SCOUT_CLAIMS_PER_CALL   = _int_env("SWARM_SCOUT_CLAIMS",           SCOUT_CLAIMS_PER_CALL)
+SCOUT_NOVELTY_RECENT_N  = _int_env("SWARM_SCOUT_NOVELTY_RECENT_N", SCOUT_NOVELTY_RECENT_N)
 
 # Intake
 CHUNK_WORDS            = _int_env("SWARM_CHUNK_WORDS",          CHUNK_WORDS)

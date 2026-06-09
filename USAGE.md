@@ -3,7 +3,7 @@
 ## Quick Start
 
 ```bash
-# from the Attempt At Cleaning/ directory
+# from the repository root
 python run_swarm.py debate "Climate action is necessary"
 python run_swarm.py analysis "What causes innovation?"
 python run_swarm.py creative "Write a haiku about emergence"

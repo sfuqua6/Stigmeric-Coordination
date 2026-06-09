@@ -12,7 +12,7 @@ import sys
 import os
 import pytest
 
-# Make the Attempt At Cleaning root importable whether run from there or from repo root.
+# Make the repo root importable whether tests run from tests/ or from the root.
 _HERE = os.path.dirname(__file__)
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:

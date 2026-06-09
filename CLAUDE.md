@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this codebase is
 
-A from-scratch rebuild of the parent project's stigmergic multi-agent LLM pipeline that strictly enforces two principles:
+A from-scratch rebuild of the original stigmergic multi-agent LLM pipeline that strictly enforces two principles:
 
 1. **No-leak rule.** Agents only ever observe signals as artifacts (content + ID + structural metadata). Never another agent's reasoning chain, ancestry text, or chain-of-thought.
 2. **Information partitioning as the diversity engine.** Diversity comes from *what each agent has been shown*, not from prompt or temperature tweaks. Scouts get disjoint corpus partitions; downstream roles use differentiated sampling strategies over the shared signal store.
 
-This is the "cleaned" sibling of the top-level pipeline. Treat the no-leak rule as a hard architectural constraint when changing agents or the signal store.
+This is the canonical pipeline, at the repository root. The original it replaced (`run_task.py` + the `swarm/` package) is preserved unmaintained under `legacy/`. Treat the no-leak rule as a hard architectural constraint when changing agents or the signal store.
 
 ## Commands
 
@@ -268,5 +268,5 @@ The old public names `role_diversity` / `overall_diversity` / `format_report` ar
 
 - Hardware target is a single 6 GB consumer GPU (RTX 3060 Laptop, 4-bit NF4). Multi-GPU and model-serving are explicitly out of scope.
 - Mock mode is for plumbing checks only — never report behavioral or diversity numbers from `outputs_mock/`.
-- The colony biomimicry primitives, `dialogue_coordinator`, `Signal.responses`, `evaluate_insights_enhanced`, `deposit_with_context`, and the mode/phase/task-type/signal-type quadruple-classification system from the parent project were removed deliberately (see README "What was removed and why"). Don't re-introduce them without a plan.
+- The colony biomimicry primitives, `dialogue_coordinator`, `Signal.responses`, `evaluate_insights_enhanced`, `deposit_with_context`, and the mode/phase/task-type/signal-type quadruple-classification system from the legacy pipeline (`legacy/`) were removed deliberately. Don't re-introduce them without a plan.
 - See `DEFERRED.md` for the active list of known gaps (logit dynamics tuning, retriever calibration, A/B baseline runs, KB threshold calibration, etc.) before starting a new architectural change.

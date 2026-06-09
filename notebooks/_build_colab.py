@@ -18,7 +18,7 @@ cells = []
 cells.append(md(
 """# Stigmergic Swarm — Colab Runner (hybrid local-GPU + Groq)
 
-Runs the cleaned pipeline (`Attempt At Cleaning/`). Pick a **backend** — that's the
+Runs the pipeline at the repository root. Pick a **backend** — that's the
 one real decision:
 
 | Backend | `SWARM_BACKEND` | GPU? | Groq quota | Best for |
@@ -79,7 +79,7 @@ if not os.path.exists(REPO_ROOT):
     subprocess.run(['git','clone',REPO_URL,REPO_ROOT], check=True)
 else:
     subprocess.run(['git','-C',REPO_ROOT,'pull'], check=True)
-os.chdir(f'{REPO_ROOT}/Attempt At Cleaning')
+os.chdir(REPO_ROOT)
 print('cwd:', os.getcwd())
 print(subprocess.run(['git','-C',REPO_ROOT,'log','--oneline','-3'],
                      capture_output=True, text=True).stdout)"""))

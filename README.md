@@ -1,280 +1,82 @@
 # AI Swarm Mechanics
 
-**Stigmergic multi-agent system for collaborative intelligence**
+**Stigmergic multi-agent LLM pipeline with strict information partitioning**
 
-A pure event-driven swarm where agents communicate through signal deposits, generating novel insights through adversarial collaboration.
+Agents coordinate only through a shared signal store — like ants depositing pheromones. Two hard architectural rules drive everything:
 
-## What Makes This Different
+1. **No-leak rule.** Agents only ever observe signals as artifacts (content + ID + structural metadata) — never another agent's reasoning chain, ancestry text, or chain-of-thought.
+2. **Information partitioning as the diversity engine.** Diversity comes from *what each agent has been shown*, not from prompt or temperature tweaks. Scouts get disjoint corpus partitions; downstream roles use differentiated sampling strategies over the shared signal store.
 
-| Traditional LLM | This Swarm System |
-|----------------|-------------------|
-| Single query → single response | Multiple agents explore concurrently |
-| No self-critique | Haters challenge weak signals |
-| No fact-checking | Validators verify against Wikipedia/web |
-| No refinement | Multi-round iterative improvement |
-| Opaque reasoning | Full signal provenance tracked |
-| Prone to groupthink | Adversarial pressure prevents consensus bias |
-
-## Quick Start (3 Steps)
-
-### 1. Install Dependencies
+## Quick start
 
 ```bash
-# Core dependencies (required)
-pip install torch transformers
+pip install -r requirements.txt
 
-# Optional but recommended
-pip install requests beautifulsoup4 wikipedia sentence-transformers
+# Run a task (entry point is run_swarm.py)
+python run_swarm.py debate "Climate action is necessary"
+python run_swarm.py analysis "What causes innovation?"
+python run_swarm.py creative "Write a haiku about emergence"
+python run_swarm.py problem_solving "How can cities reduce traffic?"
+python run_swarm.py coding "Implement a binary search"
+
+# Develop without a GPU / model download
+MOCK_LLM=1 python run_swarm.py debate "Test thesis"
+
+# Swap the model (default: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B)
+SWARM_MODEL="Qwen/Qwen2.5-3B-Instruct" python run_swarm.py debate "..."
 ```
 
-### 2. Run a Task
+Output lands in `outputs/<task>_<timestamp>/` (`answer.txt`, `summary.json`, `signals.json`, lineage and audit artifacts). Mock runs land in `outputs_mock/` — kept deliberately separate so mock artifacts are never mistaken for empirical evidence.
 
-```bash
-python run_task.py debate "Climate action is necessary"
-```
+Useful flags: `--mode=baseline` (independent agents, no stigmergy — the A/B comparison condition), `--corpus=placeholder`, `--ignore-kb`, `--reset-kb`, `--show-partition-overlap`.
 
-**Available task types:**
-- `debate` - Argue a thesis with pro/con evidence
-- `creative` - Generate creative content (poems, stories)
-- `analysis` - Analyze research questions
-- `problem_solving` - Propose and evaluate solutions
+## How it works
 
-### 3. Check Results
+Each round runs two phases against the shared `SignalStore`:
 
-Output saved to `outputs/debate_TIMESTAMP/`
+- **Phase A:** Scouts (disjoint corpus partitions → INITIAL signals) and Validators (fact-check against external sources → VERIFICATION signals) run in parallel.
+- **Phase B:** Developers, Critics, and Haters run in parallel — they see Phase A's VERIFICATION signals, which feed the provenance boost.
+- After both phases: signal decay, pruning, diversity-metric logging.
 
-## How It Works (Stigmergic Collaboration)
+After all rounds, a pure-Python DAG projection classifies clusters (`surviving` / `contested` / `weakly_supported` / `rejected_by_field`), and the Synthesizer renders the final answer with one structured LLM call per cluster — making cross-cluster hallucination structurally impossible. Cross-run consensus persists in a knowledge base; clusters carry a typed genome with composite fitness driving selection.
 
-1. **Scouts** (4 agents) explore and generate initial ideas
-2. **Foragers** (4 agents) develop those ideas with supporting details
-3. **Critics** (2 agents) evaluate quality and adjust strength
-4. **Haters** (2 agents) challenge weak arguments with objections
-5. **Validators** (1 agent) fact-check claims against external sources
-6. **Synthesizer** combines the best signals into final output
-
-All communication is **stigmergic** - agents deposit signals and react to others' signals, with no direct messaging.
-
-### Pure Event-Driven Architecture
-
-- **No artificial sleep delays** - agents react immediately to signal deposits
-- **Event-driven coordination** - agents wait for signal events, not polling
-- **Concurrent execution** - all agents run in parallel using async/await
-- **Signal strength** - successful ideas amplify, weak ones decay and get pruned
-
-Like ants depositing pheromones, agents deposit signals that others discover and build upon.
-
-## Architecture
-
-### Module Structure
+## Repository layout
 
 ```
-swarm/                          # Main package
-├── core/
-│   ├── config.py              # System configuration
-│   ├── signal_store.py        # Signal storage and retrieval
-│   ├── signal_types.py        # Signal type definitions
-│   ├── task_config.py         # Task-specific configs
-│   ├── round_coordinator.py   # Multi-round orchestration
-│   └── dialogue_coordinator.py # Agent dialogue system
-├── agents/
-│   ├── scout.py               # Initial idea generation
-│   ├── forager.py             # Idea development
-│   ├── critic.py              # Quality evaluation
-│   ├── hater.py               # Adversarial challenge
-│   ├── validator.py           # Fact checking
-│   ├── pruner.py              # Signal cleanup
-│   └── synthesizer.py         # Final synthesis
-├── llm/
-│   └── simple_llm.py          # LLM interface with caching
-├── validation/
-│   └── external_sources.py    # Wikipedia/web verification
-└── retrieval/
-    └── advanced_retriever.py  # 100K+ word knowledge ingestion
+run_swarm.py          # Entry point (there is no main.py / run_task.py here)
+core/                 # Signal store, projection, fitness, topology, config, convergence
+agents/               # Scout, Developer, Critic, Hater, Validator, Synthesizer
+tests/                # pytest suite (~304 tests; run with MOCK_LLM=1)
+tools/                # compare_runs.py, maintenance scripts
+eval/                 # Evaluation datasets and results
+notebooks/            # Colab runners (hybrid local-GPU + Groq backend)
+docs/                 # Design docs, reviews, prompts, research notes, reference runs
+legacy/               # The original pipeline (run_task.py + swarm/) — unmaintained,
+                      #   preserved for reference; see legacy/README.md
 ```
-
-**Entry Point:** `run_task.py` (NOT main.py!)
-
-## Configuration
-
-Edit `swarm/core/config.py`:
-
-```python
-# Agent population
-NUM_SCOUTS = 4
-NUM_FORAGERS = 4
-NUM_CRITICS = 2
-NUM_HATERS = 2
-
-# Runtime behavior
-MAX_ITERATIONS = 50
-NUM_ROUNDS = 3
-
-# Experimental features (optional)
-USE_SIMPLE_SCOUTS = False      # Spatial movement (experimental)
-USE_SPATIAL_STORE = False      # Locality constraints (experimental)
-USE_REAL_VALIDATOR = True      # External verification (recommended)
-USE_ADVANCED_RETRIEVER = True  # Knowledge ingestion (recommended)
-```
-
-## Examples
-
-### Debate Task
-
-```bash
-python run_task.py debate "Remote work increases productivity"
-```
-
-Agents will:
-- Generate claims and counter-claims
-- Find supporting evidence
-- Challenge weak arguments
-- Verify facts against Wikipedia
-- Synthesize balanced perspective
-
-### Creative Task
-
-```bash
-python run_task.py creative "Write a haiku about AI"
-```
-
-Agents will:
-- Generate draft ideas
-- Refine and elaborate
-- Critique for quality
-- Challenge clichés
-- Synthesize best elements
-
-### Analysis Task
-
-```bash
-python run_task.py analysis "What causes innovation?"
-```
-
-Agents will:
-- Propose findings
-- Find supporting research
-- Challenge unsupported claims
-- Verify facts
-- Synthesize insights
-
-## Performance
-
-- **Async execution:** All agents run concurrently
-- **Event-driven:** Pure stigmergic communication (no sleep delays)
-- **Caching:** LLM responses cached to avoid redundant generation
-- **Fact-checking:** Optional Wikipedia/web verification
-- **Knowledge retrieval:** Optional 100K+ word ingestion per round
-
-**Typical runtime:** 2-5 minutes for 3 rounds of 50 iterations
 
 ## Testing
 
 ```bash
-# Quick sanity test (no LLM required)
-python test_pipeline_sanity.py
+# Full suite (~2 min with mock LLM)
+MOCK_LLM=1 SWARM_MIN_TIME_S=0 SWARM_MIN_ITERATIONS=5 pytest tests/ -q
 
-# Should see: "11 passed, 0 failed"
-
-# Unit tests comparing swarm to single-LLM baselines
-python -m unittest tests.test_swarm_vs_llm_benchmarks -v
-
-# Should see: "10 tests passed" (5 test classes)
-```
-
-### Unit Test Coverage
-
-The `tests/test_swarm_vs_llm_benchmarks.py` file tests swarm mechanics **without running actual LLMs**, allowing comparison to published benchmarks:
-
-1. **Adversarial Validation** (comparable to TruthfulQA)
-   - Haters reduce strength of unsupported claims
-   - Multiple objections create adversarial pressure
-
-2. **Iterative Refinement** (comparable to MMLU)
-   - Foragers build on scout signals
-   - Multi-round signal evolution improves quality
-
-3. **Consensus Prevention** (comparable to HumanEval)
-   - Diverse scout signals prevent groupthink
-   - Weighted sampling maintains diversity
-
-4. **Provenance Tracking**
-   - Full chains traceable from root to leaves
-   - Branching provenance supported
-
-5. **Event-Driven Scalability**
-   - Signal events trigger immediately (no polling)
-   - Concurrent agent execution scales linearly
-
-## Troubleshooting
-
-### "ModuleNotFoundError: torch"
-```bash
-pip install torch transformers
-```
-
-### "CUDA out of memory"
-Edit `config.py`:
-```python
-DEVICE = "cpu"  # Force CPU mode
-```
-
-### "No output generated"
-Check `outputs/` directory for partial results. System has 5-level fallback for synthesis failures.
-
-### Slow performance
-Reduce iterations:
-```python
-MAX_ITERATIONS = 20  # Down from 50
-NUM_ROUNDS = 2       # Down from 3
-```
-
-## Advanced: Custom Task Configs
-
-Create custom task types in `swarm/core/task_config.py`:
-
-```python
-CUSTOM_TASK = TaskConfig(
-    task_type="custom",
-    task_prompt="Your prompt here",
-    signal_types={
-        "initial": "OBSERVATION",
-        "support": "ANALYSIS",
-        "critique": "CRITIQUE",
-        "objection": "COUNTER"
-    },
-    scout_prompt_template="Generate observation: {task_prompt}",
-    forager_prompt_template="Analyze: {parent_content}",
-    # ... etc
-)
+# Self-check the signal store and pipeline wiring
+python diagnose.py
 ```
 
 ## Documentation
 
-- **`GET_STARTED_ACCURATE.md`** - Comprehensive getting started guide
-- **`research/CORRECTED_FINDINGS.md`** - Known issues and fixes
-- **`research/PERFORMANCE_ANALYSIS.md`** - Performance bottlenecks and solutions
-- **`research/COMPREHENSIVE_IMPLEMENTATION_ANALYSIS.md`** - Dream vs reality analysis
-- **`research/TECHNICAL_DEBT_AUDIT.md`** - Technical debt tracking
+- **`CLAUDE.md`** — architecture reference (signal store, projection, genome, convergence)
+- **`USAGE.md`** — usage guide
+- **`DEFERRED.md`** — known gaps and deferred work
+- **`docs/`** — design docs, architecture reviews, research notes
 
-## What's Next
+## Constraints
 
-See `research/CORRECTED_FINDINGS.md` for known issues and roadmap.
-
-**The system works! It's fast, event-driven, and produces genuinely novel insights through stigmergic collaboration.**
-
-## Contributing
-
-Contributions welcome! Key areas for improvement:
-
-1. **Performance optimization** - Make embeddings lazy/batched, selective cache clearing
-2. **Test coverage** - Expand unit tests for all agent types
-3. **Documentation** - Add examples and tutorials
-4. **Task types** - Create new task configurations
+- Hardware target is a single 6 GB consumer GPU (4-bit NF4). A Groq/hybrid backend is available for the Colab notebooks.
+- Mock mode proves plumbing, not behavior — never report results from `outputs_mock/`.
 
 ## License
 
 MIT License
-
----
-
-**Built with stigmergic principles:** Agents communicate through the environment, not with each other. Like ants following pheromone trails, they deposit signals and react to what others have left behind.

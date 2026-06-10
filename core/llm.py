@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import os
 import random
+import re as _re_llm
 
 from .config import MODEL_NAME, LLM_CONCURRENCY, USE_MOCK_LLM
 
@@ -218,6 +219,63 @@ def _build_cascade(base_model: str, base_dtype: str,
     return attempts
 
 
+_PARAM_COUNT_RE = _re_llm.compile(r"(\d+(?:\.\d+)?)[bB]\b")
+
+
+def _estimate_weights_gb(model_name: str, dtype: str = "float16",
+                         quantization: str = "") -> float | None:
+    """Rough weight footprint in GB from the parameter count in the model
+    name (e.g. '...-14B-Instruct' → 14e9 params). Returns None when no
+    count is parseable. fp16/bf16 ≈ 2 bytes/param; AWQ/GPTQ 4-bit ≈ 0.6
+    bytes/param including scales/zeros overhead."""
+    last = None
+    for m in _PARAM_COUNT_RE.finditer(model_name):
+        last = m
+    if last is None:
+        return None
+    params_b = float(last.group(1))
+    name_l = model_name.lower()
+    if quantization or "awq" in name_l or "gptq" in name_l:
+        bytes_per = 0.6
+    elif dtype in ("float32", "fp32"):
+        bytes_per = 4.0
+    else:
+        bytes_per = 2.0
+    return params_b * bytes_per
+
+
+def _should_skip_attempt(model_name: str, kwargs: dict,
+                         free_gb: float | None) -> str:
+    """Return a skip reason when the attempt's weights obviously cannot fit
+    the available VRAM (e.g. 14B fp16 ≈ 28 GB on a 22 GB L4 — the doomed
+    load wastes 1-2 min of download/OOM/cleanup per session). Empty string
+    = attempt is plausible. Conservative: unknown sizes never skip."""
+    if free_gb is None:
+        return ""
+    est = _estimate_weights_gb(
+        model_name, kwargs.get("dtype", "float16"),
+        kwargs.get("quantization", ""),
+    )
+    if est is None:
+        return ""
+    budget = free_gb * float(kwargs.get("gpu_memory_utilization", 0.90))
+    if est > budget:
+        return (f"weights ≈{est:.0f} GB exceed VRAM budget "
+                f"{budget:.0f} GB (free {free_gb:.0f} GB)")
+    return ""
+
+
+def _free_vram_gb() -> float | None:
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return None
+        free, _total = torch.cuda.mem_get_info()
+        return free / 1e9
+    except Exception:
+        return None
+
+
 def _try_vllm_cascade(base_model: str, base_dtype: str,
                        base_concurrency: int, tier):
     """Walk the cascade until one model loads. Returns None if all fail."""
@@ -228,7 +286,13 @@ def _try_vllm_cascade(base_model: str, base_dtype: str,
 
     attempts = _build_cascade(base_model, base_dtype, base_concurrency, tier)
     last_exc: Optional[Exception] = None  # noqa: F821
+    free_gb = _free_vram_gb()
     for i, (label, model_name, kwargs) in enumerate(attempts, 1):
+        skip_reason = _should_skip_attempt(model_name, kwargs, free_gb)
+        if skip_reason:
+            print(f"[llm-cascade] [{i}/{len(attempts)}] SKIP {label!r} "
+                  f"model={model_name}: {skip_reason}")
+            continue
         print(f"[llm-cascade] [{i}/{len(attempts)}] attempt {label!r} "
               f"model={model_name}")
         for k, v in kwargs.items():

@@ -148,6 +148,13 @@ _COMPOSE_MIN_CHARS = 200
 _DISSENT_RENDER_CAP = 6
 _DISSENT_OVERFLOW_CAP = 8
 _DISSENT_COMPOSE_MAX_TOKENS = 1200
+# Per-fragment char budget for the dissent composer's input. Six full
+# dissent paragraphs overflowed the AWQ rung's context window, truncating
+# the generation before any citation tag was emitted (0/6 retention).
+_DISSENT_COMPOSE_FRAGMENT_CHARS = 900
+# Max inter-cluster contradiction pairs surfaced in Section 2 (deduped,
+# unordered). A real run rendered 34 directed-duplicate pairs.
+_CONTRADICTION_CAP = 5
 
 # Best-of-N cohesive composition (improvement 5.3). Run the integration call
 # N times with diverse cluster orderings and (for exploration) diverse
@@ -506,16 +513,28 @@ def _contradictions_from_projection(
     """
     id_to_cp = {cp.representative_id: cp
                 for cp in projection.surviving + projection.contested}
-    tension_pairs = [
-        (id_to_cp[e.source], id_to_cp[e.target])
-        for e in getattr(projection, "inter_cluster_edges", [])
-        if e.relation == "tension"
-        and e.source in id_to_cp
-        and e.target in id_to_cp
-    ]
+    # Dedupe unordered pairs — the edge graph emits directed duplicates
+    # ((a,b) and (b,a)), which rendered as 34 near-identical lines in a
+    # real run. Cap the list: past a handful, pairwise tension stops being
+    # information and becomes noise.
+    tension_pairs: list[tuple] = []
+    seen: set[frozenset] = set()
+    for e in getattr(projection, "inter_cluster_edges", []):
+        if (e.relation != "tension"
+                or e.source not in id_to_cp or e.target not in id_to_cp):
+            continue
+        key = frozenset((e.source, e.target))
+        if key in seen or len(key) < 2:
+            continue
+        seen.add(key)
+        tension_pairs.append((id_to_cp[e.source], id_to_cp[e.target]))
+        if len(tension_pairs) >= _CONTRADICTION_CAP:
+            break
     if tension_pairs:
         return tension_pairs
-    return _detect_inter_cluster_contradictions(projection.surviving, store)
+    return _detect_inter_cluster_contradictions(
+        projection.surviving, store,
+    )[:_CONTRADICTION_CAP]
 
 
 class Synthesizer:
@@ -1038,13 +1057,20 @@ class Synthesizer:
                     composed_dissent = ""
                 if composed_dissent:
                     fragments = [composed_dissent]
-            for ca, cb in contradictions:
+            if contradictions:
+                pair_lines = []
+                for ca, cb in contradictions:
+                    shared = sorted(set(ca.dissent_set) & set(cb.dissent_set))[:3]
+                    shared_note = (
+                        f" (shared dissent: {', '.join(shared)})" if shared else ""
+                    )
+                    pair_lines.append(
+                        f"- [{ca.representative_id}] vs "
+                        f"[{cb.representative_id}]{shared_note}"
+                    )
                 fragments.append(
-                    f"[INTER-CLUSTER CONTRADICTION] Clusters "
-                    f"[{ca.representative_id}] and [{cb.representative_id}] "
-                    f"share topic content and share dissent signals "
-                    f"({', '.join(set(ca.dissent_set) & set(cb.dissent_set))[:3]}). "
-                    f"These may be two framings of the same contested claim."
+                    "Cluster pairs in direct tension — likely two framings "
+                    "of the same contested claim:\n" + "\n".join(pair_lines)
                 )
             # Overflow: deterministic one-liners, no LLM calls.
             if overflow_dissent:
@@ -2492,8 +2518,14 @@ class Synthesizer:
         fragments only — never the store. Returns "" on failure or guard
         violation; the caller then falls back to the plain join.
         """
+        # Budget each note: six full dissent paragraphs overflowed the AWQ
+        # rung's 2048-token context, truncating generation before any
+        # citation tag appeared (0/6 retention → fallback). Bounded input
+        # keeps the prompt within even the smallest serving context.
         frag_block = "\n\n".join(
-            f"DISSENT NOTE {i + 1}:\n{f}" for i, f in enumerate(fragments)
+            f"DISSENT NOTE {i + 1}:\n"
+            f"{_truncate(f, _DISSENT_COMPOSE_FRAGMENT_CHARS)}"
+            for i, f in enumerate(fragments)
         )
         prompt = (
             f"TASK: {self.task_prompt}\n\n"

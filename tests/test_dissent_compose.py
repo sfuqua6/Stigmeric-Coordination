@@ -114,6 +114,21 @@ class TestComposeDissent(unittest.TestCase):
         self.assertIn(_NOTE_B, prompt)
         self.assertIn("DISSENT NOTES", prompt)
 
+    def test_long_fragments_budgeted(self):
+        """Six full paragraphs overflowed the AWQ context — each note must
+        be truncated to the per-fragment budget before prompting."""
+        llm = _FakeLLM(response=_COMPOSED_DISSENT_OK)
+        long_note = ("A very long dissent paragraph about transit capacity. "
+                     * 60) + "[INITIAL_00005]"
+        self._compose(llm, fragments=[long_note, _NOTE_B])
+        prompt = llm.prompts[0]
+        budget = synthesizer_mod._DISSENT_COMPOSE_FRAGMENT_CHARS
+        # The long note appears truncated, not verbatim.
+        self.assertNotIn(long_note, prompt)
+        start = prompt.index("DISSENT NOTE 1:")
+        end = prompt.index("DISSENT NOTE 2:")
+        self.assertLessEqual(end - start, budget + 50)
+
 
 # ---------------------------------------------------------------------------
 # Dissent render cap integration test
@@ -213,6 +228,54 @@ class TestDissentRenderCap(unittest.TestCase):
         self.assertIn("Further contested positions, not expanded here:", answer)
         # Overflow lines carry dissent_pressure annotations.
         self.assertIn("dissent_pressure=", answer)
+
+
+# ---------------------------------------------------------------------------
+# Contradiction pair dedupe + cap
+# ---------------------------------------------------------------------------
+
+class TestContradictionDedupe(unittest.TestCase):
+    def _projection_with_tension_edges(self, pairs):
+        cps = {}
+        for a, b in pairs:
+            for cid in (a, b):
+                if cid not in cps:
+                    cps[cid] = SimpleNamespace(
+                        representative_id=cid, dissent_set=[],
+                        dissent_pressure=0.0,
+                    )
+        edges = [SimpleNamespace(relation="tension", source=a, target=b)
+                 for a, b in pairs]
+        return SimpleNamespace(
+            surviving=list(cps.values()), contested=[],
+            inter_cluster_edges=edges,
+        )
+
+    def test_directed_duplicates_collapse(self):
+        proj = self._projection_with_tension_edges([
+            ("INITIAL_00001", "INITIAL_00002"),
+            ("INITIAL_00002", "INITIAL_00001"),   # reverse duplicate
+            ("INITIAL_00001", "INITIAL_00003"),
+        ])
+        pairs = synthesizer_mod._contradictions_from_projection(
+            proj, _make_store())
+        self.assertEqual(len(pairs), 2)
+
+    def test_capped(self):
+        edge_pairs = [(f"INITIAL_{i:05d}", f"INITIAL_{i + 100:05d}")
+                      for i in range(20)]
+        proj = self._projection_with_tension_edges(edge_pairs)
+        pairs = synthesizer_mod._contradictions_from_projection(
+            proj, _make_store())
+        self.assertEqual(len(pairs), synthesizer_mod._CONTRADICTION_CAP)
+
+    def test_self_edge_ignored(self):
+        proj = self._projection_with_tension_edges([
+            ("INITIAL_00001", "INITIAL_00001"),
+        ])
+        pairs = synthesizer_mod._contradictions_from_projection(
+            proj, _make_store())
+        self.assertEqual(len(pairs), 0)
 
 
 # ---------------------------------------------------------------------------

@@ -198,7 +198,12 @@ def _build_cascade(base_model: str, base_dtype: str,
             "dtype": "float16",  # AWQ models always pair with fp16 inference
             "quantization": "awq",
             "max_num_seqs": 8,
-            "max_model_len": 2048,
+            # 2048 truncated synthesizer composition prompts (6 dissent
+            # notes + instructions overflow it; generation died before any
+            # citation tag). 14B-AWQ weights ≈ 8.4 GB + paged KV at
+            # 4096 × 8 seqs ≈ 6.4 GB worst-case fits the 0.88 budget on
+            # L4/A100 but not on a 16 GB T4 — keep 2048 there.
+            "max_model_len": 2048 if tier == "t4" else 4096,
             "gpu_memory_utilization": 0.88,
             "enforce_eager": True,
         }

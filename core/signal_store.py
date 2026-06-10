@@ -175,19 +175,75 @@ _EMBEDDER_CACHE = _EMBEDDER_SENTINEL
 _EMBEDDER_STATUS = "unset"
 
 
+class _TransformersMiniLMEmbedder:
+    """Fallback embedder: all-MiniLM-L6-v2 via transformers AutoModel + mean
+    pooling, bypassing the sentence_transformers package entirely.
+
+    Why: on some Colab images sentence_transformers' import chain pulls in
+    torchcodec, whose native lib fails against the installed FFmpeg
+    (RuntimeError: Could not load libtorchcodec) — killing the embedder and
+    degrading every run to singleton clusters even though the text model
+    itself needs none of the audio stack. transformers + torch alone load
+    the same weights and produce the same (mean-pooled) sentence embedding.
+    """
+
+    _MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+    def __init__(self):
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+        self._torch = torch
+        self._tok = AutoTokenizer.from_pretrained(self._MODEL_NAME)
+        self._model = AutoModel.from_pretrained(self._MODEL_NAME)
+        self._model.eval()
+
+    def encode(self, text: str):
+        torch = self._torch
+        with torch.no_grad():
+            batch = self._tok(text, truncation=True, max_length=256,
+                              return_tensors="pt")
+            hidden = self._model(**batch).last_hidden_state          # (1,T,H)
+            mask = batch["attention_mask"].unsqueeze(-1).float()     # (1,T,1)
+            emb = (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+        return emb[0].cpu().numpy()
+
+
+def _load_sentence_transformer():
+    from sentence_transformers import SentenceTransformer
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
+
+def _load_transformers_fallback():
+    return _TransformersMiniLMEmbedder()
+
+
 def _try_load_embedder():
     global _EMBEDDER_CACHE, _EMBEDDER_STATUS
     if _EMBEDDER_CACHE is not _EMBEDDER_SENTINEL:
         return _EMBEDDER_CACHE
     try:
-        from sentence_transformers import SentenceTransformer
-        _EMBEDDER_CACHE = SentenceTransformer("all-MiniLM-L6-v2")
+        _EMBEDDER_CACHE = _load_sentence_transformer()
         _EMBEDDER_STATUS = "all-MiniLM-L6-v2"
         print("[store] embedder loaded: all-MiniLM-L6-v2 "
               "(semantic clustering + dedup ON)")
+        return _EMBEDDER_CACHE
     except Exception as exc:
+        first_err = f"{type(exc).__name__}: {str(exc)[:120]}"
+    # sentence_transformers failed (e.g. torchcodec/FFmpeg RuntimeError on
+    # Colab) — try the same model via the transformers fallback before
+    # giving up.
+    try:
+        _EMBEDDER_CACHE = _load_transformers_fallback()
+        _EMBEDDER_STATUS = "all-MiniLM-L6-v2 (transformers fallback)"
+        print(f"[store] sentence-transformers failed ({first_err}); "
+              f"embedder loaded via transformers AutoModel fallback "
+              f"(semantic clustering + dedup ON)")
+    except Exception as exc2:
         _EMBEDDER_CACHE = None
-        _EMBEDDER_STATUS = f"UNAVAILABLE: {type(exc).__name__}: {str(exc)[:120]}"
+        _EMBEDDER_STATUS = (
+            f"UNAVAILABLE: {first_err}; "
+            f"fallback: {type(exc2).__name__}: {str(exc2)[:80]}"
+        )
         print(f"[store] *** embedder {_EMBEDDER_STATUS} *** — semantic clustering "
               f"AND dedup are OFF; every claim becomes its own singleton cluster. "
               f"Install sentence-transformers and ensure all-MiniLM-L6-v2 can "

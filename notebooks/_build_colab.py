@@ -102,7 +102,15 @@ subprocess.run([sys.executable,'-m','pip','install','-q',
     # huggingface_hub<1.0: hub 1.x breaks sentence-transformers' model load
     # (silently -> no embedder -> singleton clusters; see groqrun1.txt).
     'wikipedia','ddgs','requests','beautifulsoup4','tqdm','huggingface_hub>=0.26.0,<1.0'], check=True)
-print('core + openai (Groq) deps installed.')
+# torchcodec's native lib fails against the Colab image's FFmpeg and poisons
+# the sentence-transformers import chain (RuntimeError: Could not load
+# libtorchcodec -> embedder UNAVAILABLE -> 63/63 singleton clusters; see
+# multisamplegroq.txt). The swarm decodes no audio — remove it so optional
+# imports degrade cleanly. The pipeline also has a transformers AutoModel
+# embedder fallback if anything similar recurs.
+subprocess.run([sys.executable,'-m','pip','uninstall','-y','-q','torchcodec'],
+               check=False)
+print('core + openai (Groq) deps installed; torchcodec removed.')
 
 has_gpu = shutil.which('nvidia-smi') is not None
 if not has_gpu:

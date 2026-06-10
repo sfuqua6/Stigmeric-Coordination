@@ -141,6 +141,14 @@ _GLOBAL_COMPOSE_TEMPERATURE = 0.3
 _COMPOSE_MIN_TAG_RETENTION = 0.5
 _COMPOSE_MIN_CHARS = 200
 
+# Section 2 budget. The diversity fixes made dissent plentiful (a real run
+# had 20 dissent-bearing clusters → ~17K chars of same-template paragraphs).
+# Render the top _DISSENT_RENDER_CAP by dissent_pressure, compose them into
+# one passage, and list up to _DISSENT_OVERFLOW_CAP of the rest as one-liners.
+_DISSENT_RENDER_CAP = 6
+_DISSENT_OVERFLOW_CAP = 8
+_DISSENT_COMPOSE_MAX_TOKENS = 1200
+
 # Best-of-N cohesive composition (improvement 5.3). Run the integration call
 # N times with diverse cluster orderings and (for exploration) diverse
 # temperatures; score each candidate by cluster coverage + faithfulness
@@ -979,6 +987,15 @@ class Synthesizer:
         dissent_candidates += [
             cp for cp in projection.surviving if cp.dissent_set
         ]
+        # Cap + compose (the multi-claim diversity fix made dissent-bearing
+        # clusters plentiful: a real run produced 20 dissent renders / ~17K
+        # chars of templated paragraphs that dwarfed Section 1 and broke the
+        # whole-answer revision pass). Render only the top
+        # _DISSENT_RENDER_CAP clusters by dissent_pressure; compose those
+        # into one coherent passage; list the remainder as one-liners.
+        dissent_candidates.sort(key=lambda c: c.dissent_pressure, reverse=True)
+        rendered_dissent = dissent_candidates[:_DISSENT_RENDER_CAP]
+        overflow_dissent = dissent_candidates[_DISSENT_RENDER_CAP:]
         if dissent_candidates or contradictions:
             fragments = []
             # Parallel dissent renders — same independence guarantee as Section 1.
@@ -988,17 +1005,17 @@ class Synthesizer:
                 async with _dissent_sem:
                     return await self._render_cluster_dissent(cp, store)
 
-            dissent_tasks = [_guarded_dissent(cp) for cp in dissent_candidates]
+            dissent_tasks = [_guarded_dissent(cp) for cp in rendered_dissent]
             dissent_results = await asyncio.gather(*dissent_tasks, return_exceptions=True)
             for frag in dissent_results:
                 if isinstance(frag, str) and frag:
                     if frag[-1] not in ".!?\")'":
                         frag += "."
                     fragments.append(frag)
-            if not fragments and dissent_candidates:
+            if not fragments and rendered_dissent:
                 # All dissent renders empty (API exhaustion) — extract the
                 # strongest dissent signal per cluster deterministically.
-                for cp in dissent_candidates[:3]:
+                for cp in rendered_dissent[:3]:
                     strongest = _strongest_signal_content(cp.dissent_set, store)
                     if strongest:
                         fragments.append(
@@ -1006,6 +1023,21 @@ class Synthesizer:
                             f"(pressure={cp.dissent_pressure:.2f}): "
                             f"{_truncate(strongest, _DISSENT_CHARS)}"
                         )
+            # Compose the rendered dissent paragraphs into one passage —
+            # they all follow the same renderer template, so a join reads
+            # as N boilerplate repetitions. Same guards/fallback as
+            # Section 1's composition.
+            if len(fragments) > 1 and _SYNTHESIZER_USE_GLOBAL_COMPOSITION:
+                try:
+                    composed_dissent = await self._compose_dissent(
+                        fragments, rendered_dissent, store,
+                    )
+                except Exception as exc:
+                    print(f"[synthesizer] _compose_dissent crashed: "
+                          f"{type(exc).__name__}: {exc}; plain join")
+                    composed_dissent = ""
+                if composed_dissent:
+                    fragments = [composed_dissent]
             for ca, cb in contradictions:
                 fragments.append(
                     f"[INTER-CLUSTER CONTRADICTION] Clusters "
@@ -1013,6 +1045,26 @@ class Synthesizer:
                     f"share topic content and share dissent signals "
                     f"({', '.join(set(ca.dissent_set) & set(cb.dissent_set))[:3]}). "
                     f"These may be two framings of the same contested claim."
+                )
+            # Overflow: deterministic one-liners, no LLM calls.
+            if overflow_dissent:
+                lines = []
+                for cp in overflow_dissent[:_DISSENT_OVERFLOW_CAP]:
+                    rep = store.get(cp.representative_id)
+                    preview = _truncate(rep.content, 110) if rep else ""
+                    lines.append(
+                        f"- [{cp.representative_id}] "
+                        f"(dissent_pressure={cp.dissent_pressure:.2f}) {preview}"
+                    )
+                n_unlisted = len(overflow_dissent) - _DISSENT_OVERFLOW_CAP
+                if n_unlisted > 0:
+                    lines.append(
+                        f"- … and {n_unlisted} more dissent-bearing cluster(s) "
+                        f"(see Section 4 citations)"
+                    )
+                fragments.append(
+                    "Further contested positions, not expanded here:\n"
+                    + "\n".join(lines)
                 )
             if fragments:
                 sections.append(
@@ -2419,6 +2471,77 @@ class Synthesizer:
                 return ""
 
         print(f"[synthesizer] global composition: {len(briefs)} briefs -> "
+              f"{len(result)} chars")
+        return result
+
+    async def _compose_dissent(
+        self,
+        fragments: list[str],
+        clusters: list,
+        store: SignalStore,
+    ) -> str:
+        """Compose per-cluster dissent paragraphs into one coherent passage.
+
+        The dissent renderer stamps every cluster through the same template
+        ("The claim suggests… the strongest counter-position… to settle this
+        debate…"), so joining N of them reads as N boilerplate repetitions.
+        This single bounded call groups related objections, names the genuine
+        open questions once each, and keeps every citation tag.
+
+        Same compression invariant as _compose_answer: input is the rendered
+        fragments only — never the store. Returns "" on failure or guard
+        violation; the caller then falls back to the plain join.
+        """
+        frag_block = "\n\n".join(
+            f"DISSENT NOTE {i + 1}:\n{f}" for i, f in enumerate(fragments)
+        )
+        prompt = (
+            f"TASK: {self.task_prompt}\n\n"
+            f"Below are {len(fragments)} dissent notes from a multi-agent "
+            f"analysis. Each describes one contested claim, its strongest "
+            f"counter-position, and what evidence would settle it. They were "
+            f"written independently from the same template, so they repeat "
+            f"framing and overlap in substance.\n\n"
+            f"Rewrite them as ONE coherent OPEN QUESTIONS section:\n"
+            f"  1. Group notes that contest the same underlying issue; state "
+            f"each genuine open question ONCE.\n"
+            f"  2. Lead with the most consequential disagreements.\n"
+            f"  3. Keep every citation tag [LIKE_THIS] attached to its claim. "
+            f"Do not invent tags.\n"
+            f"  4. For each open question, keep what evidence would settle "
+            f"it — merged across notes where they ask for the same evidence.\n"
+            f"  5. Use ONLY content present in the notes. Plain prose "
+            f"paragraphs; no headers, no bullets, no template phrases like "
+            f"'The claim suggests'.\n\n"
+            f"DISSENT NOTES:\n\n{frag_block}\n\n"
+            f"OPEN QUESTIONS:"
+        )
+        try:
+            raw = await self.llm.generate(
+                prompt, role=self.ROLE,
+                max_tokens=_DISSENT_COMPOSE_MAX_TOKENS,
+                temperature=_GLOBAL_COMPOSE_TEMPERATURE,
+            )
+        except Exception as exc:
+            print(f"[synthesizer] dissent composition call failed: "
+                  f"{type(exc).__name__}: {exc}")
+            return ""
+
+        result = strip_reasoning((raw or "").strip())
+        if len(result) < _COMPOSE_MIN_CHARS:
+            print("[synthesizer] dissent composition too short; falling back")
+            return ""
+        tag_re = re.compile(r"\[[A-Z][A-Z_]*_\d+\]")
+        input_tags = set()
+        for f in fragments:
+            input_tags.update(tag_re.findall(f))
+        if input_tags:
+            kept = sum(1 for t in input_tags if t in result)
+            if kept / len(input_tags) < _COMPOSE_MIN_TAG_RETENTION:
+                print(f"[synthesizer] dissent composition dropped too many "
+                      f"citation tags ({kept}/{len(input_tags)}); falling back")
+                return ""
+        print(f"[synthesizer] dissent composition: {len(fragments)} notes -> "
               f"{len(result)} chars")
         return result
 

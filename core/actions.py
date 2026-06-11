@@ -312,6 +312,47 @@ def split_scout_claims(content: str) -> list[str]:
     return cleaned if cleaned else [text]
 
 
+# Paraphrase-support gate. A SUPPORT that merely restates its parent inflates
+# support_diversity without adding information — the root cause of "claims,
+# not evidence" fields. Reject when string similarity to the parent is high;
+# annotate whether the support carries a new concrete particular (number or
+# proper-noun-ish token absent from the parent) for telemetry and strength.
+_SUPPORT_PARAPHRASE_RATIO = 0.72
+_PARTICULAR_TOKEN_RE = _re.compile(r"\b(?:\d[\d,.%]*|[A-Z][a-z]{2,})\b")
+
+
+def _new_particulars(content: str, parent_content: str) -> list[str]:
+    """Concrete particulars (numbers, capitalized tokens) in `content` that
+    are absent from the parent. Sentence-leading capitals are noisy but
+    acceptable — absence from the parent is the real filter."""
+    parent_l = parent_content.lower()
+    out = []
+    for tok in _PARTICULAR_TOKEN_RE.findall(content):
+        if tok.lower() not in parent_l:
+            out.append(tok)
+    return out
+
+
+def support_adds_information(content: str, parent_content: str) -> bool:
+    """True when a SUPPORT/CHAIN deposit adds information over its parent.
+
+    Rejects paraphrases: high string similarity to the parent AND no new
+    concrete particular. A support with genuinely new tokens (a number, a
+    named place/program/study) passes even at moderate similarity; a pure
+    reword fails. Used by the worker pool to reject DEVELOP/CHAIN deposits
+    that would inflate support_diversity without adding evidence.
+    """
+    from difflib import SequenceMatcher
+    if not content or not parent_content:
+        return True
+    ratio = SequenceMatcher(
+        None, content.lower(), parent_content.lower(),
+    ).ratio()
+    if ratio < _SUPPORT_PARAPHRASE_RATIO:
+        return True
+    return bool(_new_particulars(content, parent_content))
+
+
 def select_novel_claim(candidates: list[str], store: SignalStore) -> str:
     """Pick the candidate claim LEAST similar to the recent INITIAL field.
 
@@ -426,14 +467,22 @@ def develop_prompt(task_prompt: str, target: Signal,
         )
         develop_instruction = (
             f"Target the weakest atom above. One or two sentences of "
-            f"concrete evidence or reasoning that directly supports it."
+            f"concrete evidence that directly supports it. Your sentence "
+            f"MUST contain at least one concrete particular — a number, a "
+            f"named city/program/study, or a date — that is NOT already in "
+            f"the signal. Restating the signal in different words is "
+            f"worthless and will be rejected."
         )
     else:
         atom_block = ""
         develop_instruction = (
             f"Produce ONE concise development of this signal: supporting "
             f"evidence, an extension, or a refinement that anticipates the "
-            f"challenge above (if any). One or two sentences."
+            f"challenge above (if any). One or two sentences. Your "
+            f"development MUST add information the signal does not already "
+            f"contain — ideally a concrete particular (a number, a named "
+            f"city/program/study, a date, a mechanism). Restating the "
+            f"signal in different words is worthless and will be rejected."
         )
     return (
         f"TASK: {task_prompt}\n\n"
@@ -473,7 +522,10 @@ def chain_prompt(task_prompt: str, target_support: Signal) -> str:
         f"specifically — not the original INITIAL.\n\n"
         f"---SUPPORT [{target_support.id}]---\n{target_support.content}\n"
         f"---END SUPPORT---\n\n"
-        f"One or two sentences. Do not restate the original.\n\n"
+        f"One or two sentences. Do not restate the original — your step "
+        f"must add information it does not contain, ideally a concrete "
+        f"particular (a number, a named city/program/study, a date, a "
+        f"mechanism). Paraphrase will be rejected.\n\n"
         f"{_type_parent_instruction()}\n"
         f"CHAINED DEVELOPMENT:"
     )

@@ -624,7 +624,11 @@ PEER_PRUNE_FACTOR      = _float_env("SWARM_PEER_PRUNE_FACTOR",      PEER_PRUNE_F
 # ---------------------------------------------------------------------------
 # Fix P — Planner (position-space SynthesisPlan)
 # ---------------------------------------------------------------------------
-RENDER_K             = 3    # max clusters rendered in Section 1 (position synthesis)
+# Max clusters rendered in Section 1. Raised 3 -> 5: with global composition
+# merging briefs into one argument, k=3 left most of the earned field unused
+# (groqgroq run: 16 surviving, 3 rendered — emergency response, EV lifecycle,
+# and sequencing clusters never reached the page). Cost: +2 render calls.
+RENDER_K             = 5
 DISSENT_K            = 3    # max clusters rendered in Section 2 (dissent)
 PLANNER_MMR_LAMBDA   = 0.6  # λ for MMR cluster diversity selection in build_plan()
 VERIFICATION_WEIGHT  = 0.5  # weight of verification_score in composite cluster score

@@ -156,6 +156,12 @@ _DISSENT_COMPOSE_FRAGMENT_CHARS = 900
 # unordered). A real run rendered 34 directed-duplicate pairs.
 _CONTRADICTION_CAP = 5
 
+# Max clusters shown to the LLM planner. The digest is ~300-400 chars per
+# cluster; uncapped it grows O(field) and overflowed a 4096-token serving
+# context at 62 clusters. The planner selects ~RENDER_K from the head of
+# the priority ranking — the tail adds tokens, not information.
+_PLANNER_DIGEST_MAX_CLUSTERS = 16
+
 # Best-of-N cohesive composition (improvement 5.3). Run the integration call
 # N times with diverse cluster orderings and (for exploration) diverse
 # temperatures; score each candidate by cluster coverage + faithfulness
@@ -1453,6 +1459,18 @@ class Synthesizer:
         if not candidates:
             return {"render_full": [], "section3_only": [], "merge_groups": [], "notes": ""}
 
+        # Bounded-context invariant: the digest must stay O(M), not O(field).
+        # A 62-cluster run produced a 4097-token digest that crashed the
+        # 4096-token serving context (plan call failed; fallback planner
+        # used). The planner picks ~5 from the head of the ranking — it does
+        # not need the tail to do that.
+        if len(candidates) > _PLANNER_DIGEST_MAX_CLUSTERS:
+            ranked_cands = _rank_clusters(candidates)
+            candidates = ranked_cands[:_PLANNER_DIGEST_MAX_CLUSTERS]
+            print(f"[synthesizer] planner digest capped to "
+                  f"{_PLANNER_DIGEST_MAX_CLUSTERS} of {len(ranked_cands)} "
+                  f"clusters (bounded-context)")
+
         # Build the digest. ID + 200-char representative + structural metrics.
         # 200 chars is enough for content-based merge detection (two clusters
         # rephrasing the same claim in different surface language look similar
@@ -2458,7 +2476,13 @@ class Synthesizer:
             f"  6. Where a brief acknowledges a counter-position, keep that "
             f"acknowledgement in the argument.\n"
             f"  7. Plain prose paragraphs. No markdown headers, no bullet "
-            f"lists, no mention of clusters, briefs, agents, or process.\n\n"
+            f"lists, no mention of clusters, briefs, agents, or process.\n"
+            f"  8. End by stating the CONDITIONS under which the thesis "
+            f"holds and under which it fails, derived from the "
+            f"counter-positions in the briefs (e.g. 'justified where X is "
+            f"already in place; counterproductive where Y'). Do NOT end "
+            f"with generic advice ('policymakers must consider', 'careful "
+            f"planning is needed') — name the specific conditions.\n\n"
             f"CLUSTER DIGEST (structural context — do not quote):\n"
             + "\n".join(digest_lines)
             + f"\n\nEVIDENCE BRIEFS:\n\n{briefs_block}\n\n"
@@ -2939,13 +2963,20 @@ class Synthesizer:
             if (cp.unverified and not is_non_factual) else ""
         )
 
-        # Gather support excerpts (up to 3)
+        # Gather support excerpts (up to 3), with retrieval source tags when
+        # the deposit carried them — lets the brief (and the composer
+        # downstream) ground sentences in named sources.
         support_lines: list[str] = []
         for sid in cp.support_set[:3]:
             s = store.get(sid)
             if s:
+                src_note = ""
+                src_tags = (s.metadata or {}).get("source_tags") or []
+                if src_tags:
+                    src_note = f" (source: {src_tags[0]})"
                 support_lines.append(
                     f"  - [{sid}] {_truncate(s.content, _SUPPORT_CHARS)}"
+                    f"{src_note}"
                 )
 
         # Validator grounding: read VERIFICATION signal contents deposited

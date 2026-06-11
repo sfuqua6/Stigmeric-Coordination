@@ -813,6 +813,17 @@ class Worker:
             if not content:
                 return None
 
+        # Paraphrase-support gate: DEVELOP/CHAIN deposits must add
+        # information over their parent (new particular or genuinely new
+        # content). Restatements inflate support_diversity without adding
+        # evidence — the "claims, not facts" failure mode.
+        if action in (DEVELOP, CHAIN) and target is not None:
+            from core.actions import support_adds_information
+            if not support_adds_information(content, target.content):
+                print(f"[worker {self.agent_id}] REJECT {action}: "
+                      f"paraphrase of parent {target.id} (no new information)")
+                return None
+
         # Dynamic TYPE/PARENT overrides (Phase 3A/3B compatibility)
         from core.actions import _parse_type, _parse_parent
         dyn_type = _parse_type(raw)
@@ -867,6 +878,17 @@ class Worker:
             )
         if query:
             meta["query"] = query
+        # Carry retrieval source tags into deposit metadata so the
+        # synthesizer's briefs can ground sentences in named sources
+        # instead of laundering everything into "evidence suggests".
+        if retrieved_chunks:
+            tags = [
+                (getattr(c, "source_tag", "") or "")[:120]
+                for c in retrieved_chunks[:3]
+            ]
+            tags = [t for t in tags if t]
+            if tags:
+                meta["source_tags"] = tags
         if action == SCOUT:
             # Preserve scout-style metadata for projection's partition_origin parsing.
             meta["scout_agent_id"] = self.agent_id

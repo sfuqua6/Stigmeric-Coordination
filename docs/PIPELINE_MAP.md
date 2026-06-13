@@ -54,6 +54,11 @@ The swarm explores wide; exactly one bounded call writes.
 | 18 | Faithfulness audit (4-gram per citation) | `_build_faithfulness_audit` | `_AUDIT_WARNING_THRESHOLD` (20) | `faithfulness audit: N flag(s)`; `renderer_audit.json` | ✅; audits prose-vs-signals, NOT signals-vs-reality |
 | 19 | Knowledge base (cross-run memory) | `core/knowledge_base.py` | **off by default — `--use-kb`**; `--reset-kb` | `[kb] loaded N priors`; `[kb] saved … (dedup: N merged, contradictions: N)`; `summary.json: kb_diff` | ✅ consolidating (new 25→11, matched 2→10 over 3 runs) |
 | 20 | Abstention gates (structural + genome) | `_render` top | `_ABSTAIN_*` | `ABSTAINING:` / `GENOME ABSTAIN` | ✅ |
+| 21 | Search backend chain (Tavily→[SE]→DDG→follow-up→**Wikipedia**→Cohere) | `core/search_tool.py` `search()` | `TAVILY_API_KEY` (unset = DDG primary) | `[search] tavily ok` / `ddg ok` / `wikipedia fallback` / `*** ALL BACKENDS FAILED ***` | Wikipedia fallback 🆕 — DDG is no longer a single point of failure |
+| 22 | Stack Exchange backend (coding tasks; free, no key, ~300 req/day) | `_stackexchange_search`; merged before diversify when `task_type="coding"` | — | `[search] stackexchange ok: N results` | 🆕 untested in real run |
+| 23 | Result quality: source cap → relevance gate → BM25+dense RRF → **fact-density + coding-domain priors** → MMR → page enrichment (DDG top-K) | `_diversify`, `_quality_rerank`, `_enrich_with_pages` | `SWARM_SEARCH_FACT_DENSITY_WEIGHT` (0.15), `SWARM_SEARCH_CODING_DOMAIN_BOOST` (0.25), `SWARM_SEARCH_FETCH_*`, `SWARM_SEARCH_RELEVANCE_MIN` | `[search] enriched N/K chunks`; `relevance gate: kept N/M` | priors 🆕 — feed the particulars gate fact-dense evidence |
+| 24 | Query planning (task-aware stances; fragments mined from high-strength INITIALs — stigmergic; step-back + HyDE; dedup fingerprints; per-pool search budget) | `core/query_planner.py`; budget in `worker_pool.py` | stance tables `_STANCE_BY_TASK` (coding rows exist) | served-query dedup is silent; HyDE/step-back log via worker | ✅ |
+| 25 | SEARCH signal traces (query + top URLs + **content excerpt**) | `summarize_for_signal` | — | deposits contain `TOP: …` line | excerpt 🆕 — traces now carry facts, not just URLs |
 
 ## Log grep cheat-sheet (paste into PowerShell/Select-String or grep)
 
@@ -62,6 +67,7 @@ scout multiclaim|REJECT (DEVELOP|CHAIN)|kb\] |embedder|CLUSTER\] JOIN|SKIP 'conf
 PLAN\] render|digest capped|char budget reached|plan call failed
 global composition|dissent composition|extractive fallback|revision round
 faithfulness audit|ABSTAIN|quality_met|degraded|kb_diff|centroid_cosine|self_bleu
+search\] |stackexchange|wikipedia fallback|enriched|relevance gate|ALL BACKENDS FAILED
 ```
 
 ## Health check, per run (summary.json)

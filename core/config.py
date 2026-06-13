@@ -385,6 +385,14 @@ SEARCH_FETCH_MIN_CHARS = int(os.environ.get("SWARM_SEARCH_FETCH_MIN_CHARS", "400
 #     topic noise the reranker only reordered). 0 disables; always keeps >=2.
 SEARCH_RELEVANCE_MIN   = float(os.environ.get("SWARM_SEARCH_RELEVANCE_MIN", "0.15"))
 
+# Fact-density rank boost: prefer chunks carrying numbers/dates/units —
+# the downstream pipeline (particulars gate, verification calibration)
+# is fed by fact-dense evidence; topicality-only ranking starves it.
+SEARCH_FACT_DENSITY_WEIGHT = float(os.environ.get("SWARM_SEARCH_FACT_DENSITY_WEIGHT", "0.15"))
+# Coding-task domain prior: boost results from canonical dev sources
+# (Stack Overflow, GitHub, official docs) over blogspam.
+SEARCH_CODING_DOMAIN_BOOST = float(os.environ.get("SWARM_SEARCH_CODING_DOMAIN_BOOST", "0.25"))
+
 # ---------------------------------------------------------------------------
 # Fix C' — ClusterRegistry (deposit-time clustering)
 # ---------------------------------------------------------------------------

@@ -285,12 +285,69 @@ def apply_mmr(
         return chunks
 
 
+# Fact-density scoring: digit tokens, percentages, currency, year-like
+# numbers per 100 words. The downstream pipeline (particulars gate in
+# DEVELOP/CHAIN, verification calibration) runs on fact-dense evidence;
+# pure topicality ranking starves it.
+_FACT_TOKEN_RE = re.compile(r"\b\d[\d,.]*%?\b|\$\d|€\d|£\d")
+
+
+def _fact_density(text: str) -> float:
+    """Fact tokens per 100 words, clamped to [0, 1]."""
+    words = text.split()
+    if not words:
+        return 0.0
+    n_facts = len(_FACT_TOKEN_RE.findall(text))
+    return min(1.0, (n_facts * 100.0 / len(words)) / 10.0)
+
+
+# Canonical developer sources for coding-task domain priors.
+_CODING_DOMAINS = (
+    "stackoverflow.com", "stackexchange.com", "github.com",
+    "docs.python.org", "readthedocs.io", "developer.mozilla.org",
+    "pypi.org", "docs.rs", "go.dev", "learn.microsoft.com",
+)
+
+
+def _domain_boost(chunk: CorpusChunk, task_type: Optional[str]) -> float:
+    if task_type != "coding":
+        return 0.0
+    url = _url_of(chunk).lower()
+    return 1.0 if any(d in url for d in _CODING_DOMAINS) else 0.0
+
+
+def _quality_rerank(chunks: list[CorpusChunk],
+                    task_type: Optional[str]) -> list[CorpusChunk]:
+    """Stable re-sort by additive quality priors (fact density + coding
+    domain). Applied after RRF (topical order preserved on ties via rank
+    position) and before MMR."""
+    from . import config as _cfg
+    w_fact = getattr(_cfg, "SEARCH_FACT_DENSITY_WEIGHT", 0.0)
+    w_dom = getattr(_cfg, "SEARCH_CODING_DOMAIN_BOOST", 0.0)
+    if w_fact <= 0 and w_dom <= 0:
+        return chunks
+    # Fixed per-rank step: each incoming rank position costs 0.05, so the
+    # default boosts can lift a chunk a bounded number of positions
+    # (fact 0.15 → up to 3; coding domain 0.25 → up to 5) regardless of
+    # list length. A proportional base would swamp boosts at small n.
+    rank_step = 0.05
+    scored = []
+    for rank, c in enumerate(chunks):
+        score = (-rank * rank_step
+                 + w_fact * _fact_density(c.text)
+                 + w_dom * _domain_boost(c, task_type))
+        scored.append((score, rank, c))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [c for _, _, c in scored]
+
+
 def _diversify(
     chunks: list[CorpusChunk],
     query: str,
     max_results: int,
+    task_type: Optional[str] = None,
 ) -> list[CorpusChunk]:
-    """Apply source cap + optional RRF + MMR reranking (Fix S).
+    """Apply source cap + optional RRF + quality priors + MMR reranking.
 
     Called after backend search returns raw results.
     """
@@ -317,6 +374,7 @@ def _diversify(
         else:
             chunks = bm25_ranked
 
+    chunks = _quality_rerank(chunks, task_type)
     chunks = apply_mmr(chunks[:max_results * 2], query, lam=MMR_LAMBDA)
     return chunks[:max_results]
 
@@ -566,6 +624,92 @@ def _cohere_search(query: str, max_results: int) -> list[CorpusChunk]:
 _PRIMARY_LOGGED = False
 
 
+def _stackexchange_search(query: str, max_results: int) -> list[CorpusChunk]:
+    """Stack Exchange API search (free, anonymous, no key; ~300 req/day/IP).
+
+    Coding-task backend: question titles + answer-bearing bodies from
+    Stack Overflow are far denser evidence than blogspam for
+    implementation/pitfall queries. Fail-soft: returns [] on any error.
+    """
+    try:
+        import requests
+    except ImportError:
+        return []
+    try:
+        resp = requests.get(
+            "https://api.stackexchange.com/2.3/search/advanced",
+            params={
+                "order": "desc", "sort": "relevance", "q": query[:200],
+                "site": "stackoverflow", "pagesize": min(max_results, 5),
+                "filter": "withbody", "answers": 1,
+            },
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SwarmBot/1.0)"},
+        )
+        if resp.status_code != 200:
+            return []
+        items = resp.json().get("items", [])
+    except Exception as exc:
+        print(f"[search] stackexchange failed: {type(exc).__name__}: {exc}")
+        return []
+    out: list[CorpusChunk] = []
+    for i, it in enumerate(items):
+        title = (it.get("title") or "").strip()
+        body_html = it.get("body") or ""
+        body = re.sub(r"<[^>]+>", " ", body_html)
+        body = re.sub(r"\s+", " ", body).strip()[:1500]
+        link = it.get("link") or ""
+        if not (title and body):
+            continue
+        cid = f"se_{i}_{hashlib.sha1((link or title).encode()).hexdigest()[:8]}"
+        out.append(CorpusChunk(
+            chunk_id=cid,
+            text=f"{title}. {body}",
+            source_tag=f"{title[:120]} | {link}",
+        ))
+    if out:
+        print(f"[search] stackexchange ok: {len(out)} results for {query!r}")
+    return out
+
+
+def _wikipedia_search(query: str, max_results: int) -> list[CorpusChunk]:
+    """Wikipedia summary search — the free, key-free fallback backend.
+
+    In practice Tavily/Cohere are unconfigured, making DDG the only live
+    backend; when DDG rate-limits, the run silently starves. Wikipedia's
+    API is reliable and fact-dense (dates, figures, named entities).
+    Fail-soft: returns [] on any error.
+    """
+    try:
+        import wikipedia
+    except ImportError:
+        return []
+    out: list[CorpusChunk] = []
+    try:
+        titles = wikipedia.search(query, results=min(max_results, 4))
+        for i, title in enumerate(titles):
+            try:
+                summary = wikipedia.summary(title, sentences=5,
+                                            auto_suggest=False)
+            except Exception:
+                continue
+            if not summary or len(summary) < 80:
+                continue
+            cid = f"wiki_{i}_{hashlib.sha1(title.encode()).hexdigest()[:8]}"
+            out.append(CorpusChunk(
+                chunk_id=cid,
+                text=summary[:1500],
+                source_tag=f"{title} | https://en.wikipedia.org/wiki/"
+                           f"{title.replace(' ', '_')}",
+            ))
+    except Exception as exc:
+        print(f"[search] wikipedia failed: {type(exc).__name__}: {exc}")
+        return out
+    if out:
+        print(f"[search] wikipedia ok: {len(out)} results for {query!r}")
+    return out
+
+
 def _ddg_available() -> bool:
     """Return True if either the ddgs or duckduckgo_search package is present."""
     try:
@@ -638,44 +782,60 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
         return cached[:max_results]
 
     started = time.time()
+
+    # Coding tasks: Stack Exchange runs ALONGSIDE the web backend and merges
+    # — SO answers are the densest implementation/pitfall evidence available
+    # for free, and the coding domain prior in _quality_rerank then keeps
+    # them ahead of blogspam.
+    se_chunks: list[CorpusChunk] = []
+    if task_type == "coding":
+        se_chunks = _stackexchange_search(query, max_results)
+
     chunks = _tavily_search(query, max_results)
     if chunks:
-        chunks = _diversify(chunks, query, max_results)
+        chunks = _dedupe_chunks(se_chunks + chunks, max_results * 2)
+        chunks = _diversify(chunks, query, max_results, task_type)
         _save_cache(query, chunks, max_results)
         print(f"[search] tavily ok: {len(chunks)} results for {query!r} "
               f"in {time.time() - started:.1f}s")
         return chunks
 
-    # OLD: direct fallback chain without any secondary search query.
-    # chunks = _ddg_search(query, max_results)
-    # if chunks: ...
-    # chunks = _cohere_search(query, max_results)
-    # return []
-
     chunks = _ddg_search(query, max_results)
     if chunks and len(chunks) >= _MIN_FOLLOWUP_RESULTS:
-        chunks = _diversify(chunks, query, max_results)
+        chunks = _dedupe_chunks(se_chunks + chunks, max_results * 2)
+        chunks = _diversify(chunks, query, max_results, task_type)
         _save_cache(query, chunks, max_results)
         print(f"[search] ddg ok: {len(chunks)} results for {query!r} "
               f"in {time.time() - started:.1f}s")
         return chunks
 
-    if chunks:
+    if chunks or se_chunks:
         followup = _build_followup_query(query, task_type)
         if followup:
             followup_chunks = _ddg_search(followup, max_results)
             if followup_chunks:
-                merged = _dedupe_chunks(chunks + followup_chunks, max_results)
-                merged = _diversify(merged, query, max_results)
+                merged = _dedupe_chunks(
+                    se_chunks + chunks + followup_chunks, max_results)
+                merged = _diversify(merged, query, max_results, task_type)
                 _save_cache(query, merged, max_results)
                 print(f"[search] ddg follow-up ok: {len(merged)} results for {query!r} "
                       f"(+{len(followup_chunks)} from follow-up {followup!r}) "
                       f"in {time.time() - started:.1f}s")
                 return merged
-        chunks = _diversify(chunks, query, max_results)
-        _save_cache(query, chunks, max_results)
-        print(f"[search] ddg ok (small batch): {len(chunks)} results for {query!r} "
+        merged = _dedupe_chunks(se_chunks + chunks, max_results)
+        merged = _diversify(merged, query, max_results, task_type)
+        _save_cache(query, merged, max_results)
+        print(f"[search] ddg ok (small batch): {len(merged)} results for {query!r} "
               f"in {time.time() - started:.1f}s")
+        return merged
+
+    # Wikipedia: the reliable key-free fallback. In practice Tavily/Cohere
+    # are unconfigured, so when DDG rate-limits the run used to starve.
+    chunks = _wikipedia_search(query, max_results)
+    if chunks:
+        chunks = _diversify(chunks, query, max_results, task_type)
+        _save_cache(query, chunks, max_results)
+        print(f"[search] wikipedia fallback: {len(chunks)} results for {query!r}")
         return chunks
 
     chunks = _cohere_search(query, max_results)
@@ -683,7 +843,7 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
         # Don't persist cohere fallback; it's bound to the same wiki-simple
         # bias the agentic search is trying to escape, and we don't want it
         # pinned in the cache.
-        chunks = _diversify(chunks, query, max_results)
+        chunks = _diversify(chunks, query, max_results, task_type)
         print(f"[search] cohere fallback: {len(chunks)} results for {query!r}")
         return chunks
 
@@ -693,7 +853,7 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
     if followup:
         chunks = _ddg_search(followup, max_results)
         if chunks:
-            chunks = _diversify(chunks, query, max_results)
+            chunks = _diversify(chunks, query, max_results, task_type)
             _save_cache(query, chunks, max_results)
             print(f"[search] ddg follow-up only ok: {len(chunks)} results for {query!r} "
                   f"via follow-up {followup!r} in {time.time() - started:.1f}s")
@@ -719,5 +879,12 @@ def summarize_for_signal(query: str, chunks: list[CorpusChunk],
     lines = [f"QUERY: {query}"]
     for c in chunks[:3]:
         lines.append(f"  - {c.source_tag[:200]}")
+    # One content excerpt from the top result: makes the SEARCH trace
+    # substantively informative (other workers' query planning mines these
+    # traces; bare URLs carried no facts). Environment content, not agent
+    # reasoning — no-leak safe.
+    top_text = (chunks[0].text or "").strip()
+    if top_text:
+        lines.append(f"  TOP: {top_text[:220]}")
     out = "\n".join(lines)
     return out[:max_chars]

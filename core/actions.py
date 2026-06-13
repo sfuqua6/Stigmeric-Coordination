@@ -353,6 +353,39 @@ def support_adds_information(content: str, parent_content: str) -> bool:
     return bool(_new_particulars(content, parent_content))
 
 
+# Number-grounding gate (STORM-style source attachment, enforced at deposit).
+# The particulars push made workers produce specific figures; real runs showed
+# plausible-but-fabricated statistics ('$54M Oslo', '90K tons Copenhagen')
+# that no retrieved chunk contained. A figure is GROUNDED only if its digits
+# appear in evidence the worker was actually shown (retrieved chunks, the
+# parent signal, or the task prompt). Numbers with >= 2 digits are checked;
+# single digits ('step 2', 'version 3') are structural noise, not facts.
+_NUMBER_TOKEN_RE = _re.compile(r"\d[\d,\.]*")
+
+
+def _normalize_number(tok: str) -> str:
+    return tok.replace(",", "").rstrip(".")
+
+
+def ungrounded_numbers(content: str, sources: list[str]) -> list[str]:
+    """Return numeric tokens in `content` (>= 2 digits) whose normalized
+    form does not appear in any source text. Empty list = all figures
+    grounded (or no figures present)."""
+    src_tokens = {
+        _normalize_number(t)
+        for s in sources if s
+        for t in _NUMBER_TOKEN_RE.findall(s)
+    }
+    out = []
+    for tok in _NUMBER_TOKEN_RE.findall(content or ""):
+        norm = _normalize_number(tok)
+        if sum(ch.isdigit() for ch in norm) < 2:
+            continue
+        if norm not in src_tokens:
+            out.append(tok)
+    return out
+
+
 def select_novel_claim(candidates: list[str], store: SignalStore) -> str:
     """Pick the candidate claim LEAST similar to the recent INITIAL field.
 

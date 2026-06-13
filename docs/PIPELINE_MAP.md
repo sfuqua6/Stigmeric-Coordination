@@ -43,7 +43,7 @@ The swarm explores wide; exactly one bounded call writes.
 | 7 | Embedder fallback chain (ST → transformers AutoModel) | `signal_store.py` `_try_load_embedder` | — | `[store] embedder loaded:` / `transformers AutoModel fallback` / `*** embedder UNAVAILABLE` | ✅; check `summary.json: embedder` every run |
 | 8 | Cascade VRAM pre-check (skip doomed fp16 rungs) | `core/llm.py` `_should_skip_attempt` | — | `[llm-cascade] SKIP 'configured' … weights ≈N GB exceed` | 🆕 untested in real run |
 | 9 | Projection + genome/fitness | `core/projection.py` `build_projection` | thresholds in `config.py` | `[CLUSTER AUDIT] rep=… members=…` | ✅; lattice fields (frames/propositions/cross-level) are **dead freight** — no consumers |
-| 10 | Planner (python MMR primary; LLM planner budgeted) | `build_plan` (projection.py); `_plan_synthesis` (synthesizer.py) | `RENDER_K` (5), `SWARM_RENDER_K`; `_PLANNER_DIGEST_CHAR_BUDGET` (9000), `_PLANNER_EDGE_DIGEST_CAP` (20) | `[PLAN] render=… render_ids=[…]`; `planner digest capped`/`char budget reached`; failure: `plan call failed` | LLM planner failed 3/3 runs pre-budget; candidate for retirement after ablation |
+| 10 | Planner — **deterministic `build_plan` only** (LLM planner retired to default-off after 3/3 context failures; no LLM call at planning) | `build_plan` (projection.py); `_plan_synthesis` opt-in | `RENDER_K` (5), `SWARM_RENDER_K`; ablation opt-in `SWARM_USE_LLM_PLANNER=1` | `[PLAN] render=… render_ids=[…]` | ✅ context wall at planning eliminated |
 | 11 | Global composition (Stage 2; thesis-first; conditions conclusion; verification-calibrated figures) | `_compose_answer` in `synthesizer.py` | `_SYNTHESIZER_USE_GLOBAL_COMPOSITION`, `_GLOBAL_COMPOSE_MAX_TOKENS` | `[synthesizer] global composition: N briefs -> M chars` | ✅ working since groqgroq |
 | 12 | Citation-tag aliasing ([S#] in, real tags out) | `_alias_citation_tags`/`_unalias_citation_tags` | `_COMPOSE_MIN_TAG_RETENTION` (0.5) | failure mode now rare: `dropped too many citation tags` | 🆕 fixes 3/3 dissent-compose tag drops |
 | 13 | Dissent cap + composition + overflow one-liners | Section 2 block in `_render`; `_compose_dissent` | `_DISSENT_RENDER_CAP` (6), `_DISSENT_OVERFLOW_CAP` (8), `_DISSENT_COMPOSE_FRAGMENT_CHARS` (900) | `dissent composition: N notes -> M chars`; `Further contested positions` in answer | compose ✅ once (groqgroq), tag-drop now aliased |
@@ -59,6 +59,7 @@ The swarm explores wide; exactly one bounded call writes.
 | 23 | Result quality: source cap → relevance gate → BM25+dense RRF → **fact-density + coding-domain priors** → MMR → page enrichment (DDG top-K) | `_diversify`, `_quality_rerank`, `_enrich_with_pages` | `SWARM_SEARCH_FACT_DENSITY_WEIGHT` (0.15), `SWARM_SEARCH_CODING_DOMAIN_BOOST` (0.25), `SWARM_SEARCH_FETCH_*`, `SWARM_SEARCH_RELEVANCE_MIN` | `[search] enriched N/K chunks`; `relevance gate: kept N/M` | priors 🆕 — feed the particulars gate fact-dense evidence |
 | 24 | Query planning (task-aware stances; fragments mined from high-strength INITIALs — stigmergic; step-back + HyDE; dedup fingerprints; per-pool search budget) | `core/query_planner.py`; budget in `worker_pool.py` | stance tables `_STANCE_BY_TASK` (coding rows exist) | served-query dedup is silent; HyDE/step-back log via worker | ✅ |
 | 25 | SEARCH signal traces (query + top URLs + **content excerpt**) | `summarize_for_signal` | — | deposits contain `TOP: …` line | excerpt 🆕 — traces now carry facts, not just URLs |
+| 26 | **Number-grounding gate** (STORM-style): figures in SCOUT/DEVELOP/CHAIN/REFINE deposits must appear in shown evidence (chunks/parent/task prompt) — reject as fabrication when evidence was present; tag `numbers_grounded=false` when not; briefs mark `(UNSOURCED FIGURES — present as claimed)` | `ungrounded_numbers` (core/actions.py); gate in `worker_pool.py` | — | `REJECT … ungrounded figure(s) … (fabrication gate)` | 🆕 — answers the fabricated-Oslo/Copenhagen failure |
 
 ## Log grep cheat-sheet (paste into PowerShell/Select-String or grep)
 
@@ -80,6 +81,8 @@ search\] |stackexchange|wikipedia fallback|enriched|relevance gate|ALL BACKENDS 
 ## Known open issues
 
 1. **Verification coverage** (#15) — specificity now outruns the validators.
+   Mitigated by the number-grounding gate (#26: figures must come from shown
+   evidence) and rule-9 phrasing; full SAFE-atom coverage still the real fix.
 2. **Dead lattice** (#9) — `propositions` (no builder/consumer), `frames`/`cross_level_edges`
    (no consumers), `cluster_sensitivities` (expensive build, one decorative read),
    planner `merge_groups` (asked for, then discarded). Deletion/gating decision pending.

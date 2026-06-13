@@ -824,6 +824,31 @@ class Worker:
                       f"paraphrase of parent {target.id} (no new information)")
                 return None
 
+        # Number-grounding gate (STORM-style): a figure in a deposit must
+        # appear in evidence the worker was actually shown. With evidence
+        # present, an ungrounded number is a fabrication — reject loudly.
+        # With no evidence in this iteration, keep the deposit but tag it
+        # so briefs/composers present its figures as claimed, not fact.
+        _grounding_meta: Optional[bool] = None
+        if action in (SCOUT, DEVELOP, CHAIN, REFINE):
+            from core.actions import ungrounded_numbers, _NUMBER_TOKEN_RE
+            has_numbers = any(
+                sum(ch.isdigit() for ch in t) >= 2
+                for t in _NUMBER_TOKEN_RE.findall(content)
+            )
+            if has_numbers:
+                sources = [c.text for c in (retrieved_chunks or [])]
+                if target is not None:
+                    sources.append(target.content)
+                sources.append(self.task_prompt)
+                bad = ungrounded_numbers(content, sources)
+                if bad and retrieved_chunks:
+                    print(f"[worker {self.agent_id}] REJECT {action}: "
+                          f"ungrounded figure(s) {bad[:3]} not in retrieved "
+                          f"evidence (fabrication gate)")
+                    return None
+                _grounding_meta = not bad
+
         # Dynamic TYPE/PARENT overrides (Phase 3A/3B compatibility)
         from core.actions import _parse_type, _parse_parent
         dyn_type = _parse_type(raw)
@@ -859,6 +884,8 @@ class Worker:
         meta = dict(parsed.metadata or {})
         meta["depositor_agent_id"] = self.agent_id
         meta["action"] = action
+        if _grounding_meta is not None:
+            meta["numbers_grounded"] = _grounding_meta
 
         # Atom targeting: stamp which atom this DEVELOP/REFINE deposit addresses.
         # Enables atom_graph edge construction in _build_genomes and future

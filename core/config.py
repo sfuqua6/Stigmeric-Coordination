@@ -385,6 +385,13 @@ SEARCH_FETCH_MIN_CHARS = int(os.environ.get("SWARM_SEARCH_FETCH_MIN_CHARS", "400
 #     topic noise the reranker only reordered). 0 disables; always keeps >=2.
 SEARCH_RELEVANCE_MIN   = float(os.environ.get("SWARM_SEARCH_RELEVANCE_MIN", "0.15"))
 
+# LLM planner (synthesizer._plan_synthesis): retired to default-OFF after
+# failing on serving-context 3/3 real runs while its merge_groups output was
+# discarded and the deterministic build_plan() did the actual selection every
+# time. Planning now has NO LLM call by default — the context wall at
+# planning ceases to exist. Re-enable for ablation only.
+USE_LLM_PLANNER = os.environ.get("SWARM_USE_LLM_PLANNER", "").strip() in ("1", "true", "True")
+
 # Fact-density rank boost: prefer chunks carrying numbers/dates/units —
 # the downstream pipeline (particulars gate, verification calibration)
 # is fed by fact-dense evidence; topicality-only ranking starves it.

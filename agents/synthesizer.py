@@ -733,7 +733,18 @@ class Synthesizer:
         # ------------------------------------------------------------------
         # Synthesis plan FIRST — the executive summary then references it.
         # ------------------------------------------------------------------
-        plan = await self._plan_synthesis(projection, store)
+        # LLM planner retired to default-off (failed on serving context 3/3
+        # real runs; merge_groups discarded; build_plan did the real work
+        # every time). Planning has no LLM call unless SWARM_USE_LLM_PLANNER=1.
+        from core.config import USE_LLM_PLANNER
+        _plan_candidates = list(projection.surviving) + list(projection.contested)
+        if USE_LLM_PLANNER:
+            plan = await self._plan_synthesis(projection, store)
+        elif _plan_candidates:
+            plan = self._fallback_plan(_plan_candidates, store)
+        else:
+            plan = {"render_full": [], "section3_only": [],
+                    "merge_groups": [], "notes": ""}
         plan_render_ids: set = set(plan.get("render_full", []))
         plan_section3_ids: set = set(plan.get("section3_only", []))
         merge_groups: list = list(plan.get("merge_groups", []))
@@ -3064,6 +3075,12 @@ class Synthesizer:
                 src_tags = (s.metadata or {}).get("source_tags") or []
                 if src_tags:
                     src_note = f" (source: {src_tags[0]})"
+                # Number-grounding flag from the deposit gate: figures that
+                # never appeared in retrieved evidence must read as claimed,
+                # not established (the renderer sees this; rule 9 in the
+                # composer reinforces it).
+                if (s.metadata or {}).get("numbers_grounded") is False:
+                    src_note += " (UNSOURCED FIGURES — present as claimed)"
                 support_lines.append(
                     f"  - [{sid}] {_truncate(s.content, _SUPPORT_CHARS)}"
                     f"{src_note}"

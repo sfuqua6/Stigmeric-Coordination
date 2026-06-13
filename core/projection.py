@@ -1590,7 +1590,7 @@ def build_plan(
     )
     print(
         f"[PLAN] {notes} | "
-        f"contested={len(contested)} render_ids={picked_ids[:3]}"
+        f"contested={len(contested)} render_ids={picked_ids}"
     )
 
     assert len(picked_ids) <= render_k, (

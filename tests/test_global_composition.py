@@ -97,7 +97,18 @@ _BRIEF_B = (
     "[SUPPORT_00004]."
 )
 
-# A composed answer that keeps all four tags and clears _COMPOSE_MIN_CHARS.
+# What the model RETURNS (alias tags — composers alias [TYPE_NNNNN] to [S#]
+# on the way in; briefs A/B assign S1..S4 in first-appearance order).
+_COMPOSED_OK_ALIASED = (
+    "Cities should ban private cars only alongside transit investment. "
+    "Bans demonstrably reduce urban emissions [S1], with city "
+    "implementations confirming the effect [S2]. However, "
+    "equitable outcomes require transit alternatives to be in place first "
+    "[S3], because cost analyses raise distributional concerns "
+    "[S4]. The verified material therefore favors conditional "
+    "bans over unconditional ones."
+)
+# What the caller receives after deterministic un-aliasing.
 _COMPOSED_OK = (
     "Cities should ban private cars only alongside transit investment. "
     "Bans demonstrably reduce urban emissions [INITIAL_00001], with city "
@@ -128,8 +139,9 @@ class TestComposeAnswer(unittest.TestCase):
         ))
 
     def test_happy_path_returns_composed_text(self):
-        llm = _FakeLLM(response=_COMPOSED_OK)
+        llm = _FakeLLM(response=_COMPOSED_OK_ALIASED)
         result = self._compose(llm)
+        # Aliases re-mapped to real provenance tags on the way out.
         self.assertEqual(result, _COMPOSED_OK)
 
     def test_tag_retention_guard_rejects_free_writing(self):
@@ -149,25 +161,31 @@ class TestComposeAnswer(unittest.TestCase):
         self.assertEqual(result, "")
 
     def test_partial_tag_retention_passes_at_half(self):
-        # Keeps 2 of 4 distinct tags = exactly 0.5 retention (threshold).
+        # Keeps 2 of 4 distinct alias tags = exactly 0.5 retention (threshold).
         response = (
-            "Bans reduce emissions in cities that tried them "
-            "[INITIAL_00001] [SUPPORT_00002]. "
+            "Bans reduce emissions in cities that tried them [S1] [S2]. "
         ) * 4
         llm = _FakeLLM(response=response)
         result = self._compose(llm)
         self.assertTrue(result)  # 0.5 >= _COMPOSE_MIN_TAG_RETENTION
+        self.assertIn("[INITIAL_00001]", result)  # un-aliased on the way out
 
     def test_composer_input_is_briefs_and_digest_only(self):
         """Context-compression contract: the composer prompt must contain
-        the briefs and the scalar digest — and must NOT contain signal
-        content that was never rendered into a brief."""
-        llm = _FakeLLM(response=_COMPOSED_OK)
+        the briefs (alias-tagged) and the scalar digest — and must NOT
+        contain signal content that was never rendered into a brief."""
+        llm = _FakeLLM(response=_COMPOSED_OK_ALIASED)
         self._compose(llm)
         self.assertEqual(len(llm.prompts), 1)
         prompt = llm.prompts[0]
-        self.assertIn(_BRIEF_A, prompt)
-        self.assertIn(_BRIEF_B, prompt)
+        # Brief prose present (tags aliased, so match the tag-free spans).
+        self.assertIn("Banning private cars reduces urban emissions", prompt)
+        self.assertIn("Cost analyses raise distributional concerns", prompt)
+        self.assertIn("[S1]", prompt)   # aliased, not raw provenance IDs
+        # The CLUSTER DIGEST may carry real cluster IDs (structural
+        # context); the BRIEFS block itself must be alias-only.
+        briefs_part = prompt[prompt.index("EVIDENCE BRIEFS"):]
+        self.assertNotIn("[INITIAL_00001]", briefs_part)
         self.assertIn("EVIDENCE BRIEFS", prompt)
         # Marker content that exists in idea-space but not in any brief:
         self.assertNotIn("ZEBRA_UNRENDERED_MARKER", prompt)
@@ -289,7 +307,7 @@ class TestSectionedAssembly(unittest.TestCase):
         """With ≥2 briefs and an LLM that answers, the composer runs and its
         output becomes Section 1 (single composed text, not N joined briefs)."""
         store, _ = _surviving_store(n_clusters=2)
-        llm = _FakeLLM(response=_COMPOSED_OK)
+        llm = _FakeLLM(response=_COMPOSED_OK_ALIASED)
         synth = Synthesizer(llm, "Cities should ban private cars?")
         # Disable the revision loop: the FakeLLM would feed the same canned
         # response to the critic/revise calls and overwrite the assembly.
@@ -303,10 +321,14 @@ class TestSectionedAssembly(unittest.TestCase):
         self.assertEqual(len(compose_prompts), 1)
         self.assertIn("## 1. POSITION SYNTHESIS", answer)
         # The composed thesis sentence (from the single global call) is
-        # present exactly once — Section 1 is composed, not a join of
-        # repeated per-cluster paragraphs.
+        # present exactly once WITHIN Section 1 — composed, not a join of
+        # repeated per-cluster paragraphs. (Other sections may quote
+        # excerpts, so scope the count to Section 1.)
+        s1_start = answer.index("## 1. POSITION SYNTHESIS")
+        s1_end = answer.index("## 2.", s1_start) if "## 2." in answer else len(answer)
+        section1 = answer[s1_start:s1_end]
         self.assertEqual(
-            answer.count("Cities should ban private cars only alongside"), 1,
+            section1.count("Cities should ban private cars only alongside"), 1,
         )
 
 

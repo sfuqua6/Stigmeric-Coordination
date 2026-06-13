@@ -443,12 +443,32 @@ class SignalStore:
                 "max_strength": max(strengths) if strengths else 0.0,
             }
 
+    def set_novelty_references(self, texts: list[str], cap: int = 50) -> int:
+        """Register external reference texts (e.g. KB prior-consensus claims)
+        that max_similarity_to_recent treats as part of the 'known field'.
+
+        Purpose: cross-run direction. Without this, successive KB runs
+        re-derive the same field and the KB merely dedups at save time;
+        with it, scout novelty selection steers candidates away from claims
+        the knowledge base already holds. No-leak safe: reference content
+        never reaches any prompt — only scalar similarities flow out.
+        """
+        with self._lock:
+            refs = []
+            for t in texts[:cap]:
+                t = (t or "").strip()
+                if t:
+                    refs.append((t, self._encode(t)))
+            self._novelty_refs = refs
+            return len(refs)
+
     def max_similarity_to_recent(
         self, content: str, signal_type: str, n: int = 30,
     ) -> float:
         """Max similarity of `content` against the n most recent signals of
-        `signal_type`. Embedding cosine when available, SequenceMatcher
-        fallback (via _similarity).
+        `signal_type` AND any registered novelty references (KB priors).
+        Embedding cosine when available, SequenceMatcher fallback
+        (via _similarity).
 
         Used by multi-claim scout sampling to pick the candidate claim least
         similar to the existing INITIAL field. No-leak safe: returns a scalar
@@ -460,7 +480,8 @@ class SignalStore:
                 (s for s in self._signals.values() if s.type == signal_type),
                 key=lambda s: s.timestamp, reverse=True,
             )[:n]
-            if not recent:
+            refs = getattr(self, "_novelty_refs", [])
+            if not recent and not refs:
                 return 0.0
             e_new = self._encode(content)
             best = 0.0
@@ -468,6 +489,10 @@ class SignalStore:
                 sim = self._similarity(
                     content, s.content, e_new, self._embeddings.get(s.id),
                 )
+                if sim > best:
+                    best = sim
+            for ref_text, ref_emb in refs:
+                sim = self._similarity(content, ref_text, e_new, ref_emb)
                 if sim > best:
                     best = sim
             return best

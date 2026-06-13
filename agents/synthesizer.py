@@ -161,6 +161,14 @@ _CONTRADICTION_CAP = 5
 # context at 62 clusters. The planner selects ~RENDER_K from the head of
 # the priority ranking — the tail adds tokens, not information.
 _PLANNER_DIGEST_MAX_CLUSTERS = 16
+# Hard char budget for the digest block — the cluster cap alone proved
+# insufficient (16 lines with genome strings still overflowed 4096 tokens
+# in three consecutive runs). ~9000 chars ≈ 2.2K tokens leaves room for
+# instructions + JSON schema + generation inside a 4096 window.
+_PLANNER_DIGEST_CHAR_BUDGET = 9000
+# Max edge lines in the planner's edge digest (deduped unordered pairs,
+# sorted by weight, restricted to clusters present in the digest).
+_PLANNER_EDGE_DIGEST_CAP = 20
 
 # Best-of-N cohesive composition (improvement 5.3). Run the integration call
 # N times with diverse cluster orderings and (for exploration) diverse
@@ -1212,14 +1220,26 @@ class Synthesizer:
         # the 70B TPD budget is better spent on cluster rendering.
         _is_api_backend = "Groq" in type(self.llm).__name__
         if _SYNTHESIZER_REVISION_ROUNDS > 0 and sections and not _is_api_backend:
-            try:
-                answer = await self._revision_loop(
-                    answer, projection, store,
-                    max_rounds=_SYNTHESIZER_REVISION_ROUNDS,
-                )
-            except Exception as exc:
-                print(f"[synthesizer] revision loop crashed: "
-                      f"{type(exc).__name__}: {exc}; keeping original assembly")
+            # Scope revision to the LLM prose (Sections 1-2). A real run's
+            # reviser passed the too-short guard and silently swallowed the
+            # deterministic Section 3 + PROCESS NOTES — those sections are
+            # not the reviser's to rewrite.
+            prose_sections = [
+                s for s in sections
+                if s.startswith("## 1.") or s.startswith("## 2.")
+            ]
+            fixed_sections = [s for s in sections if s not in prose_sections]
+            if prose_sections:
+                prose = "\n\n".join(prose_sections)
+                try:
+                    prose = await self._revision_loop(
+                        prose, projection, store,
+                        max_rounds=_SYNTHESIZER_REVISION_ROUNDS,
+                    )
+                except Exception as exc:
+                    print(f"[synthesizer] revision loop crashed: "
+                          f"{type(exc).__name__}: {exc}; keeping original assembly")
+                answer = "\n\n".join([prose] + fixed_sections)
         elif _is_api_backend and _SYNTHESIZER_REVISION_ROUNDS > 0:
             print("[synthesizer] revision skipped (API backend — prompt budget insufficient)")
 
@@ -1490,7 +1510,7 @@ class Synthesizer:
                     f"  n_atoms={len(cp.genome.atoms)}"
                     f"  load_bearing={len(cp.genome.sensitivity.load_bearing_atoms)}"
                 )
-            lines.append(
+            line = (
                 f"- {cp.representative_id}  status={cp.status}  "
                 f"n_supports={len(cp.support_set)}  "
                 f"n_dissent={len(cp.dissent_set)}  "
@@ -1502,15 +1522,40 @@ class Synthesizer:
                 f"{genome_str}  "
                 f"representative=\"{preview}\""
             )
+            # Char budget: the cluster cap alone still overflowed a 4096-token
+            # window three runs straight (genome strings inflate lines).
+            if sum(len(l) for l in lines) + len(line) > _PLANNER_DIGEST_CHAR_BUDGET:
+                print(f"[synthesizer] planner digest char budget reached "
+                      f"({len(lines)} of {len(candidates)} clusters included)")
+                break
+            lines.append(line)
         digest = "\n".join(lines)
+        digest_ids = {
+            l.split()[1] for l in lines if len(l.split()) > 1
+        }
 
-        # Edge graph digest: summarise typed inter-cluster relations so the
-        # planner can use them for merge and surface decisions.
+        # Edge graph digest: typed inter-cluster relations for merge/surface
+        # decisions. Bounded: edges grow O(n²) (a real run produced 34+
+        # tension pairs as directed duplicates) — dedupe unordered pairs,
+        # keep only edges between digest clusters, cap by weight.
         edge_lines: list[str] = []
-        for e in getattr(projection, "inter_cluster_edges", []):
+        seen_pairs: set = set()
+        all_edges = sorted(
+            getattr(projection, "inter_cluster_edges", []),
+            key=lambda e: getattr(e, "weight", 0.0), reverse=True,
+        )
+        for e in all_edges:
+            if e.source not in digest_ids or e.target not in digest_ids:
+                continue
+            key = (frozenset((e.source, e.target)), e.relation)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
             edge_lines.append(
                 f"  {e.source} --[{e.relation}]--> {e.target} (weight={e.weight:.2f})"
             )
+            if len(edge_lines) >= _PLANNER_EDGE_DIGEST_CAP:
+                break
         edge_block = (
             "INTER-CLUSTER EDGES:\n" + "\n".join(edge_lines)
             if edge_lines
@@ -2384,6 +2429,40 @@ class Synthesizer:
             if lines else ""
         )
 
+    @staticmethod
+    def _alias_citation_tags(texts: list[str]) -> tuple[list[str], dict]:
+        """Replace [INITIAL_00132]-style tags with short [S1]..[Sn] aliases.
+
+        Mid-size models reliably preserve short numeric tags through a
+        rewrite but drop long provenance IDs (three consecutive real runs:
+        dissent composition retained 0/6 [TYPE_NNNNN] tags). Provenance-
+        grade IDs belong to the deterministic layer: alias on the way into
+        a compose call, re-map on the way out via _unalias_citation_tags.
+        Returns (aliased_texts, {alias: real_tag}).
+        """
+        tag_re = re.compile(r"\[[A-Z][A-Z_]*_\d+\]")
+        mapping: dict = {}
+        real_to_alias: dict = {}
+        aliased: list[str] = []
+        for text in texts:
+            def _sub(m):
+                real = m.group(0)
+                if real not in real_to_alias:
+                    alias = f"[S{len(real_to_alias) + 1}]"
+                    real_to_alias[real] = alias
+                    mapping[alias] = real
+                return real_to_alias[real]
+            aliased.append(tag_re.sub(_sub, text))
+        return aliased, mapping
+
+    @staticmethod
+    def _unalias_citation_tags(text: str, mapping: dict) -> str:
+        """Re-map [S#] aliases back to real signal tags (longest first so
+        [S12] is replaced before [S1])."""
+        for alias in sorted(mapping, key=len, reverse=True):
+            text = text.replace(alias, mapping[alias])
+        return text
+
     def _extractive_position(self, clusters: list, store: SignalStore) -> str:
         """LLM-free Section 1: verbatim cluster content with citation tags.
 
@@ -2441,6 +2520,8 @@ class Synthesizer:
         rather than free-writing. The post-hoc faithfulness audit then checks
         the composed text against cluster content like any rendered prose.
         """
+        # Alias provenance tags to model-friendly [S#] (see _alias_citation_tags).
+        aliased_briefs, alias_map = self._alias_citation_tags(briefs)
         digest_lines: list[str] = []
         for cp in clusters:
             digest_lines.append(
@@ -2450,7 +2531,7 @@ class Synthesizer:
                 f"dissent={cp.dissent_pressure:.2f}"
             )
         briefs_block = "\n\n".join(
-            f"BRIEF {i + 1}:\n{b}" for i, b in enumerate(briefs)
+            f"BRIEF {i + 1}:\n{b}" for i, b in enumerate(aliased_briefs)
         )
 
         prompt = (
@@ -2469,8 +2550,9 @@ class Synthesizer:
             f"tags to that sentence.\n"
             f"  3. Order the argument logically — strongest verified material "
             f"first, complications and trade-offs after — not in brief order.\n"
-            f"  4. Keep every citation tag [LIKE_THIS] attached to the claim "
-            f"it supports. Do not invent tags. Do not drop a brief's only tag.\n"
+            f"  4. Keep every citation tag (short bracketed markers like "
+            f"[S1], [S2]) attached to the claim it supports. Do not invent "
+            f"tags. Do not drop a brief's only tag.\n"
             f"  5. Use ONLY facts present in the briefs. No new examples, "
             f"numbers, or background knowledge.\n"
             f"  6. Where a brief acknowledges a counter-position, keep that "
@@ -2482,7 +2564,14 @@ class Synthesizer:
             f"counter-positions in the briefs (e.g. 'justified where X is "
             f"already in place; counterproductive where Y'). Do NOT end "
             f"with generic advice ('policymakers must consider', 'careful "
-            f"planning is needed') — name the specific conditions.\n\n"
+            f"planning is needed') — name the specific conditions.\n"
+            f"  9. Calibrate specific figures to verification: the CLUSTER "
+            f"DIGEST shows a verification score per cluster. Where a brief "
+            f"states a specific number, sum, or percentage and its cluster's "
+            f"verification is 0.00, present it as a claimed or reported "
+            f"figure ('a reported $X investment', 'one estimate puts it at "
+            f"Y') — never as established fact. Verified material may be "
+            f"stated plainly.\n\n"
             f"CLUSTER DIGEST (structural context — do not quote):\n"
             + "\n".join(digest_lines)
             + f"\n\nEVIDENCE BRIEFS:\n\n{briefs_block}\n\n"
@@ -2506,20 +2595,17 @@ class Synthesizer:
                   "falling back")
             return ""
 
-        # Tag-retention guard: the composed answer must carry forward most
-        # of the citation tags from the briefs, else it free-wrote.
-        tag_re = re.compile(r"\[[A-Z][A-Z_]*_\d+\]")
-        input_tags = set()
-        for b in briefs:
-            input_tags.update(tag_re.findall(b))
-        if input_tags:
-            kept = sum(1 for t in input_tags if t in result)
-            retention = kept / len(input_tags)
+        # Tag-retention guard over the [S#] aliases: the composed answer
+        # must carry forward most of the citation tags, else it free-wrote.
+        if alias_map:
+            kept = sum(1 for alias in alias_map if alias in result)
+            retention = kept / len(alias_map)
             if retention < _COMPOSE_MIN_TAG_RETENTION:
                 print(f"[synthesizer] global composition dropped too many "
-                      f"citation tags ({kept}/{len(input_tags)}); falling back")
+                      f"citation tags ({kept}/{len(alias_map)}); falling back")
                 return ""
 
+        result = self._unalias_citation_tags(result, alias_map)
         print(f"[synthesizer] global composition: {len(briefs)} briefs -> "
               f"{len(result)} chars")
         return result
@@ -2546,10 +2632,17 @@ class Synthesizer:
         # rung's 2048-token context, truncating generation before any
         # citation tag appeared (0/6 retention → fallback). Bounded input
         # keeps the prompt within even the smallest serving context.
+        # Alias provenance tags to [S#]: even with bounded input, three
+        # consecutive real runs showed the local model drops [TYPE_NNNNN]
+        # tags in rewrites; short aliases survive (re-mapped after).
+        budgeted = [
+            _truncate(f, _DISSENT_COMPOSE_FRAGMENT_CHARS)
+            for f in fragments
+        ]
+        aliased_frags, alias_map = self._alias_citation_tags(budgeted)
         frag_block = "\n\n".join(
-            f"DISSENT NOTE {i + 1}:\n"
-            f"{_truncate(f, _DISSENT_COMPOSE_FRAGMENT_CHARS)}"
-            for i, f in enumerate(fragments)
+            f"DISSENT NOTE {i + 1}:\n{f}"
+            for i, f in enumerate(aliased_frags)
         )
         prompt = (
             f"TASK: {self.task_prompt}\n\n"
@@ -2562,8 +2655,8 @@ class Synthesizer:
             f"  1. Group notes that contest the same underlying issue; state "
             f"each genuine open question ONCE.\n"
             f"  2. Lead with the most consequential disagreements.\n"
-            f"  3. Keep every citation tag [LIKE_THIS] attached to its claim. "
-            f"Do not invent tags.\n"
+            f"  3. Keep every citation tag (short bracketed markers like "
+            f"[S1], [S2]) attached to its claim. Do not invent tags.\n"
             f"  4. For each open question, keep what evidence would settle "
             f"it — merged across notes where they ask for the same evidence.\n"
             f"  5. Use ONLY content present in the notes. Plain prose "
@@ -2587,16 +2680,13 @@ class Synthesizer:
         if len(result) < _COMPOSE_MIN_CHARS:
             print("[synthesizer] dissent composition too short; falling back")
             return ""
-        tag_re = re.compile(r"\[[A-Z][A-Z_]*_\d+\]")
-        input_tags = set()
-        for f in fragments:
-            input_tags.update(tag_re.findall(f))
-        if input_tags:
-            kept = sum(1 for t in input_tags if t in result)
-            if kept / len(input_tags) < _COMPOSE_MIN_TAG_RETENTION:
+        if alias_map:
+            kept = sum(1 for alias in alias_map if alias in result)
+            if kept / len(alias_map) < _COMPOSE_MIN_TAG_RETENTION:
                 print(f"[synthesizer] dissent composition dropped too many "
-                      f"citation tags ({kept}/{len(input_tags)}); falling back")
+                      f"citation tags ({kept}/{len(alias_map)}); falling back")
                 return ""
+        result = self._unalias_citation_tags(result, alias_map)
         print(f"[synthesizer] dissent composition: {len(fragments)} notes -> "
               f"{len(result)} chars")
         return result

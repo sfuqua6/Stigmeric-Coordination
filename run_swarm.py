@@ -1042,6 +1042,19 @@ async def run_continuous_pipeline(
         n_priors = (len(kb.prior_consensus(current_topic_hash))
                     + len(kb.prior_rejections(current_topic_hash)))
         print(f"[kb] loaded {n_priors} priors — set --no-kb to disable")
+        # KB-aware novelty: register prior-consensus claims as novelty
+        # references so scout multi-claim selection steers AWAY from what
+        # the KB already holds — successive runs explore unclaimed regions
+        # instead of re-deriving the same field for the dedup to merge.
+        # (Scalar similarities only; no prior content reaches any prompt.)
+        prior_texts = [
+            e.get("representative_content", "")
+            for e in kb.prior_consensus(current_topic_hash)
+        ]
+        n_refs = store.set_novelty_references(prior_texts)
+        if n_refs:
+            print(f"[kb] {n_refs} prior-consensus claims registered as "
+                  f"scout novelty references")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     validator_raw_path = output_dir / "validator_raw.log"

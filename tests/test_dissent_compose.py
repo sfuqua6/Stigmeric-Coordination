@@ -60,6 +60,15 @@ _NOTE_B = (
     "[INITIAL_00007]. Case studies from Oslo would settle this."
 )
 
+# Model output uses [S#] aliases; the caller receives real tags back.
+_COMPOSED_DISSENT_ALIASED = (
+    "The central unresolved question is transferability: Singapore's "
+    "vehicle-control model requires political will that varies by country "
+    "[S1], and bans may overload transit systems without prior "
+    "capacity investment [S2]. Comparative studies across cities "
+    "with different transit baselines, including Oslo's restriction "
+    "experience, would settle both disputes."
+)
 _COMPOSED_DISSENT_OK = (
     "The central unresolved question is transferability: Singapore's "
     "vehicle-control model requires political will that varies by country "
@@ -90,7 +99,8 @@ class TestComposeDissent(unittest.TestCase):
         ))
 
     def test_happy_path(self):
-        llm = _FakeLLM(response=_COMPOSED_DISSENT_OK)
+        llm = _FakeLLM(response=_COMPOSED_DISSENT_ALIASED)
+        # Aliases re-mapped to real provenance tags on the way out.
         self.assertEqual(self._compose(llm), _COMPOSED_DISSENT_OK)
 
     def test_short_output_falls_back(self):
@@ -107,11 +117,15 @@ class TestComposeDissent(unittest.TestCase):
         self.assertEqual(self._compose(llm), "")
 
     def test_prompt_contains_notes_only(self):
-        llm = _FakeLLM(response=_COMPOSED_DISSENT_OK)
+        llm = _FakeLLM(response=_COMPOSED_DISSENT_ALIASED)
         self._compose(llm)
         prompt = llm.prompts[0]
-        self.assertIn(_NOTE_A, prompt)
-        self.assertIn(_NOTE_B, prompt)
+        # Notes present with provenance tags aliased to [S#].
+        self.assertIn("Singapore's vehicle-control model needs political",
+                      prompt)
+        self.assertIn("Car bans may overload public transit", prompt)
+        self.assertIn("[S1]", prompt)
+        self.assertNotIn("[INITIAL_00005]", prompt)
         self.assertIn("DISSENT NOTES", prompt)
 
     def test_long_fragments_budgeted(self):

@@ -216,5 +216,56 @@ class TestCompareRunsImport(unittest.TestCase):
         self.assertIn("baseline", output)
 
 
+class TestCompareRunsTimingAndVerdict(unittest.TestCase):
+    """A/B harness extensions: deep nested lookup, timing block, verdict."""
+
+    def test_nested_get_arbitrary_depth(self):
+        from tools.compare_runs import _nested_get, _MISSING
+        d = {"timing": {"search": {"calls": 7}}}
+        self.assertEqual(_nested_get(d, "timing.search.calls"), 7)
+        self.assertIs(_nested_get(d, "timing.search.missing"), _MISSING)
+        self.assertIs(_nested_get(d, "timing.absent.x"), _MISSING)
+        self.assertIs(_nested_get({"a": 5}, "a.b"), _MISSING)  # non-dict traversal
+
+    def test_verdict_flags_quality_regression(self):
+        from tools.compare_runs import _verdict
+        # higher_is_better dropped 50% -> regression; lower_is_better rose 50% -> regression
+        scored = [
+            ("max verification score", "higher_is_better", 0.4, 0.2),
+            ("output diversity (self-BLEU)", "lower_is_better", 0.4, 0.6),
+            ("avg verification score", "higher_is_better", 0.30, 0.30),  # unchanged: ok
+        ]
+        regressions = _verdict(scored)
+        self.assertEqual(len(regressions), 2)
+        self.assertTrue(any("max verification" in r for r in regressions))
+
+    def test_verdict_quality_held_within_tolerance(self):
+        from tools.compare_runs import _verdict
+        scored = [("max verification score", "higher_is_better", 0.40, 0.39)]  # -2.5% < 5%
+        self.assertEqual(_verdict(scored), [])
+
+    def test_timing_block_surfaces_in_output(self):
+        import io, json, tempfile
+        from contextlib import redirect_stdout
+        from tools.compare_runs import compare
+        d_a = {"user_prompt": "p", "wall_clock_s": 100.0,
+               "timing": {"wall_clock_s": 100.0, "search": {"calls": 50, "total_s": 80.0},
+                          "search_fraction_of_wallclock": 0.8}}
+        d_b = {"user_prompt": "p", "wall_clock_s": 40.0,
+               "timing": {"wall_clock_s": 40.0, "search": {"calls": 50, "total_s": 80.0},
+                          "search_fraction_of_wallclock": 0.2}}
+        paths = []
+        for d in (d_a, d_b):
+            f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            json.dump(d, f); f.close(); paths.append(f.name)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            compare(*paths)
+        output = out.getvalue()
+        self.assertIn("search frac of wallclock", output)
+        self.assertIn("wall-clock:", output)        # verdict line
+        self.assertIn("B is faster", output)
+
+
 if __name__ == "__main__":
     unittest.main()

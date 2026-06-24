@@ -148,36 +148,6 @@ class AtomProjection:
 
 
 @dataclass
-class PropositionProjection:
-    """Sub-claim grouping 1–3 atoms that share a logical clause."""
-    proposition_id: str
-    text: str                      # 25–50 chars; one logical clause
-    atom_ids: list[str]
-    parent_cluster_id: str
-    verification_score: float      # weighted mean over child atoms
-
-
-@dataclass
-class FrameProjection:
-    """Coarse thematic grouping of clusters (above cluster resolution)."""
-    frame_id: str
-    label: str                     # one-phrase thematic name
-    cluster_ids: list[str]         # representative_ids of constituent clusters
-    coverage_topology_cells: list  # topology cell tuples this frame spans
-
-
-@dataclass(frozen=True)
-class CrossLevelEdge:
-    """Typed edge crossing lattice resolution levels."""
-    src_id: str
-    dst_id: str
-    src_level: str   # "frame" | "cluster" | "proposition" | "atom"
-    dst_level: str
-    relation: str    # "supports" | "refines" | "contradicts" | "contextualizes"
-    weight: float    # [0, 1]
-
-
-@dataclass
 class ClusterSensitivity:
     """Robustness of a cluster's survival status to signal perturbation."""
     cluster_id: str
@@ -352,11 +322,8 @@ class SynthesisProjection:
     uncovered_cells: list = field(default_factory=list)     # cell tuples with no cluster
     out_of_bounds_clusters: list = field(default_factory=list)  # rep_ids w/ "out_of_bounds"
 
-    # --- Multi-resolution lattice ---
-    frames: list = field(default_factory=list)          # list[FrameProjection]
-    propositions: list = field(default_factory=list)    # list[PropositionProjection]
+    # --- Atom resolution (feeds genome.atoms via _build_genomes) ---
     atoms: list = field(default_factory=list)           # list[AtomProjection]
-    cross_level_edges: list = field(default_factory=list)   # list[CrossLevelEdge]
 
     # --- Sensitivity axis ---
     cluster_sensitivities: dict = field(default_factory=dict)  # rep_id -> ClusterSensitivity
@@ -604,119 +571,6 @@ def _build_atoms(
                     parent_verification_id=vid,
                 ))
     return atoms
-
-
-def _build_frames(
-    clusters: list,
-    store: "SignalStore",
-    frame_threshold: float = 0.40,
-) -> list:
-    """Group clusters into coarse frames using a looser similarity threshold.
-
-    Structural grouping only — no LLM call. Frame label is derived from
-    the representative cluster's representative signal content (first 40 chars).
-    Topology cell coverage is populated from cluster topology_coords metadata
-    when available.
-    """
-    if len(clusters) < 2:
-        return []
-
-    frames: list = []
-    assigned: set[str] = set()
-    frame_idx = 0
-
-    for ca in clusters:
-        if ca.representative_id in assigned:
-            continue
-        emb_a = store.get_embedding(ca.representative_id)
-        members: list[str] = [ca.representative_id]
-        assigned.add(ca.representative_id)
-
-        if emb_a is not None:
-            for cb in clusters:
-                if cb.representative_id in assigned:
-                    continue
-                emb_b = store.get_embedding(cb.representative_id)
-                if emb_b is None:
-                    continue
-                sim = _cosine_sim(emb_a, emb_b)
-                if sim >= frame_threshold:
-                    members.append(cb.representative_id)
-                    assigned.add(cb.representative_id)
-
-        # Collect topology cell coverage for this frame
-        cells: list = []
-        for rid in members:
-            sig = store.get(rid)
-            if sig is None:
-                continue
-            coords = sig.metadata.get("topology_coords")
-            if coords and coords != "out_of_bounds" and isinstance(coords, (tuple, list)):
-                c = tuple(coords) if isinstance(coords, list) else coords
-                if c not in cells:
-                    cells.append(c)
-
-        rep_sig = store.get(ca.representative_id)
-        label = (rep_sig.content[:40].rstrip() + "…") if rep_sig else f"frame_{frame_idx}"
-
-        frames.append(FrameProjection(
-            frame_id=f"frame_{frame_idx:03d}",
-            label=label,
-            cluster_ids=members,
-            coverage_topology_cells=cells,
-        ))
-        frame_idx += 1
-
-    return frames
-
-
-def _build_cross_level_edges(
-    atoms: list,
-    frames: list,
-    clusters: list,
-    store: "SignalStore",
-) -> list:
-    """Build typed cross-level edges linking atoms ↔ clusters and clusters ↔ frames.
-
-    Relation semantics:
-      atom→cluster  "supports"      when atom.verification_score >= 0.6
-      atom→cluster  "contradicts"   when atom.verification_score < 0.35
-      cluster→frame "contextualizes" always (membership edge)
-    """
-    edges: list = []
-    frame_by_cluster: dict[str, str] = {}
-    for fr in frames:
-        for cid in fr.cluster_ids:
-            frame_by_cluster[cid] = fr.frame_id
-
-    for atom in atoms:
-        rel = (
-            "supports" if atom.verification_score >= 0.6
-            else "contradicts" if atom.verification_score < 0.35
-            else "contextualizes"
-        )
-        edges.append(CrossLevelEdge(
-            src_id=atom.atom_id,
-            dst_id=atom.parent_cluster_id,
-            src_level="atom",
-            dst_level="cluster",
-            relation=rel,
-            weight=round(atom.verification_score, 3),
-        ))
-
-    for cp in clusters:
-        fid = frame_by_cluster.get(cp.representative_id)
-        if fid:
-            edges.append(CrossLevelEdge(
-                src_id=cp.representative_id,
-                dst_id=fid,
-                src_level="cluster",
-                dst_level="frame",
-                relation="contextualizes",
-                weight=1.0,
-            ))
-
-    return edges
 
 
 def _build_sensitivities(
@@ -1448,14 +1302,10 @@ def build_projection(
             _build_topology_coverage(active, store, topology)
         )
 
-    # --- Multi-resolution lattice ---
+    # --- Atom resolution ---
     # Build atoms across all clusters (not just active) so weakly_supported
     # and rejected clusters also carry atoms in their genomes.
     proj.atoms = _build_atoms(cluster_projections, store)
-    proj.frames = _build_frames(active, store)
-    proj.cross_level_edges = _build_cross_level_edges(
-        proj.atoms, proj.frames, active, store
-    )
 
     # --- Sensitivity axis (gated on field size) ---
     if active:

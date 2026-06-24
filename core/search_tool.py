@@ -44,6 +44,72 @@ _MAX_CONTENT_CHARS = 2000
 _DEFAULT_MAX_RESULTS = 8  # raised from 5 to allow more DDG leads
 _MIN_FOLLOWUP_RESULTS = 3
 
+# ---------------------------------------------------------------------------
+# Retrieval timing stats (Tier-0 latency instrumentation).
+#
+# Retrieval is the dominant wall-clock cost (blocking HTTP). These process-
+# global counters let summary.json report how much of a run was spent in
+# search vs. inference. Guarded by a lock because searches now run in worker
+# threads (asyncio.to_thread). Snapshot is read once at end of run.
+# ---------------------------------------------------------------------------
+import threading as _threading
+
+_SEARCH_STATS_LOCK = _threading.Lock()
+_SEARCH_STATS = {
+    "calls": 0,           # search() invocations (excl. MOCK short-circuit)
+    "empty_results": 0,   # invocations that returned no chunks
+    "total_s": 0.0,       # cumulative wall time inside search()
+    "max_s": 0.0,         # slowest single search()
+    "fetch_calls": 0,     # page-content fetches attempted (incl. cache hits)
+    "fetch_cache_hits": 0,  # page fetches served from the in-run URL cache
+    "fetch_total_s": 0.0, # cumulative wall time fetching full pages (network only)
+}
+
+# Cross-worker page-content cache (Tier 1.2). Page text is immutable within a
+# run, and many workers fetch the same top URLs across queries, so memoize
+# url -> extracted text for the run. Reset at run start with the stats.
+_PAGE_CACHE: dict[str, str] = {}
+_PAGE_CACHE_LOCK = _threading.Lock()
+
+
+def reset_search_stats() -> None:
+    """Zero the retrieval counters + page cache (call at the start of a run)."""
+    with _SEARCH_STATS_LOCK:
+        _SEARCH_STATS.update(calls=0, empty_results=0, total_s=0.0, max_s=0.0,
+                             fetch_calls=0, fetch_cache_hits=0, fetch_total_s=0.0)
+    with _PAGE_CACHE_LOCK:
+        _PAGE_CACHE.clear()
+
+
+def search_stats_snapshot() -> dict:
+    """Return a copy of the retrieval counters with derived averages."""
+    with _SEARCH_STATS_LOCK:
+        s = dict(_SEARCH_STATS)
+    s["avg_s"] = round(s["total_s"] / s["calls"], 3) if s["calls"] else 0.0
+    s["total_s"] = round(s["total_s"], 1)
+    s["max_s"] = round(s["max_s"], 1)
+    s["fetch_total_s"] = round(s["fetch_total_s"], 1)
+    return s
+
+
+def _fetch_page_text_cached(url: str, timeout: float) -> str:
+    """`_fetch_page_text` with an in-run url->text memo (Tier 1.2).
+
+    A cache hit returns instantly (no network) and is counted separately so
+    fetch_total_s reflects only real network time.
+    """
+    if url:
+        with _PAGE_CACHE_LOCK:
+            if url in _PAGE_CACHE:
+                with _SEARCH_STATS_LOCK:
+                    _SEARCH_STATS["fetch_cache_hits"] += 1
+                return _PAGE_CACHE[url]
+    text = _fetch_page_text(url, timeout)
+    if url:
+        with _PAGE_CACHE_LOCK:
+            _PAGE_CACHE[url] = text
+    return text
+
 _FOLLOWUP_MODIFIERS_BY_TASK: dict[str, list[str]] = {
     "debate": [
         "expert opinions",
@@ -346,10 +412,15 @@ def _diversify(
     query: str,
     max_results: int,
     task_type: Optional[str] = None,
+    enrich_pages: bool = False,
 ) -> list[CorpusChunk]:
     """Apply source cap + optional RRF + quality priors + MMR reranking.
 
-    Called after backend search returns raw results.
+    Called after backend search returns raw results. When `enrich_pages` is
+    set (web/DDG snippets), full page content is fetched for the FINAL ranked
+    survivors only — so we never pay to fetch pages that relevance-filtering or
+    MMR then discards. Backends that already return full text (Tavily,
+    Wikipedia) pass enrich_pages=False to avoid wasteful re-fetches.
     """
     chunks = apply_source_cap(chunks, MAX_CHUNKS_PER_SOURCE)
     chunks = _relevance_filter(chunks, query)   # drop off-topic noise before reranking
@@ -376,7 +447,13 @@ def _diversify(
 
     chunks = _quality_rerank(chunks, task_type)
     chunks = apply_mmr(chunks[:max_results * 2], query, lam=MMR_LAMBDA)
-    return chunks[:max_results]
+    chunks = chunks[:max_results]
+    if enrich_pages:
+        # Fetch full page content for the FINAL survivors only (top
+        # SEARCH_FETCH_TOP_K of these). Previously this ran on the raw DDG
+        # top-3 inside _ddg_search, wasting fetches on chunks dropped here.
+        chunks = _enrich_with_pages(chunks)
+    return chunks
 
 
 # ---------------------------------------------------------------------------
@@ -433,11 +510,16 @@ def _enrich_with_pages(chunks: list[CorpusChunk]) -> list[CorpusChunk]:
     from concurrent.futures import ThreadPoolExecutor
     targets = chunks[:max(1, _cfg.SEARCH_FETCH_TOP_K)]
     timeout = _cfg.SEARCH_FETCH_TIMEOUT_S
+    _fetch_t0 = time.perf_counter()
     try:
         with ThreadPoolExecutor(max_workers=min(4, len(targets))) as ex:
-            texts = list(ex.map(lambda c: _fetch_page_text(_url_of(c), timeout), targets))
+            texts = list(ex.map(lambda c: _fetch_page_text_cached(_url_of(c), timeout), targets))
     except Exception:
         return chunks
+    finally:
+        with _SEARCH_STATS_LOCK:
+            _SEARCH_STATS["fetch_calls"] += len(targets)
+            _SEARCH_STATS["fetch_total_s"] += time.perf_counter() - _fetch_t0
     n = 0
     for c, t in zip(targets, texts):
         if t and len(t) >= _cfg.SEARCH_FETCH_MIN_CHARS and len(t) > len(c.text):
@@ -449,10 +531,16 @@ def _enrich_with_pages(chunks: list[CorpusChunk]) -> list[CorpusChunk]:
 
 
 def _relevance_filter(chunks: list[CorpusChunk], query: str) -> list[CorpusChunk]:
-    """Drop chunks whose cosine sim to `query` is below SEARCH_RELEVANCE_MIN
+    """Drop chunks whose cosine sim to `query` is below the relevance gate
     (off-topic noise the reranker only reordered). Always keeps the 2 most
     relevant so a strict threshold never empties the result. No-op without an
-    embedder or when the gate is disabled (<=0)."""
+    embedder or when the gate is disabled (<=0).
+
+    The effective threshold is `max(SEARCH_RELEVANCE_MIN, top_sim - REL_MARGIN)`
+    when SEARCH_RELEVANCE_REL_MARGIN > 0 (adaptive: prune results clearly worse
+    than the best available), else the flat SEARCH_RELEVANCE_MIN floor. The
+    adaptive term is default-off (margin 0.0) so default behaviour is unchanged.
+    """
     from . import config as _cfg
     min_sim = _cfg.SEARCH_RELEVANCE_MIN
     if min_sim <= 0 or len(chunks) <= 2:
@@ -467,11 +555,16 @@ def _relevance_filter(chunks: list[CorpusChunk], query: str) -> list[CorpusChunk
     except Exception:
         return chunks
     ranked = sorted(zip(sims, chunks), key=lambda x: x[0], reverse=True)
-    kept = [c for s, c in ranked if s >= min_sim] or []
+    threshold = min_sim
+    rel_margin = getattr(_cfg, "SEARCH_RELEVANCE_REL_MARGIN", 0.0)
+    if rel_margin > 0 and ranked:
+        top_sim = ranked[0][0]
+        threshold = max(min_sim, top_sim - rel_margin)
+    kept = [c for s, c in ranked if s >= threshold] or []
     if len(kept) < 2:                             # never drop below the 2 best
         kept = [c for _, c in ranked[:2]]
     if len(kept) < len(chunks):
-        print(f"[search] relevance gate: kept {len(kept)}/{len(chunks)} (>= {min_sim:.2f})")
+        print(f"[search] relevance gate: kept {len(kept)}/{len(chunks)} (>= {threshold:.2f})")
     return kept
 
 
@@ -594,9 +687,9 @@ def _ddg_search(query: str, max_results: int) -> list[CorpusChunk]:
     except Exception as exc:
         print(f"[search] ddg call failed: {type(exc).__name__}: {exc}")
         return []
-    out = _dedupe_chunks(raw, max_results)
-    out = _enrich_with_pages(out)   # fetch real page content for the top results
-    return out
+    # Page enrichment is deferred to _diversify(enrich_pages=True) so we only
+    # fetch full pages for the final ranked survivors, not the raw DDG top-K.
+    return _dedupe_chunks(raw, max_results)
 
 
 def _cohere_search(query: str, max_results: int) -> list[CorpusChunk]:
@@ -752,6 +845,32 @@ def _log_primary_once() -> None:
 
 def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
            task_type: Optional[str] = None) -> list[CorpusChunk]:
+    """Run an agentic search (timed wrapper around `_search_impl`).
+
+    Records wall time + result counts into `_SEARCH_STATS` so summary.json can
+    report retrieval's share of the run. MOCK runs are not timed (they short-
+    circuit instantly and would pollute real-run comparisons).
+    """
+    if os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False"):
+        return _search_impl(query, max_results, task_type)
+    t0 = time.perf_counter()
+    out: list[CorpusChunk] = []
+    try:
+        out = _search_impl(query, max_results, task_type)
+        return out
+    finally:
+        dt = time.perf_counter() - t0
+        with _SEARCH_STATS_LOCK:
+            _SEARCH_STATS["calls"] += 1
+            _SEARCH_STATS["total_s"] += dt
+            if dt > _SEARCH_STATS["max_s"]:
+                _SEARCH_STATS["max_s"] = dt
+            if not out:
+                _SEARCH_STATS["empty_results"] += 1
+
+
+def _search_impl(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
+                 task_type: Optional[str] = None) -> list[CorpusChunk]:
     """Run an agentic search. Tavily → DDG → Cohere; cached by SHA(query).
 
     Returns up to `max_results` CorpusChunks; an empty list means every
@@ -803,7 +922,7 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
     chunks = _ddg_search(query, max_results)
     if chunks and len(chunks) >= _MIN_FOLLOWUP_RESULTS:
         chunks = _dedupe_chunks(se_chunks + chunks, max_results * 2)
-        chunks = _diversify(chunks, query, max_results, task_type)
+        chunks = _diversify(chunks, query, max_results, task_type, enrich_pages=True)
         _save_cache(query, chunks, max_results)
         print(f"[search] ddg ok: {len(chunks)} results for {query!r} "
               f"in {time.time() - started:.1f}s")
@@ -816,14 +935,14 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
             if followup_chunks:
                 merged = _dedupe_chunks(
                     se_chunks + chunks + followup_chunks, max_results)
-                merged = _diversify(merged, query, max_results, task_type)
+                merged = _diversify(merged, query, max_results, task_type, enrich_pages=True)
                 _save_cache(query, merged, max_results)
                 print(f"[search] ddg follow-up ok: {len(merged)} results for {query!r} "
                       f"(+{len(followup_chunks)} from follow-up {followup!r}) "
                       f"in {time.time() - started:.1f}s")
                 return merged
         merged = _dedupe_chunks(se_chunks + chunks, max_results)
-        merged = _diversify(merged, query, max_results, task_type)
+        merged = _diversify(merged, query, max_results, task_type, enrich_pages=True)
         _save_cache(query, merged, max_results)
         print(f"[search] ddg ok (small batch): {len(merged)} results for {query!r} "
               f"in {time.time() - started:.1f}s")
@@ -853,7 +972,11 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
     if followup:
         chunks = _ddg_search(followup, max_results)
         if chunks:
-            chunks = _diversify(chunks, query, max_results, task_type)
+            # DDG snippets — enrich the final survivors (same as the other DDG
+            # paths). Was implicitly enriched inside _ddg_search before the
+            # enrichment move; without enrich_pages here this fallback would
+            # hand agents 300-char snippets instead of full page content.
+            chunks = _diversify(chunks, query, max_results, task_type, enrich_pages=True)
             _save_cache(query, chunks, max_results)
             print(f"[search] ddg follow-up only ok: {len(chunks)} results for {query!r} "
                   f"via follow-up {followup!r} in {time.time() - started:.1f}s")

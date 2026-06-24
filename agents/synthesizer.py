@@ -558,6 +558,20 @@ class Synthesizer:
         self.llm = llm
         self.task_prompt = task_prompt
 
+    def _render_concurrency(self) -> int:
+        """Concurrent per-cluster render slots, sized to the engine.
+
+        Per-cluster renders are independent under the no-leak rule, so engines
+        that batch internally (vLLM) or server-side (Groq/hybrid) can run them
+        all at once — render count is already bounded by RENDER_K (≤6). The
+        import-time `_RENDER_SEM_SIZE` is pinned to `LLM_CONCURRENCY` (=1 on the
+        laptop), which needlessly serialized briefs on the 32-stream vLLM box;
+        single-stream local engines (HF/GGUF) keep that serial cap.
+        """
+        if getattr(self.llm, "_uses_internal_batching", False):
+            return _SECTION_1_MAX_RENDER_FULL
+        return _RENDER_SEM_SIZE
+
     async def synthesize(
         self,
         store: SignalStore,
@@ -924,10 +938,10 @@ class Synthesizer:
             # Semaphore-bounded parallel render (Fix S1, §9b).
             # Per-cluster renders are mutually independent under the no-leak
             # rule — each call reads only its own cluster's signals. Gather
-            # runs them concurrently up to _RENDER_SEM_SIZE slots. On the
-            # laptop (LLM_CONCURRENCY=1) the semaphore inside the LLM
-            # serializes them anyway; on vLLM paths they genuinely parallelize.
-            _render_sem = asyncio.Semaphore(_RENDER_SEM_SIZE)
+            # runs them concurrently up to _render_concurrency() slots: the full
+            # render set on internal-batching engines (vLLM/Groq), serial on
+            # single-stream local engines (HF/GGUF, LLM_CONCURRENCY=1).
+            _render_sem = asyncio.Semaphore(self._render_concurrency())
 
             async def _guarded_debate(grp):
                 async with _render_sem:
@@ -1043,7 +1057,7 @@ class Synthesizer:
         if dissent_candidates or contradictions:
             fragments = []
             # Parallel dissent renders — same independence guarantee as Section 1.
-            _dissent_sem = asyncio.Semaphore(_RENDER_SEM_SIZE)
+            _dissent_sem = asyncio.Semaphore(self._render_concurrency())
 
             async def _guarded_dissent(cp):
                 async with _dissent_sem:

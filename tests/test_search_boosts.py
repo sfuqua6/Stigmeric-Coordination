@@ -12,6 +12,7 @@ Run with:
     pytest tests/test_search_boosts.py -v
 """
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -161,6 +162,148 @@ class TestSummarizeForSignal(unittest.TestCase):
     def test_no_results(self):
         out = summarize_for_signal("q", [])
         self.assertIn("(no results)", out)
+
+
+class TestAdaptiveRelevanceGate(unittest.TestCase):
+    """Tier 'refine search': adaptive relevance gate, default-off."""
+
+    class _FakeEmbedder:
+        """encode(text) -> 1-D vector [sim]; query encodes to [1.0] so cs@q == sim."""
+        def __init__(self, sim_by_text):
+            self.sim_by_text = sim_by_text
+        def encode(self, x, normalize_embeddings=True):
+            import numpy as np
+            if isinstance(x, str):
+                return np.array([1.0]) if x == "QUERY" else np.array([self.sim_by_text[x]])
+            return np.array([[self.sim_by_text[t]] for t in x])
+
+    def _run_gate(self, sims, rel_margin, min_sim=0.15):
+        from core import config as cfg
+        chunks = [_chunk(f"c{i}", f"text{i}") for i in range(len(sims))]
+        sim_by = {f"text{i}": s for i, s in enumerate(sims)}
+        emb = self._FakeEmbedder(sim_by)
+        with mock.patch.object(st, "_get_embedder", return_value=emb), \
+             mock.patch.object(cfg, "SEARCH_RELEVANCE_MIN", min_sim), \
+             mock.patch.object(cfg, "SEARCH_RELEVANCE_REL_MARGIN", rel_margin):
+            return st._relevance_filter(chunks, "QUERY")
+
+    def test_default_off_keeps_absolute_floor_behaviour(self):
+        # margin 0.0 -> only the absolute floor (0.15) applies.
+        kept = self._run_gate([0.9, 0.5, 0.2, 0.05], rel_margin=0.0)
+        self.assertEqual(len(kept), 3)  # 0.05 dropped, rest >= 0.15
+
+    def test_relative_margin_prunes_inferior(self):
+        # top=0.9, margin 0.25 -> threshold max(0.15, 0.65) = 0.65; keep >=0.65.
+        kept = self._run_gate([0.9, 0.7, 0.5, 0.2], rel_margin=0.25)
+        self.assertEqual(len(kept), 2)  # 0.9, 0.7
+
+    def test_never_drops_below_two(self):
+        kept = self._run_gate([0.9, 0.1, 0.05], rel_margin=0.5)
+        self.assertGreaterEqual(len(kept), 2)
+
+
+class TestEnrichAfterDiversify(unittest.TestCase):
+    """Tier 1.3: page enrichment runs on final survivors, not raw DDG top-K."""
+
+    def test_diversify_enriches_only_when_flagged(self):
+        chunks = [_chunk(f"c{i}", f"snippet {i} about innovation drivers", f"t{i}|u{i}")
+                  for i in range(5)]
+        with mock.patch.object(st, "_enrich_with_pages",
+                               side_effect=lambda cs: cs) as m:
+            st._diversify(list(chunks), "innovation", 3, enrich_pages=False)
+            self.assertEqual(m.call_count, 0)
+            st._diversify(list(chunks), "innovation", 3, enrich_pages=True)
+            self.assertEqual(m.call_count, 1)
+            # enrichment receives the FINAL (<= max_results) ranked set, not raw input
+            enriched_arg = m.call_args[0][0]
+            self.assertLessEqual(len(enriched_arg), 3)
+
+    def test_ddg_search_no_longer_enriches_inline(self):
+        # _ddg_search must NOT call enrichment now (deferred to _diversify).
+        fake_ddgs = mock.MagicMock()
+        ctx = fake_ddgs.return_value.__enter__.return_value
+        ctx.text.return_value = [
+            {"href": f"https://e{i}.org", "title": f"t{i}", "body": f"body {i} text"}
+            for i in range(4)
+        ]
+        with mock.patch.dict("sys.modules", {"ddgs": mock.MagicMock(DDGS=fake_ddgs)}):
+            with mock.patch.object(st, "_enrich_with_pages",
+                                   side_effect=lambda cs: cs) as m:
+                st._ddg_search("query", 4)
+                self.assertEqual(m.call_count, 0)
+
+
+class TestPageCache(unittest.TestCase):
+    """Tier 1.2: in-run URL->text memo avoids re-fetching the same page."""
+
+    def setUp(self):
+        self._orig = st._fetch_page_text
+        st.reset_search_stats()
+
+    def tearDown(self):
+        st._fetch_page_text = self._orig
+        st.reset_search_stats()
+
+    def test_repeat_url_served_from_cache(self):
+        n = {"calls": 0}
+        def fake(url, timeout):
+            n["calls"] += 1
+            return "content " * 100
+        st._fetch_page_text = fake
+        st._fetch_page_text_cached("https://a.org", 5)
+        st._fetch_page_text_cached("https://a.org", 5)
+        st._fetch_page_text_cached("https://b.org", 5)
+        self.assertEqual(n["calls"], 2)  # a fetched once, b once
+        self.assertEqual(st.search_stats_snapshot()["fetch_cache_hits"], 1)
+
+    def test_reset_clears_cache(self):
+        st._fetch_page_text = lambda u, t: "x" * 50
+        st._fetch_page_text_cached("https://a.org", 5)
+        st.reset_search_stats()
+        n = {"calls": 0}
+        def fake(url, timeout):
+            n["calls"] += 1
+            return "y" * 50
+        st._fetch_page_text = fake
+        st._fetch_page_text_cached("https://a.org", 5)  # must re-fetch after reset
+        self.assertEqual(n["calls"], 1)
+
+
+class TestSearchStats(unittest.TestCase):
+    """Tier-0 latency instrumentation: search() records timing into stats."""
+
+    def setUp(self):
+        self._orig_impl = st._search_impl
+        self._orig_mock = os.environ.pop("MOCK_LLM", None)
+        st.reset_search_stats()
+
+    def tearDown(self):
+        st._search_impl = self._orig_impl
+        if self._orig_mock is not None:
+            os.environ["MOCK_LLM"] = self._orig_mock
+
+    def test_counts_calls_and_empties(self):
+        st._search_impl = lambda q, m=8, t=None: ([] if "empty" in q else [_chunk("c", "txt", "t|u")])
+        st.search("topic one")
+        st.search("topic two")
+        st.search("empty topic")
+        snap = st.search_stats_snapshot()
+        self.assertEqual(snap["calls"], 3)
+        self.assertEqual(snap["empty_results"], 1)
+        self.assertGreaterEqual(snap["total_s"], 0.0)
+        self.assertIn("avg_s", snap)
+
+    def test_reset_zeroes(self):
+        st._search_impl = lambda q, m=8, t=None: [_chunk("c", "txt", "t|u")]
+        st.search("x")
+        st.reset_search_stats()
+        self.assertEqual(st.search_stats_snapshot()["calls"], 0)
+
+    def test_mock_runs_are_not_timed(self):
+        os.environ["MOCK_LLM"] = "1"
+        st.reset_search_stats()
+        st.search("anything")  # hits the MOCK short-circuit, must not count
+        self.assertEqual(st.search_stats_snapshot()["calls"], 0)
 
 
 if __name__ == "__main__":

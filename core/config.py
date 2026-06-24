@@ -384,6 +384,13 @@ SEARCH_FETCH_MIN_CHARS = int(os.environ.get("SWARM_SEARCH_FETCH_MIN_CHARS", "400
 # #2: relevance GATE — drop chunks whose query↔chunk cosine is below this (off-
 #     topic noise the reranker only reordered). 0 disables; always keeps >=2.
 SEARCH_RELEVANCE_MIN   = float(os.environ.get("SWARM_SEARCH_RELEVANCE_MIN", "0.15"))
+# #2b: ADAPTIVE relevance gate (default OFF = 0.0, behaviour unchanged). When
+#     > 0, additionally drop chunks more than this cosine margin below the most
+#     relevant chunk for the query — prunes results that are clearly inferior to
+#     what's available, adapting to query difficulty rather than a flat floor.
+#     The absolute SEARCH_RELEVANCE_MIN floor still applies; >=2 best always kept.
+#     Ship gated so the default field behaviour is provably unchanged until A/B'd.
+SEARCH_RELEVANCE_REL_MARGIN = float(os.environ.get("SWARM_SEARCH_RELEVANCE_REL_MARGIN", "0.0"))
 
 # LLM planner (synthesizer._plan_synthesis): retired to default-OFF after
 # failing on serving-context 3/3 real runs while its merge_groups output was
@@ -603,6 +610,18 @@ MAX_TOKENS_SYNTHESIZER = _int_env("SWARM_MAX_TOKENS_SYNTHESIZER", MAX_TOKENS_SYN
 # Multi-claim scout sampling knobs
 SCOUT_CLAIMS_PER_CALL   = _int_env("SWARM_SCOUT_CLAIMS",           SCOUT_CLAIMS_PER_CALL)
 SCOUT_NOVELTY_RECENT_N  = _int_env("SWARM_SCOUT_NOVELTY_RECENT_N", SCOUT_NOVELTY_RECENT_N)
+
+# SAFE atom batching (verification coverage on serial API backends).
+# The per-atom validate loop fires ~3 LLM calls/atom (step-back, HyDE, score).
+# On vLLM those batch internally at ~1× wall-clock, so the API-path used to cap
+# to 1 atom to bound RPM — at the cost of verification coverage (PIPELINE_MAP #15).
+# When SAFE_BATCH_ATOMS is on, the API path instead collapses the loop into TWO
+# batched calls (decompose+plan, then score-all) so it keeps full atom coverage
+# at a fixed 2-call cost regardless of atom count. Default on for API backends.
+SAFE_BATCH_ATOMS = os.environ.get(
+    "SWARM_SAFE_BATCH_ATOMS", "1").strip() in ("1", "true", "True")
+# Atoms per validate call on the batched API path (the per-atom vLLM loop keeps 3).
+SAFE_BATCH_MAX_ATOMS = _int_env("SWARM_SAFE_BATCH_MAX_ATOMS", 3)
 
 # Intake
 CHUNK_WORDS            = _int_env("SWARM_CHUNK_WORDS",          CHUNK_WORDS)

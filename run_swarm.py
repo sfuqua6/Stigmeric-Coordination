@@ -223,7 +223,8 @@ def _make_progress(total: int, desc: str):
         return _Fallback(total, desc)
 
 
-_LLM_INFLIGHT_METRICS = {"peak": 0, "total_calls": 0, "total_tokens_generated": 0}
+_LLM_INFLIGHT_METRICS = {"peak": 0, "total_calls": 0, "total_tokens_generated": 0,
+                         "total_generate_s": 0.0}
 
 
 def _print_bundle_banner(router) -> None:
@@ -280,6 +281,7 @@ def _wrap_llm_with_progress(llm, progress):
             _LLM_INFLIGHT_METRICS["peak"] = max(_LLM_INFLIGHT_METRICS["peak"], state["peak"])
         state["total_calls"] += 1
         _LLM_INFLIGHT_METRICS["total_calls"] += 1
+        _gen_t0 = time.time()
         try:
             result = await original(prompt, role=role, max_tokens=max_tokens, temperature=temperature)
             token_count = 0
@@ -292,6 +294,7 @@ def _wrap_llm_with_progress(llm, progress):
             return result
         finally:
             state["count"] -= 1
+            _LLM_INFLIGHT_METRICS["total_generate_s"] += time.time() - _gen_t0
             try:
                 progress.update(1)
             except Exception:
@@ -337,6 +340,8 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
     # Phase M: wall-clock from pipeline start (covers retrieval, all rounds,
     # AND synthesis — round_logs only sum each round's compute time).
     pipeline_start = time.time()
+    from core.search_tool import reset_search_stats as _reset_search_stats
+    _reset_search_stats()  # per-run retrieval timing (Tier-0 instrumentation)
     task_prompt = build_task_prompt(task_type, user_prompt)
     if config.USE_HETEROGENEOUS:
         # make_router picks LoRAHeterogeneousRouter on L4/A100 (vLLM + LoRA)
@@ -866,6 +871,25 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         total_tokens_generated = _LLM_INFLIGHT_METRICS.get("total_tokens_generated", 0)
         peak_concurrency = _LLM_INFLIGHT_METRICS.get("peak", 0)
         tokens_per_second = total_tokens_generated / wall_clock_s if wall_clock_s > 0 else 0.0
+
+        # Tier-0 timing breakdown: where did wall-clock go? `*_cumulative_s`
+        # sums across concurrency so they can exceed wall_clock_s; the ratios
+        # use wall-clock and are the actionable latency signal. Retrieval is
+        # the historical sink (blocking HTTP), now run off the event loop.
+        from core.search_tool import search_stats_snapshot
+        _search_stats = search_stats_snapshot()
+        _llm_cum_s = round(_LLM_INFLIGHT_METRICS.get("total_generate_s", 0.0), 1)
+        timing = {
+            "wall_clock_s": float(wall_clock_s),
+            "search": _search_stats,
+            "llm_generate_cumulative_s": _llm_cum_s,
+            "search_cumulative_s": _search_stats.get("total_s", 0.0),
+            "page_fetch_cumulative_s": _search_stats.get("fetch_total_s", 0.0),
+            "search_fraction_of_wallclock": (
+                round(_search_stats.get("total_s", 0.0) / wall_clock_s, 3)
+                if wall_clock_s > 0 else 0.0
+            ),
+        }
         summary = {
             "task_type": task_type,
             "user_prompt": user_prompt,
@@ -890,6 +914,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
             "support_depth_max": int(support_depth_max),
             "audit_flags": audit_flags,
             "kb_diff": kb_diff,
+            "timing": timing,
         }
     except Exception as exc:
         summary = {"error": str(exc)}
@@ -940,6 +965,9 @@ async def run_continuous_pipeline(
     is set, falls back to TASK_TO_BUNDLE[task_type].
     """
     pipeline_start = time.time()
+    from core.search_tool import reset_search_stats as _reset_search_stats
+    _reset_search_stats()  # per-run retrieval timing (Tier-0); critical for
+    #                        multi-run-per-process A/B so stats don't bleed.
     task_prompt = build_task_prompt(task_type, user_prompt)
 
     # Bundle path: load every engine declared in the bundle and route per-role.
@@ -1424,6 +1452,32 @@ async def run_continuous_pipeline(
 
         degraded = bool(silent_roles) or not embedder_ok
 
+        # Tier-0 timing breakdown: where did wall-clock go? `*_cumulative_s` sum
+        # across concurrency (can exceed wall_clock_s); the ratio uses wall-clock
+        # and is the actionable latency signal. Retrieval was the historical sink
+        # (blocking HTTP); searches now run off the event loop (asyncio.to_thread).
+        from core.search_tool import search_stats_snapshot as _search_stats_snap
+        _search_stats = _search_stats_snap()
+        # LLM timing is only populated when the progress wrapper is active
+        # (legacy run_pipeline path). In the continuous-pool path the router
+        # dispatches per-role engines directly, so report null rather than a
+        # misleading 0 when uninstrumented.
+        _llm_cum = (
+            round(_LLM_INFLIGHT_METRICS.get("total_generate_s", 0.0), 1)
+            if _LLM_INFLIGHT_METRICS.get("total_calls", 0) > 0 else None
+        )
+        timing = {
+            "wall_clock_s": round(final_elapsed, 1),
+            "search": _search_stats,
+            "llm_generate_cumulative_s": _llm_cum,
+            "search_cumulative_s": _search_stats.get("total_s", 0.0),
+            "page_fetch_cumulative_s": _search_stats.get("fetch_total_s", 0.0),
+            "search_fraction_of_wallclock": (
+                round(_search_stats.get("total_s", 0.0) / final_elapsed, 3)
+                if final_elapsed > 0 else 0.0
+            ),
+        }
+
         summary = {
             "task_type": task_type,
             "user_prompt": user_prompt,
@@ -1454,6 +1508,7 @@ async def run_continuous_pipeline(
             "kb_diff": kb_diff,
             "genome": genome_stats,
             "output_diversity": output_diversity,
+            "timing": timing,
         }
     except Exception as exc:
         summary = {"error": str(exc)}
@@ -1520,6 +1575,7 @@ def _log_progress(iter_n: int, elapsed: float, detector,
         f"  store: INITIAL={_n_init_live} SUPPORT={_n_supp_live}\n"
         f"  cold_start={cold} quality_met={detector.state.quality_met} "
         f"since_new_surv={detector.state.iterations_since_quality if detector.state.quality_met else detector.state.iterations_since_new_surviving} "
+        f"novelty={detector.state.novelty_rate_last:.2f} "
         f"reason={detector.state.reason or '-'}"
     )
 

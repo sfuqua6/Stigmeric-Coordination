@@ -519,13 +519,38 @@ async def _safe_decompose(content: str, llm, max_atoms: int = 3) -> list[dict]:
     return [{"text": content[:200], "weight": 1.0}]
 
 
+def _is_no_result_snippet(snippet: str) -> bool:
+    """True when retrieval returned nothing usable for this atom.
+
+    The retrieval helpers emit `"(no result for: <q>)"`, `"(no result)"`,
+    `"(no snippet ...)"` or an empty string when a query yields no hits. Such a
+    snippet carries no evidence, so it must NOT be sent to the scoring LLM — an
+    empty/placeholder snippet reads as "does not support" and the model scores
+    it ~0.0 (false refutation), deflating verification_score. A claim with no
+    evidence found is *unverified* (abstain = 0.5), not *contradicted* (0.0).
+    """
+    if not snippet or not snippet.strip():
+        return True
+    low = snippet.strip().lower()
+    return low.startswith("(no result") or low.startswith("(no snippet")
+
+
+# Neutral/abstain score for an atom whose snippet carries no evidence.
+_SAFE_ABSTAIN_SCORE = 0.5
+
+
 async def _safe_score_atom(atom_text: str, snippet: str, llm,
                             task_type: str = None) -> float:
     """Score one atomic fact against a retrieved snippet.
 
     Uses the engages/quality schema for non-factual tasks and
-    supports/confidence for factual tasks.  Returns 0.5 (abstain) on failure.
+    supports/confidence for factual tasks.  Returns 0.5 (abstain) on failure
+    or when no evidence snippet was retrieved.
     """
+    # No evidence retrieved → abstain without an LLM call (avoids the empty
+    # snippet being scored ~0.0 as a false refutation; also saves a round-trip).
+    if _is_no_result_snippet(snippet):
+        return _SAFE_ABSTAIN_SCORE
     if task_type in _NON_FACTUAL_TASKS:
         prompt = (
             f"Does this snippet substantively engage with the following claim?\n"
@@ -535,11 +560,15 @@ async def _safe_score_atom(atom_text: str, snippet: str, llm,
         )
     else:
         prompt = (
-            f"Does this snippet support the following factual claim?\n"
+            f"How does this snippet relate to the following factual claim?\n"
             f"Claim: {atom_text}\n"
             f"Snippet: {snippet[:350]}\n"
-            f"Reply with only: SCORE: X.X  "
-            f"(1.0=strongly supports, 0.5=neutral/no result, 0.0=contradicts)"
+            f"Reply with only: SCORE: X.X\n"
+            f"  1.0 = snippet directly confirms the claim\n"
+            f"  0.5 = snippet is on-topic but neither confirms nor refutes\n"
+            f"  0.0 = snippet explicitly contradicts the claim\n"
+            f"Use 0.0 ONLY for an explicit contradiction, not for mere absence "
+            f"of confirmation."
         )
     try:
         raw = await llm.generate(
@@ -553,25 +582,168 @@ async def _safe_score_atom(atom_text: str, snippet: str, llm,
     return 0.5  # abstain
 
 
-def _format_safe_external(atom_results: list[dict]) -> str:
+def _format_safe_external(atom_results: list[dict],
+                          coverage: Optional[float] = None) -> str:
     """Render atom-level verification results as the external-snippet block.
 
     The main validate_prompt sees this string as its 'external_snippet',
     allowing the LLM to produce a one-sentence overall assessment grounded
-    in the per-atom evidence that was already gathered.
+    in the per-atom evidence that was already gathered. The aggregate is taken
+    over evidence-backed atoms only (atoms with no retrieved snippet abstain
+    and are excluded from the score); `coverage` reports the evidenced fraction.
     """
     lines = ["=== ATOMIC VERIFICATION RESULTS ===\n"]
-    total_weight = sum(a.get("weight", 1.0) for a in atom_results) or 1.0
-    agg = sum(a.get("score", 0.5) * a.get("weight", 1.0) for a in atom_results) / total_weight
+    evidenced = [a for a in atom_results
+                 if a.get("snippet_tag", "(no result)") != "(no result)"]
+    ev_weight = sum(a.get("weight", 1.0) for a in evidenced) or 1.0
+    agg = (
+        sum(a.get("score", 0.5) * a.get("weight", 1.0) for a in evidenced) / ev_weight
+        if evidenced else _SAFE_ABSTAIN_SCORE
+    )
     for i, a in enumerate(atom_results, 1):
+        note = "" if a.get("snippet_tag", "(no result)") != "(no result)" else "  (no evidence — abstained)"
         lines.append(
             f"ATOM {i} [weight={a.get('weight', 1.0):.2f}]: {a['text']}\n"
             f"  QUERY: {a.get('query', '')}\n"
-            f"  SOURCE: {a.get('snippet_tag', '(no result)')}\n"
+            f"  SOURCE: {a.get('snippet_tag', '(no result)')}{note}\n"
             f"  ATOM SCORE: {a.get('score', 0.5):.2f}\n"
         )
-    lines.append(f"WEIGHTED AGGREGATE SCORE: {agg:.2f}")
+    if coverage is not None:
+        lines.append(
+            f"EVIDENCE COVERAGE: {coverage:.0%} of atom weight had a retrieved source"
+        )
+    lines.append(f"WEIGHTED AGGREGATE SCORE (evidence-backed atoms): {agg:.2f}")
     return "\n".join(lines)
+
+
+async def _safe_decompose_and_plan(content: str, llm, max_atoms: int = 3) -> list[dict]:
+    """Batched decompose + query-planning in ONE LLM call.
+
+    Replaces the per-atom `_safe_decompose` → `plan_step_back` → `plan_hyde_query`
+    chain (1 + 2N calls) with a single call that emits, per atom, the proposition,
+    its centrality weight, and a search-engine query phrase (folding step-back's
+    "broader topic" framing and HyDE's keyword-query intent into one instruction).
+
+    Returns dicts shaped `{"text", "weight", "query"}`. Retries once on a
+    total parse failure; on persistent failure falls back to a single whole-content
+    atom so the validate path still produces a (low-coverage) result.
+    """
+    prompt = (
+        f"Break this claim into at most {max_atoms} independently verifiable "
+        f"atomic facts. For EACH fact emit exactly one line in this format:\n"
+        f"ATOM: <one-sentence proposition> | WEIGHT: <centrality 0.0-1.0> | "
+        f"QUERY: <4-8 word search-engine phrase for the broader topic>\n\n"
+        f"WEIGHT reflects how central the proposition is to the main assertion "
+        f"(1.0 = load-bearing; 0.1 = incidental background). QUERY should name "
+        f"the background concept a search engine would index, not restate the claim.\n\n"
+        f"Claim: {content[:400]}"
+    )
+    for _attempt in range(2):
+        try:
+            raw = await llm.generate(
+                prompt, role="validator", max_tokens=320, temperature=0.2
+            )
+            atoms: list[dict] = []
+            for line in raw.strip().splitlines():
+                if "ATOM:" not in line.upper():
+                    continue
+                parts = line.split("|")
+                atom_text = parts[0].split(":", 1)[-1].strip().strip('"\'')
+                weight = 1.0
+                query = ""
+                for seg in parts[1:]:
+                    su = seg.upper()
+                    if "WEIGHT:" in su:
+                        try:
+                            weight = max(0.1, min(1.0, float(seg.split(":", 1)[-1].strip())))
+                        except ValueError:
+                            pass
+                    elif "QUERY:" in su:
+                        query = seg.split(":", 1)[-1].strip().strip('"\'')
+                if atom_text and len(atom_text.split()) >= 3:
+                    atoms.append({"text": atom_text, "weight": weight, "query": query})
+            if atoms:
+                return atoms[:max_atoms]
+        except Exception:
+            pass
+    # Persistent failure: whole content as a single atom, no planned query.
+    return [{"text": content[:200], "weight": 1.0, "query": ""}]
+
+
+async def _safe_score_atoms_batch(items: list[dict], llm,
+                                  task_type: str = None) -> list[float]:
+    """Score N atoms against their snippets in ONE LLM call.
+
+    `items` is a list of `{"text", "snippet"}`. Returns a score per item, aligned
+    by index. Uses the engages/quality schema for non-factual tasks and
+    supports/confidence for factual tasks (mirrors `_safe_score_atom`).
+
+    Robustness: parses `<n>: SCORE: X.X` lines and maps them positionally. Any
+    atom whose score line is missing or unparseable defaults to 0.5 (abstain) —
+    one malformed line cannot sink the rest of the batch. Retries once if the
+    call yields zero parseable scores.
+    """
+    n = len(items)
+    if n == 0:
+        return []
+
+    # Atoms with no retrieved evidence abstain (0.5) without burning an LLM
+    # slot or polluting the batch numbering — see _is_no_result_snippet. Only
+    # the atoms that actually have a snippet are sent to the scorer.
+    scores = [_SAFE_ABSTAIN_SCORE] * n
+    scorable = [i for i, it in enumerate(items)
+                if not _is_no_result_snippet(it.get("snippet", ""))]
+    if not scorable:
+        return scores
+    if len(scorable) == 1:
+        i = scorable[0]
+        scores[i] = await _safe_score_atom(
+            items[i]["text"], items[i]["snippet"], llm, task_type
+        )
+        return scores
+
+    if task_type in _NON_FACTUAL_TASKS:
+        criterion = "1.0=fully engages, 0.0=irrelevant"
+        verb = "engage with"
+    else:
+        criterion = (
+            "1.0=directly confirms, 0.5=on-topic but inconclusive, "
+            "0.0=explicitly contradicts (use 0.0 only for a real contradiction)"
+        )
+        verb = "support"
+    # Number the prompt lines 1..k over the scorable subset; map back via `scorable`.
+    block = "\n\n".join(
+        f"[{j + 1}] CLAIM: {items[i]['text']}\n    SNIPPET: {items[i]['snippet'][:350]}"
+        for j, i in enumerate(scorable)
+    )
+    k = len(scorable)
+    prompt = (
+        f"For each numbered claim, does its snippet {verb} the claim?\n"
+        f"Reply with exactly {k} lines, one per claim, in this format:\n"
+        f"<number>: SCORE: X.X   ({criterion})\n\n"
+        f"{block}"
+    )
+    for _attempt in range(2):
+        try:
+            raw = await llm.generate(
+                prompt, role="validator", max_tokens=12 * k + 20, temperature=0.1
+            )
+            found = False
+            for m in re.finditer(
+                r"\[?(\d+)\]?\s*[:.\)]?\s*SCORE\s*[:=]\s*([0-9.]+)", raw, re.IGNORECASE
+            ):
+                j = int(m.group(1)) - 1
+                if 0 <= j < k:
+                    try:
+                        scores[scorable[j]] = max(0.0, min(1.0, float(m.group(2))))
+                        found = True
+                    except ValueError:
+                        pass
+            if found:
+                return scores
+        except Exception:
+            pass
+    return scores  # scorable atoms abstain on persistent failure
 
 
 # ---------------------------------------------------------------------------
@@ -777,7 +949,12 @@ class Worker:
         if action == VALIDATE:
             _atoms = getattr(self, "_validate_atoms", None)
             _agg = getattr(self, "_validate_agg_score", None)
+            _cov = getattr(self, "_validate_coverage", None)
             if _atoms and _agg is not None:
+                _n_evidenced = sum(
+                    1 for a in _atoms
+                    if a.get("snippet_tag", "(no result)") != "(no result)"
+                )
                 parsed = ParsedDeposit(
                     signal_type=parsed.signal_type,
                     content=parsed.content,
@@ -786,13 +963,16 @@ class Worker:
                     metadata={
                         **(parsed.metadata or {}),
                         "atoms": _atoms,
-                        "aggregation": "weighted_mean",
+                        "aggregation": "weighted_mean_evidenced",
                         "atom_count": len(_atoms),
+                        "evidenced_atom_count": _n_evidenced,
+                        "verification_coverage": _cov,
                         "score": round(_agg, 4),
                     },
                 )
                 self._validate_atoms = None
                 self._validate_agg_score = None
+                self._validate_coverage = None
 
         from agents.base import strip_reasoning
         content = strip_reasoning(parsed.content or "")
@@ -1037,12 +1217,18 @@ class Worker:
                     retrieved = []
                 elif cached_q is not None:
                     # Cached hit — no budget needed; search_tool's on-disk
-                    # cache returns instantly.
-                    retrieved = _search(query, max_results=8,
-                                        task_type=getattr(self, "task_type", None))
+                    # cache returns instantly. Still offloaded to a thread so a
+                    # cold-cache fallback inside search() can't block the loop.
+                    retrieved = await asyncio.to_thread(
+                        _search, query, max_results=8,
+                        task_type=getattr(self, "task_type", None))
                 elif pool_state.try_reserve_search():
-                    retrieved = _search(query, max_results=8,
-                                        task_type=getattr(self, "task_type", None))
+                    # Blocking HTTP search runs in a worker thread so it overlaps
+                    # with other workers and GPU inference instead of freezing
+                    # the single asyncio event loop (PIPELINE_MAP latency fix).
+                    retrieved = await asyncio.to_thread(
+                        _search, query, max_results=8,
+                        task_type=getattr(self, "task_type", None))
                 else:
                     # Budget exhausted; skip the live call this iteration.
                     retrieved = []
@@ -1125,13 +1311,13 @@ class Worker:
                             cached_q = find_cached_query(query, pool_state.served_queries)
                             if cached_q is not None and cached_q != query:
                                 query = cached_q
-                                retrieved = _search(
-                                    query, max_results=5,
+                                retrieved = await asyncio.to_thread(
+                                    _search, query, max_results=5,
                                     task_type=getattr(self, "task_type", None),
                                 )
                             elif pool_state.try_reserve_search():
-                                retrieved = _search(
-                                    query, max_results=5,
+                                retrieved = await asyncio.to_thread(
+                                    _search, query, max_results=5,
                                     task_type=getattr(self, "task_type", None),
                                 )
                             else:
@@ -1242,76 +1428,139 @@ class Worker:
                 from core.query_planner import (
                     plan_step_back, plan_hyde_query, find_cached_query,
                 )
-                # Limit atoms per validation call. vLLM batches atom calls
-                # internally so 3 atoms costs ~1× wall-clock; on the Groq API
-                # path each atom is a separate serial HTTP round-trip, so 3
-                # atoms = 3× latency + 3× RPM consumption. Detect API paths
-                # by checking for the groq-specific class name and cap to 1.
-                _is_api_llm = "Groq" in type(chosen_llm).__name__
-                _safe_max_atoms = 1 if _is_api_llm else 3
-                atoms = await _safe_decompose(target.content, chosen_llm,
-                                              max_atoms=_safe_max_atoms)
-                atom_results: list[dict] = []
-                for atom in atoms:
-                    atom_text = atom["text"]
-                    atom_weight = atom.get("weight", 1.0)
-                    atom_query = ""
-                    snippet = ""
-                    snippet_tag = "(no result)"
-                    try:
-                        step_back = await plan_step_back(atom_text, chosen_llm)
-                        hyde_q = await plan_hyde_query(step_back, chosen_llm)
-                        # Dedup: reuse a cached query if semantically equivalent.
-                        atom_query = hyde_q or step_back
-                        cached_q = find_cached_query(atom_query, pool_state.served_queries) if atom_query else None
+                from core.config import SAFE_BATCH_ATOMS, SAFE_BATCH_MAX_ATOMS
+
+                # Shared per-atom retrieval: run `atom_query` through the search
+                # cache/budget and return (snippet, snippet_tag). Used by both the
+                # batched and per-atom paths so retrieval semantics stay identical.
+                async def _retrieve_for_query(atom_query: str):
+                    nonlocal query
+                    hits = []
+                    if atom_query:
+                        cached_q = find_cached_query(atom_query, pool_state.served_queries)
                         if cached_q is not None:
                             atom_query = cached_q
-                            hits = _search(atom_query, max_results=2)
-                        elif atom_query and pool_state.try_reserve_search():
-                            hits = _search(atom_query, max_results=2)
-                        else:
-                            hits = []
-                        if hits and atom_query:
-                            prev = pool_state.served_queries.get(atom_query, 0)
-                            pool_state.served_queries[atom_query] = max(prev, len(hits))
-                            if not query:
-                                query = atom_query
-                    except Exception:
-                        hits = []
+                            hits = await asyncio.to_thread(_search, atom_query, max_results=2)
+                        elif pool_state.try_reserve_search():
+                            hits = await asyncio.to_thread(_search, atom_query, max_results=2)
+                    if hits and atom_query:
+                        prev = pool_state.served_queries.get(atom_query, 0)
+                        pool_state.served_queries[atom_query] = max(prev, len(hits))
+                        if not query:
+                            query = atom_query
                     if hits:
                         tag = (getattr(hits[0], "source_tag", "") or "")[:120]
                         body = (getattr(hits[0], "text", "") or "")[:300]
-                        snippet = f"[{tag}]\n{body}"
-                        snippet_tag = tag or "(unnamed source)"
-                    else:
-                        snippet = f"(no result for: {atom_query!r})"
-                    # Score this atom against its snippet.
+                        return f"[{tag}]\n{body}", (tag or "(unnamed source)"), atom_query
+                    return f"(no result for: {atom_query!r})", "(no result)", atom_query
+
+                # vLLM batches atom calls internally so 3 atoms cost ~1× wall-clock;
+                # on a serial API path (Groq) each atom was ~3 LLM round-trips
+                # (step-back, HyDE, score), so the loop used to cap to 1 atom to
+                # bound RPM — at the cost of verification coverage (PIPELINE_MAP #15).
+                # With SAFE_BATCH_ATOMS the API path keeps full atom coverage at a
+                # fixed TWO LLM calls (decompose+plan, then score-all) instead.
+                _is_api_llm = "Groq" in type(chosen_llm).__name__
+                _use_batch = _is_api_llm and SAFE_BATCH_ATOMS
+                atom_results: list[dict] = []
+
+                if _use_batch:
+                    # Call 1: decompose + per-atom query planning in one shot.
+                    atoms = await _safe_decompose_and_plan(
+                        target.content, chosen_llm, max_atoms=SAFE_BATCH_MAX_ATOMS
+                    )
+                    # Retrieval (HTTP, not RPM) per atom using the planned query.
+                    # Atom retrievals are independent, so gather them: each is an
+                    # off-loop to_thread search, so concurrency shortens this
+                    # validator's critical path (≤3 atoms). gather preserves order
+                    # for score alignment.
+                    async def _retrieve_atom(_atom):
+                        try:
+                            return await _retrieve_for_query(_atom.get("query", ""))
+                        except Exception:
+                            return "(no result)", "(no result)", ""
+                    _retr = await asyncio.gather(*[_retrieve_atom(a) for a in atoms])
+                    scored_items: list[dict] = []
+                    for atom, (snippet, snippet_tag, used_q) in zip(atoms, _retr):
+                        scored_items.append({
+                            "text": atom["text"], "weight": atom.get("weight", 1.0),
+                            "query": used_q, "snippet": snippet, "snippet_tag": snippet_tag,
+                        })
+                    # Call 2: score every atom against its snippet in one call.
                     try:
-                        atom_score = await _safe_score_atom(
-                            atom_text, snippet, chosen_llm,
-                            task_type=self.task_type,
+                        scores = await _safe_score_atoms_batch(
+                            scored_items, chosen_llm, task_type=self.task_type,
                         )
                     except Exception:
-                        atom_score = 0.5
-                    atom_results.append({
-                        "text": atom_text,
-                        "weight": atom_weight,
-                        "query": atom_query,
-                        "score": atom_score,
-                        "snippet_tag": snippet_tag,
-                    })
-                # Centrality-weighted mean across atoms.
-                total_w = sum(a["weight"] for a in atom_results) or 1.0
-                agg_score = sum(a["score"] * a["weight"] for a in atom_results) / total_w
+                        scores = [0.5] * len(scored_items)
+                    for it, sc in zip(scored_items, scores):
+                        atom_results.append({
+                            "text": it["text"], "weight": it["weight"],
+                            "query": it["query"], "score": sc,
+                            "snippet_tag": it["snippet_tag"],
+                        })
+                else:
+                    atoms = await _safe_decompose(target.content, chosen_llm, max_atoms=3)
+                    for atom in atoms:
+                        atom_text = atom["text"]
+                        atom_weight = atom.get("weight", 1.0)
+                        atom_query = ""
+                        snippet = ""
+                        snippet_tag = "(no result)"
+                        try:
+                            step_back = await plan_step_back(atom_text, chosen_llm)
+                            hyde_q = await plan_hyde_query(step_back, chosen_llm)
+                            snippet, snippet_tag, atom_query = await _retrieve_for_query(hyde_q or step_back)
+                        except Exception:
+                            snippet, snippet_tag, atom_query = "(no result)", "(no result)", ""
+                        # Score this atom against its snippet.
+                        try:
+                            atom_score = await _safe_score_atom(
+                                atom_text, snippet, chosen_llm,
+                                task_type=self.task_type,
+                            )
+                        except Exception:
+                            atom_score = 0.5
+                        atom_results.append({
+                            "text": atom_text,
+                            "weight": atom_weight,
+                            "query": atom_query,
+                            "score": atom_score,
+                            "snippet_tag": snippet_tag,
+                        })
+                # Mark which atoms were actually backed by retrieved evidence
+                # (vs. abstained at 0.5 for lack of a snippet). The verification
+                # SCORE should measure how well evidence supported the atoms we
+                # COULD check; coverage measures how many we could check at all.
+                # Conflating the two (averaging abstains into the score) lets a
+                # narrow-but-confirmed claim look only "half verified".
+                for a in atom_results:
+                    a["evidenced"] = a.get("snippet_tag", "(no result)") != "(no result)"
+                evidenced = [a for a in atom_results if a["evidenced"]]
+                # Centrality-weighted mean over evidence-backed atoms only; when
+                # nothing could be checked, abstain (0.5) rather than report 0.0.
+                if evidenced:
+                    ev_w = sum(a["weight"] for a in evidenced) or 1.0
+                    agg_score = sum(a["score"] * a["weight"] for a in evidenced) / ev_w
+                else:
+                    agg_score = _SAFE_ABSTAIN_SCORE
+                cov_w = sum(a["weight"] for a in atom_results) or 1.0
+                verification_coverage = round(
+                    sum(a["weight"] for a in evidenced) / cov_w, 4
+                )
                 self._validate_atoms = atom_results
                 self._validate_agg_score = agg_score
-                self._validate_external = _format_safe_external(atom_results)
+                self._validate_coverage = verification_coverage
+                self._validate_external = _format_safe_external(
+                    atom_results, coverage=verification_coverage
+                )
             except Exception as exc:
                 print(f"[validate {self.agent_id}] SAFE pass failed: "
                       f"{type(exc).__name__}: {exc}; falling back to single-query path")
                 # Legacy fallback: single keyphrase → single snippet.
                 self._validate_atoms = None
                 self._validate_agg_score = None
+                self._validate_coverage = None
                 try:
                     from core.query_planner import plan_validate_query, find_cached_query
                     from core.search_tool import search as _search
@@ -1321,7 +1570,7 @@ class Worker:
                         if cached_q is not None and cached_q != query:
                             query = cached_q
                         if pool_state.try_reserve_search():
-                            hits = _search(query, max_results=3)
+                            hits = await asyncio.to_thread(_search, query, max_results=3)
                         else:
                             hits = []
                     else:

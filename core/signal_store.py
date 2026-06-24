@@ -55,6 +55,7 @@ from __future__ import annotations
 import math
 import time
 import random
+from collections import deque
 from threading import RLock
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -268,6 +269,15 @@ class SignalStore:
         # interaction-density code falls back to its timestamp path.
         self._current_iter: int = 0
 
+        # Novelty trail (the cheap "is anything new still happening?" probe).
+        # Each clusterable deposit records True if it opened a NEW cluster
+        # (a fresh region of idea-space) or False if it fell onto an existing
+        # cluster / was rejected as a near-duplicate. When the field saturates,
+        # successive deposits stop creating regions and this fills with False —
+        # the stigmergic analogue of every ant landing on an existing trail.
+        # Read-only, scalar-only: never rendered into a prompt (no-leak safe).
+        self._deposit_outcomes: deque = deque(maxlen=256)
+
         # secondary indexes
         self._by_type: dict[str, set[str]] = {}
         self._by_parent: dict[str, set[str]] = {}
@@ -314,11 +324,15 @@ class SignalStore:
             return None
 
         with self._lock:
-            # similarity dedup against recent same-type signals (last 5 min)
+            # similarity dedup against recent same-type signals (last 5 min).
+            # Use the per-type index so we scan only same-type signals, not the
+            # whole store (behaviour-identical, avoids the O(n) full-store scan
+            # on every deposit).
             cutoff = time.time() - 300
             same_type = [
-                s for s in self._signals.values()
-                if s.type == signal_type and s.timestamp >= cutoff
+                self._signals[i]
+                for i in self._by_type.get(signal_type, ())
+                if i in self._signals and self._signals[i].timestamp >= cutoff
             ]
 
             # String pre-screen: check the 3 most-recent same-type signals with
@@ -332,6 +346,9 @@ class SignalStore:
                 if quick_ratio > 0.95:
                     self._apply_dedup_amplify(existing, new_strength=strength)
                     existing.visits += 1
+                    # Near-identical text is redundant by definition.
+                    if signal_type in CLUSTERING_ENABLED_TYPES:
+                        self._deposit_outcomes.append(False)
                     return None
 
             # Encode for clustering (Fix C') and provenance boost.
@@ -399,6 +416,9 @@ class SignalStore:
             # Fix C': assign cluster_id via ClusterRegistry for clusterable types.
             if new_emb is not None and signal_type in CLUSTERING_ENABLED_TYPES:
                 cluster_id = self._cluster_registry.try_join(sid, new_emb, signal_type)
+                # Novelty trail: a join falls onto an existing region (redundant);
+                # a create opens a new region (novel).
+                self._deposit_outcomes.append(cluster_id is None)
                 if cluster_id is None:
                     cluster_id = self._cluster_registry.create(sid, new_emb, signal_type)
                 sig.cluster_id = cluster_id
@@ -442,6 +462,30 @@ class SignalStore:
                 "avg_strength": (sum(strengths) / len(strengths)) if strengths else 0.0,
                 "max_strength": max(strengths) if strengths else 0.0,
             }
+
+    def novelty_rate(self, window: int = 40) -> float:
+        """Fraction of the last `window` clusterable deposits that opened a NEW
+        cluster (a fresh region of idea-space). 1.0 = every recent deposit was
+        novel; 0.0 = every recent deposit fell onto an existing cluster or was
+        a near-duplicate (field saturated).
+
+        The cheap convergence probe: needs no projection and no LLM, only
+        counts events the cluster registry already produces. No-leak safe —
+        returns a scalar, never any signal content.
+        """
+        with self._lock:
+            w = max(1, window)
+            recent = list(self._deposit_outcomes)[-w:]
+            if not recent:
+                return 1.0   # no data yet — treat as "still exploring"
+            return sum(1 for x in recent if x) / len(recent)
+
+    def novelty_sample_count(self) -> int:
+        """How many clusterable-deposit outcomes are on record (capped at the
+        ring-buffer size). Lets convergence require a full window before it
+        trusts a low novelty_rate."""
+        with self._lock:
+            return len(self._deposit_outcomes)
 
     def set_novelty_references(self, texts: list[str], cap: int = 50) -> int:
         """Register external reference texts (e.g. KB prior-consensus claims)

@@ -588,6 +588,18 @@ def _make_judge(model: str | None):
     if os.environ.get("GROQ_API_KEY") and model:
         from core.llm_groq import GroqBackend
         return GroqBackend(model=model, api_key=os.environ["GROQ_API_KEY"]), f"groq:{model}"
+    # No Groq key: if the judge model is given as a Hugging Face id (org/name),
+    # load THAT model locally, so the judge can still be a DIFFERENT family from
+    # the conditions (e.g. a fully-local Blackwell run). Without this the judge
+    # silently fell back to the swarm's own tier model — same family as the
+    # conditions, defeating the neutral-judge requirement for any run where the
+    # conditions differ (the size sweep, condition D). A bare name (no '/') is a
+    # Groq model id, not an HF repo, so fall through to the default engine.
+    if model and "/" in model:
+        os.environ["SWARM_MODEL"] = model   # set before make_llm() resolves config
+        from core.llm import make_llm
+        eng = make_llm()
+        return eng, getattr(eng, "name", f"local:{model}")
     from core.llm import make_llm
     eng = make_llm()
     return eng, getattr(eng, "name", "local")

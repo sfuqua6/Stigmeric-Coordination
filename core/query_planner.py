@@ -47,8 +47,12 @@ from .filters import strip_non_latin
 
 
 # Queries with >= this many cached results are "well-served" — re-issuing
-# them spends rate-limit budget on chunks we already have.
-MIN_GOOD_RESULTS = 3
+# them spends rate-limit budget on chunks we already have. Lowered 3 -> 2:
+# the relevance gate often admits exactly 2 chunks, so a threshold of 3 left
+# near-duplicate queries registering as under-served, which defeated dedup and
+# let multiple workers paraphrase the same search onto the same source pool
+# (the high self-BLEU symptom).
+MIN_GOOD_RESULTS = 2
 # Two queries with SequenceMatcher ratio >= this are duplicates for dedup.
 DUP_RATIO = 0.85
 # Top-k highest-strength INITIALs from which sentence fragments are extracted.
@@ -243,6 +247,19 @@ def _extract_sentence_fragment(text: str, max_words: int = FRAGMENT_MAX_WORDS) -
     return fragment.strip()
 
 
+def _max_sim(q: str, others: list[str]) -> float:
+    """Highest SequenceMatcher ratio between `q` and any string in `others`.
+    0.0 when `others` is empty. Used to score how 'already-explored' a candidate
+    query is so scout selection can favour the most novel phrasing."""
+    ql = (q or "").lower()
+    best = 0.0
+    for o in others:
+        r = SequenceMatcher(None, ql, (o or "").lower()).ratio()
+        if r > best:
+            best = r
+    return best
+
+
 def _is_dup_of_existing(candidate: str, served: dict[str, int]) -> bool:
     """True if `candidate` overlaps a well-served prior query."""
     if not candidate:
@@ -363,15 +380,29 @@ def plan_scout_query(
         return base
 
     own_set = {q.lower() for q in own_history}
-    seed = _seed(worker_id, iter_idx, base, task_type or "") % len(candidates)
-    for offset in range(len(candidates)):
-        q = candidates[(seed + offset) % len(candidates)]
-        if q.lower() in own_set:
-            continue
-        if _is_dup_of_existing(q, served_queries):
-            continue
-        return q
-    return candidates[seed]
+    # Candidates that survive dedup against this worker's history and the
+    # well-served pool queries.
+    fresh = [q for q in candidates
+             if q.lower() not in own_set
+             and not _is_dup_of_existing(q, served_queries)]
+    if not fresh:
+        seed = _seed(worker_id, iter_idx, base, task_type or "") % len(candidates)
+        return candidates[seed]
+
+    # MMR-lite: among the fresh candidates, pick the one LEAST similar to what
+    # this worker and the pool have already searched, so workers actively
+    # diversify the source pool instead of paraphrasing each other (the high
+    # self-BLEU / "same source pool" symptom). The seed breaks ties
+    # deterministically and spreads workers that see an identical candidate set.
+    recent = list(own_history)[-10:] + [
+        s for s, n in list(served_queries.items())[-30:] if n > 0
+    ]
+    seed = _seed(worker_id, iter_idx, base, task_type or "")
+    best_idx = min(
+        range(len(fresh)),
+        key=lambda i: (_max_sim(fresh[i], recent), (seed + i) % len(fresh)),
+    )
+    return fresh[best_idx]
 
 
 def plan_develop_query(target_content: str, served_queries: dict[str, int],

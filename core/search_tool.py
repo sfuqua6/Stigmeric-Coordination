@@ -572,7 +572,15 @@ def _build_followup_query(query: str, task_type: Optional[str] = None) -> str:
     if not query:
         return ""
     modifiers = _FOLLOWUP_MODIFIERS_BY_TASK.get(task_type or "", _FOLLOWUP_DEFAULT)
-    for modifier in modifiers:
+    if not modifiers:
+        return ""
+    # Rotate the starting modifier by a hash of the query so different queries
+    # get different follow-up angles, instead of every query getting the first
+    # modifier (the "+ research" append) — that produced near-duplicate
+    # follow-up searches on the same source pool (high self-BLEU symptom).
+    start = int(hashlib.sha1(query.lower().encode("utf-8")).hexdigest(), 16) % len(modifiers)
+    for k in range(len(modifiers)):
+        modifier = modifiers[(start + k) % len(modifiers)]
         candidate = f"{query} {modifier}".strip()
         if candidate.lower() != query.lower():
             return candidate

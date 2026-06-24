@@ -1013,7 +1013,16 @@ async def run_continuous_pipeline(
         # router=router; engine_for(role) returns the right GroqBackend.
         _groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         _backend = os.environ.get("SWARM_BACKEND", "").strip().lower()
-        if _backend == "hybrid" and _groq_key and not config.USE_MOCK_LLM:
+        # SWARM_BACKEND='local' is an explicit override: run every role on the
+        # local engine even when a GROQ_API_KEY is present (e.g. kept around for
+        # the eval judge). Without this, a present key silently forced GroqRouter
+        # below and 'local' was ignored — so on a big GPU you'd still hit Groq's
+        # rate limits. 'local' now means local.
+        if _backend == "local" and _groq_key and not config.USE_MOCK_LLM:
+            print("[pipeline] SWARM_BACKEND=local: ignoring GROQ_API_KEY, "
+                  "running all roles on the local engine.")
+        _use_groq = bool(_groq_key) and not config.USE_MOCK_LLM and _backend != "local"
+        if _backend == "hybrid" and _use_groq:
             # Hybrid: local GPU model for high-volume roles (scout/dev/critic/
             # validator) + Groq for the few high-value roles (synth/hater). Best
             # fit for FREE Groq — tiny quota burn, full model-family diversity.
@@ -1034,7 +1043,7 @@ async def run_continuous_pipeline(
                     print(f"[pipeline] hybrid local warmup raised "
                           f"{type(exc).__name__}: {exc}")
             print(f"[pipeline] hybrid backend (local + Groq): {router.manifest()}")
-        elif _groq_key and not config.USE_MOCK_LLM:
+        elif _use_groq:
             from core.llm_groq import GroqRouter
             router = GroqRouter(api_key=_groq_key)
             # Preflight: swap any unavailable model to the fallback before the

@@ -38,6 +38,11 @@ CLI
     GROQ_API_KEY=... python -m eval.ab_harness --mini 8 --conditions AB \
         --model llama-3.1-8b-instant
 
+    # real all-local run on one GPU (e.g. Blackwell) — A and B on the SAME
+    # local weights (--model must be a valid HF id, not a Groq name):
+    python -m eval.ab_harness --mini 8 --conditions AB --backend local \
+        --model Qwen/Qwen2.5-7B-Instruct
+
     # full size-sweep arm (small model) with the strong-model D arm:
     GROQ_API_KEY=... python -m eval.ab_harness --conditions ABCD \
         --model llama-3.1-8b-instant --strong-model llama-3.3-70b-versatile
@@ -52,6 +57,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -105,7 +111,7 @@ class DirectModel:
     single model, not a per-role mix.
     """
 
-    def __init__(self, model: str | None):
+    def __init__(self, model: str | None, force_local: bool = False):
         self.model = model
         self._mock = os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False")
         self._engine = None
@@ -113,6 +119,16 @@ class DirectModel:
             from core.llm import MockLLM
             self._engine = MockLLM()
             self.label = f"mock({model or 'mock'})"
+        elif force_local:
+            # All-local parity test (e.g. Blackwell): condition B must run on the
+            # SAME local weights as the swarm — not Groq — even when a
+            # GROQ_API_KEY is present for the judge. Pin SWARM_MODEL *before*
+            # importing core.llm so config resolves MODEL_NAME to M.
+            if model:
+                os.environ["SWARM_MODEL"] = model
+            from core.llm import make_llm
+            self._engine = make_llm()
+            self.label = getattr(self._engine, "name", "local")
         elif os.environ.get("GROQ_API_KEY") and model:
             from core.llm_groq import GroqBackend
             self._engine = GroqBackend(model=model, api_key=os.environ["GROQ_API_KEY"])
@@ -205,6 +221,22 @@ def _is_mock() -> bool:
     return os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False")
 
 
+class ModelParityError(RuntimeError):
+    """Raised when condition A (swarm) did not actually run on the pinned model M
+    — the delta_amp comparison would be invalid. A real test must refuse this."""
+
+
+def _norm_model(s: str) -> str:
+    """Loose model-id key: last path/colon segment, lowercased, alnum-only.
+    'vLLM:Qwen/Qwen2.5-7B-Instruct' -> 'qwen257binstruct'."""
+    s = (s or "").strip().lower()
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1]
+    if ":" in s:
+        s = s.rsplit(":", 1)[-1]
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
 def _swarm_output_dir(run_id: str) -> Path:
     root = "outputs_mock" if _is_mock() else "outputs"
     base_env = os.environ.get("SWARM_OUTPUTS_BASE_DIR")
@@ -213,18 +245,28 @@ def _swarm_output_dir(run_id: str) -> Path:
 
 
 def gen_swarm(task: str, text: str, run_id: str, extra: list[str],
-              swarm_model: str | None) -> tuple[str, Cost]:
+              swarm_model: str | None, backend: str = "auto") -> tuple[str, Cost]:
     """Run the swarm once; return (answer_text, cost). Cost is read from the
-    run's summary.json (wall_clock_s, total_llm_calls)."""
+    run's summary.json (wall_clock_s, total_llm_calls).
+
+    `backend`: 'local' forces SWARM_BACKEND=local (one local model, no Groq
+    routing); 'groq' forces groq-only; 'auto' inherits the ambient env.
+    """
     cmd = [sys.executable, str(_REPO / "run_swarm.py"), task, text,
            f"--run-id={run_id}", *extra]
     env = os.environ.copy()
+    if backend == "local":
+        env["SWARM_BACKEND"] = "local"
+    elif backend == "groq":
+        env.pop("SWARM_BACKEND", None)
+    # 'auto' leaves SWARM_BACKEND as inherited.
     if swarm_model:
         # Pin the swarm's base model to M so swarm(M) genuinely uses M.
         # Local engine reads SWARM_MODEL; Groq router reads per-role models —
-        # pin every role to M via GROQ_ROLE_MODELS_JSON.
+        # pin every role to M via GROQ_ROLE_MODELS_JSON (but NOT in local mode,
+        # where roles must not route to Groq even if a judge key is present).
         env["SWARM_MODEL"] = swarm_model
-        if env.get("GROQ_API_KEY"):
+        if backend != "local" and env.get("GROQ_API_KEY"):
             roles = ["scout", "synthesizer", "forager", "developer",
                      "hater", "critic", "validator"]
             env["GROQ_ROLE_MODELS_JSON"] = json.dumps({r: swarm_model for r in roles})
@@ -259,6 +301,38 @@ def gen_swarm(task: str, text: str, run_id: str, extra: list[str],
             pass
     if not cost.gen_tokens:
         cost.gen_tokens = _approx_tokens(answer)
+
+    # --- Model-parity guard (real-test integrity) --------------------------
+    # The vLLM load cascade silently substitutes a smaller model when the pinned
+    # one can't load (e.g. a Groq name handed to the local engine -> falls back
+    # to Qwen-3B). That makes condition A swarm(other) vs condition B direct(M):
+    # different models, so delta_amp is meaningless. Refuse to continue.
+    # Only a single-model local engine reports the loaded model in run_meta.json
+    # ('vLLM:<id>' / 'RealLLM:<id>'); heterogeneous/Groq routers report
+    # 'heterogeneous' and pin per-role explicitly (erroring loudly rather than
+    # silently substituting), so the check is scoped to the single-model label.
+    if swarm_model and not _is_mock():
+        actual = ""
+        meta_path = out_dir / "run_meta.json"
+        if meta_path.exists():
+            try:
+                actual = str(json.loads(
+                    meta_path.read_text(encoding="utf-8")).get("llm_backend") or "")
+            except Exception:
+                actual = ""
+        if actual and actual.lower() != "heterogeneous" and ":" in actual:
+            if _norm_model(swarm_model) not in _norm_model(actual):
+                raise ModelParityError(
+                    f"swarm ran on {actual!r} but condition A was pinned to "
+                    f"{swarm_model!r} — the load cascade silently substituted a "
+                    f"different model, so delta_amp would compare swarm(other) "
+                    f"vs direct({swarm_model}). Fix: pass a model the engine can "
+                    f"load — a valid HF id for '--backend local' (e.g. "
+                    f"Qwen/Qwen2.5-7B-Instruct), or a Groq model name for "
+                    f"'--backend groq' (e.g. llama-3.1-8b-instant)."
+                )
+        print(f"[ab] parity OK: swarm ran on {actual or '(unrecorded)'}",
+              flush=True)
     return answer, cost
 
 
@@ -286,13 +360,31 @@ async def run_experiment(args) -> Path:
     out_root.mkdir(parents=True, exist_ok=True)
     rows_path = out_root / "conditions.jsonl"
 
-    # Build direct clients once (reused across prompts).
-    dm_m = DirectModel(args.model) if (conds & set("BC")) else None
-    dm_strong = DirectModel(args.strong_model) if "D" in conds else None
-
+    _local = args.backend == "local"
     extra = list(args.swarm_flag or [])
     rows: list[Row] = []
     stamp = time.strftime("%Y%m%d_%H%M%S")
+
+    # Direct clients (conditions B/C/D). On a single local GPU they must NOT be
+    # resident while the swarm (A) runs: vLLM reserves most of VRAM, which would
+    # starve the A subprocess and trip the parity guard. So in local mode we
+    # phase-separate — all A first (GPU exclusive), then build the direct client
+    # and run B/C/D. On Groq/mock there's no VRAM contention, so build up-front
+    # and interleave for incremental output.
+    dm: dict = {"m": None, "strong": None}
+
+    def build_direct() -> None:
+        if (conds & set("BC")) and dm["m"] is None:
+            dm["m"] = DirectModel(args.model, force_local=_local)
+        if "D" in conds and dm["strong"] is None:
+            dm["strong"] = DirectModel(args.strong_model, force_local=_local)
+
+    if not _local:
+        build_direct()
+
+    def _base(p) -> dict:
+        return dict(pid=p.pid, task=p.task, prompt=p.text,
+                    factual=p.factual, must_include=p.must_include)
 
     with rows_path.open("w", encoding="utf-8") as fh:
         def emit(r: Row) -> None:
@@ -300,33 +392,46 @@ async def run_experiment(args) -> Path:
             fh.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
             fh.flush()
 
-        for p in plist:
-            print(f"\n[ab] ===== prompt {p.pid} ({p.task}) =====")
-            base = dict(pid=p.pid, task=p.task, prompt=p.text,
-                        factual=p.factual, must_include=p.must_include)
+        def do_swarm(p) -> None:
+            run_id = f"delta_{args.name}_{p.pid}_{stamp}"
+            ans, cost = gen_swarm(p.task, p.text, run_id, extra, args.model,
+                                  backend=args.backend)
+            emit(Row(condition="A", label=f"swarm({args.model or 'M'})",
+                     answer=ans, cost=asdict(cost), **_base(p)))
 
-            if "A" in conds:
-                run_id = f"delta_{args.name}_{p.pid}_{stamp}"
-                ans, cost = gen_swarm(p.task, p.text, run_id, extra, args.model)
-                emit(Row(condition="A", label=f"swarm({args.model or 'M'})",
-                         answer=ans, cost=asdict(cost), **base))
-
+        async def do_direct(p) -> None:
             if "B" in conds:
-                ans, cost = await gen_direct(dm_m, p.text, args.max_tokens)
-                emit(Row(condition="B", label=dm_m.label, answer=ans,
-                         cost=asdict(cost), **base))
-
+                ans, cost = await gen_direct(dm["m"], p.text, args.max_tokens)
+                emit(Row(condition="B", label=dm["m"].label, answer=ans,
+                         cost=asdict(cost), **_base(p)))
             if "C" in conds:
                 ans, cost = await gen_scaffold(
-                    dm_m, p.text, args.max_tokens, args.scaffold, args.best_of)
-                emit(Row(condition="C",
-                         label=f"{dm_m.label}+{args.scaffold}", answer=ans,
-                         cost=asdict(cost), **base))
-
+                    dm["m"], p.text, args.max_tokens, args.scaffold, args.best_of)
+                emit(Row(condition="C", label=f"{dm['m'].label}+{args.scaffold}",
+                         answer=ans, cost=asdict(cost), **_base(p)))
             if "D" in conds:
-                ans, cost = await gen_direct(dm_strong, p.text, args.max_tokens)
-                emit(Row(condition="D", label=dm_strong.label, answer=ans,
-                         cost=asdict(cost), **base))
+                ans, cost = await gen_direct(dm["strong"], p.text, args.max_tokens)
+                emit(Row(condition="D", label=dm["strong"].label, answer=ans,
+                         cost=asdict(cost), **_base(p)))
+
+        if _local:
+            # Phase 1: all swarm(A) runs — each subprocess owns the GPU and frees
+            # it on exit. Phase 2: build the local direct client, run B/C/D.
+            if "A" in conds:
+                for p in plist:
+                    print(f"\n[ab] ===== A swarm | prompt {p.pid} ({p.task}) =====")
+                    do_swarm(p)
+            if conds & set("BCD"):
+                build_direct()
+                for p in plist:
+                    print(f"\n[ab] ===== direct | prompt {p.pid} ({p.task}) =====")
+                    await do_direct(p)
+        else:
+            for p in plist:
+                print(f"\n[ab] ===== prompt {p.pid} ({p.task}) =====")
+                if "A" in conds:
+                    do_swarm(p)
+                await do_direct(p)
 
     meta = {
         "name": args.name,
@@ -359,7 +464,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--mini", type=int, default=0,
                     help="use only the first N pre-registered prompts (0 = full set)")
     ap.add_argument("--model", default=None,
-                    help="model M for A/B/C (Groq name; blank = local/mock)")
+                    help="model M for A/B/C. For --backend groq/auto: a Groq "
+                         "model name (e.g. llama-3.1-8b-instant). For "
+                         "--backend local: a valid HF id (e.g. "
+                         "Qwen/Qwen2.5-7B-Instruct). Blank = local default/mock.")
+    ap.add_argument("--backend", choices=("auto", "local", "groq"), default="auto",
+                    help="where conditions run. 'local' = one GPU model for BOTH "
+                         "swarm(A) and direct(B) (true parity, e.g. Blackwell); "
+                         "'groq' = groq-only; 'auto' = inherit ambient env.")
     ap.add_argument("--strong-model", default=None,
                     help="stronger model M+ for condition D")
     ap.add_argument("--scaffold", choices=("revise", "best_of_n"), default="revise",
@@ -378,7 +490,16 @@ def main(argv: list[str]) -> int:
     if "D" in args.conditions.upper() and not args.strong_model and not _is_mock():
         print("[ab] note: condition D requested without --strong-model; "
               "D will use the local/default engine.", file=sys.stderr)
-    asyncio.run(run_experiment(args))
+    if args.backend == "local" and args.model and "/" not in args.model \
+            and not _is_mock():
+        print(f"[ab] WARNING: --backend local with --model {args.model!r}: a "
+              f"local engine needs a Hugging Face id (org/name). A bare Groq "
+              f"name will fail the model-parity guard.", file=sys.stderr)
+    try:
+        asyncio.run(run_experiment(args))
+    except ModelParityError as exc:
+        print(f"\n[ab] ABORT (model parity): {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

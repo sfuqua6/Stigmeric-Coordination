@@ -75,6 +75,23 @@ _TAG_RE = re.compile(
 _BRACKET_NOTE_RE = re.compile(
     r"\[(?:external context|unsourced[^\]]*|atom[^\]]*)\]", re.IGNORECASE)
 
+# Markdown reference links to swarm signal anchors: "[1](#initial_00016)" ->
+# keep the "[1]" label (a neutral citation marker), drop the #initial_ anchor
+# that gives the swarm away. Survives into kept sections (Section 1 prose).
+_ANCHOR_LINK_RE = re.compile(
+    r"\[([^\]]*)\]\(#(?:initial|support|verification|search|develop|chain|refine|atom)"
+    r"[^)]*\)",
+    re.IGNORECASE,
+)
+# Defensive: parenthetical field-telemetry annotations the swarm appends to
+# filtered/rejected claims, e.g. "(rejected: dissent_pressure=1.58 > 1.5)",
+# "(held: no verification ...)", "(filtered: support_diversity=2 < 3)". Section 3
+# is now cut entirely, but strip these wherever they appear.
+_PAREN_TELEMETRY_RE = re.compile(
+    r"\((?:rejected|filtered|held|demoted|surviving|contested)\b[^)]*\)",
+    re.IGNORECASE,
+)
+
 # Telemetry section headers the swarm appends. Everything from one of these to
 # the next blank-line-separated header (or EOF) is process noise, not answer.
 _TELEMETRY_HEADERS = (
@@ -88,6 +105,12 @@ _TELEMETRY_HEADERS = (
     "CITATIONS",
     "SOURCES REFERENCED",
     "SYNTHESIS PLAN",
+    # Section 3 of the swarm read-out lists claims the field FILTERED OUT, each
+    # annotated with raw telemetry ("(rejected: dissent_pressure=1.58 > 1.5)").
+    # That is process disclosure, not answer content, and it leaked the swarm's
+    # identity + padded its length into the judge. Cut from here (it precedes
+    # PROCESS NOTES in the answer, so it becomes the effective cut point).
+    "CONSIDERED AND FILTERED",
 )
 
 # Leading markdown / numbering to strip before matching a header label
@@ -136,6 +159,8 @@ def normalize(text: str) -> str:
             continue
         s = _TAG_RE.sub("", ln)
         s = _BRACKET_NOTE_RE.sub("", s)
+        s = _ANCHOR_LINK_RE.sub(r"[\1]", s)
+        s = _PAREN_TELEMETRY_RE.sub("", s)
         # Strip a bare header label that's alone on its line (keep prose lines
         # that merely start with the word).
         stripped = s.strip().rstrip(":").upper()

@@ -70,6 +70,18 @@ if os.environ.get("SWARM_QUIET_LIBS", "1") != "0":
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+# --depth N: synthesis net width (how many claim clusters the read-out surfaces).
+# Pre-parsed HERE, before `from core import config`, because config binds
+# RENDER_K at import time. Higher --depth surfaces more of the swarm's niche /
+# long-tail coverage (the point of the random scout/partition split) instead of
+# only the obvious high-consensus claims. Wide by default (config RENDER_K=8);
+# this just lets a run override it. argparse declares it formally below.
+for _di, _da in enumerate(sys.argv):
+    if _da == "--depth" and _di + 1 < len(sys.argv):
+        os.environ["SWARM_RENDER_K"] = sys.argv[_di + 1]
+    elif _da.startswith("--depth="):
+        os.environ["SWARM_RENDER_K"] = _da.split("=", 1)[1]
+
 from core import config
 from core.config import (
     NUM_SCOUTS, NUM_FORAGERS, NUM_CRITICS, NUM_HATERS, NUM_VALIDATORS,
@@ -77,6 +89,7 @@ from core.config import (
     N_FACETS, WEB_PARTITION_COUNT,
 )
 from core.signal_store import SignalStore
+from core.clean_answer import write_answer_files
 from core.intake import (
     chunk_corpus, partition_for_scouts, trivial_corpus_from_thesis, ScoutPartition,
 )
@@ -788,7 +801,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
     if router is not None:
         await router.teardown()
 
-    (output_dir / "answer.txt").write_text(final_answer, encoding="utf-8")
+    write_answer_files(output_dir, final_answer)
     if citations:
         (output_dir / "citations.json").write_text(
             json.dumps(citations, indent=2), encoding="utf-8"
@@ -1317,7 +1330,7 @@ async def run_continuous_pipeline(
     if router is not None:
         await router.teardown()
 
-    (output_dir / "answer.txt").write_text(final_answer, encoding="utf-8")
+    write_answer_files(output_dir, final_answer)
     if citations:
         (output_dir / "citations.json").write_text(
             json.dumps(citations, indent=2), encoding="utf-8"
@@ -1921,7 +1934,7 @@ async def run_phase_isolated(
         if router is not None:
             await router.teardown()
 
-        (run_dir / "answer.txt").write_text(final_answer, encoding="utf-8")
+        write_answer_files(run_dir, final_answer)
         if citations:
             (run_dir / "citations.json").write_text(
                 json.dumps(citations, indent=2), encoding="utf-8"
@@ -2007,10 +2020,16 @@ def main():
     # --legacy-rounds for A/B comparison or to repro old artifacts.
     legacy_rounds = "--legacy-rounds" in args
     small = "--small" in args
+    # --synth-verbose: restore the old combined answer.txt (Section 1 + all field
+    # telemetry). Default is the clean reader answer + a separate diagnostics.md.
+    # Sets the env var the write helper (core/clean_answer.py) reads, so it works
+    # with or without the explicit flag.
+    if "--synth-verbose" in args:
+        os.environ["SWARM_SYNTH_VERBOSE"] = "1"
     args = [a for a in args if a not in (
         "--use-kb", "--ignore-kb", "--reset-kb",
         "--show-partition-overlap", "--heterogeneous", "--legacy-rounds",
-        "--small",
+        "--small", "--synth-verbose",
     )]
     # --workers=N for the continuous pool size
     workers = _CONTINUOUS_DEFAULT_WORKERS
@@ -2022,6 +2041,23 @@ def main():
             print(f"[pipeline] --workers expects an integer; got {worker_flags[-1]!r}")
             sys.exit(1)
     args = [a for a in args if not a.startswith("--workers=")]
+
+    # --depth / --depth=N was already consumed into SWARM_RENDER_K at module
+    # top (before config import). Strip both forms here so the value token in
+    # the space form isn't mistaken for the task/prompt positional.
+    _depth_clean: list = []
+    _skip_next = False
+    for _a in args:
+        if _skip_next:
+            _skip_next = False
+            continue
+        if _a == "--depth":
+            _skip_next = True
+            continue
+        if _a.startswith("--depth="):
+            continue
+        _depth_clean.append(_a)
+    args = _depth_clean
 
     # --bundle=NAME: pick a MODEL_BUNDLES entry, overriding TASK_TO_BUNDLE.
     # Only meaningful with the default continuous_pool execution mode.

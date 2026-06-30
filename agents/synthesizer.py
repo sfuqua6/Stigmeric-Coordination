@@ -64,6 +64,7 @@ from core.config import (
     RENDER_DISSENT_MAX_WORDS,
     SAMPLING_PER_ENGINE,
     LLM_CONCURRENCY,
+    RENDER_K,
 )
 from core.projection import (
     SynthesisProjection,
@@ -314,10 +315,11 @@ def _rank_clusters(clusters: list) -> list:
 # from every already-picked cluster. 0.35 ≈ "topically distinct".
 _SECTION_1_DIVERSITY_MIN_DIST = 0.35
 
-# Hard ceiling on the number of clusters the synthesizer renders in full.
-# If the planner returns more than this, the set is trimmed to the most
-# diverse, highest-priority clusters.
-_SECTION_1_MAX_RENDER_FULL = 6
+# Ceiling on the number of clusters the synthesizer renders in full = the
+# synthesis net width. Driven by RENDER_K (config, override per-run with
+# run_swarm --depth N) so widening the net actually reaches Section 1 instead of
+# being re-trimmed here. Floored at 6 so a low --depth can't starve the read-out.
+_SECTION_1_MAX_RENDER_FULL = max(6, RENDER_K)
 
 # Semaphore size for parallel per-cluster renders (Fix S1 from §9b).
 # The per-cluster renders are mutually independent under the no-leak rule, so
@@ -393,6 +395,42 @@ def _is_valid_contract(contract: dict) -> bool:
     if contract.get("length_hint", "") not in ("short", "medium", "long"):
         return False
     return True
+
+
+def _on_topic(cluster_text: str, task_prompt: str, store, *,
+              min_cos=0.18, min_overlap=0.10) -> bool:
+    """True if the cluster is plausibly about the task. Embedding cosine if the
+    store embedder is available; else a keyword-overlap fallback. Permissive on
+    purpose — only meant to catch gross contamination (e.g. an AAAI/ML claim in
+    a theology answer), not to second-guess borderline-relevant claims."""
+    emb = getattr(store, "_encode", None)
+    if emb is not None:
+        a, b = store._encode(cluster_text[:400]), store._encode(task_prompt[:400])
+        if a and b:
+            cos = sum(x * y for x, y in zip(a, b))  # both L2-normalized in _encode
+            return cos >= min_cos
+    # fallback: content-word Jaccard against the prompt
+    toks = lambda s: {w for w in re.findall(r"[a-z]{4,}", s.lower())}
+    ct, pt = toks(cluster_text), toks(task_prompt)
+    if not ct or not pt:
+        return True
+    return len(ct & pt) / max(1, len(pt)) >= min_overlap
+
+
+def _filter_on_topic(candidates: list, task_prompt: str, store) -> list:
+    """Drop clusters that are grossly off-topic relative to the task prompt, so
+    contamination can't be rendered into Sections 1-2. Logs every drop. Never
+    returns empty when given a non-empty input (a too-aggressive gate must not
+    starve the read-out — fall back to the full candidate set)."""
+    kept = []
+    for cp in candidates:
+        rep = store.get(cp.representative_id)
+        if rep is None or _on_topic(rep.content, task_prompt, store):
+            kept.append(cp)
+        else:
+            print(f"[synth] dropped off-topic cluster {cp.representative_id}: "
+                  f"{rep.content[:60]}")
+    return kept or candidates
 
 
 def _trim_render_full(plan: dict, candidates: list, store: SignalStore) -> dict:
@@ -752,6 +790,10 @@ class Synthesizer:
         # every time). Planning has no LLM call unless SWARM_USE_LLM_PLANNER=1.
         from core.config import USE_LLM_PLANNER
         _plan_candidates = list(projection.surviving) + list(projection.contested)
+        # Defense in depth: drop grossly off-topic clusters before planning so
+        # contamination (e.g. an AAAI/ML claim in a theology answer) can't be
+        # rendered into Sections 1-2. Permissive gate; never starves the read-out.
+        _plan_candidates = _filter_on_topic(_plan_candidates, self.task_prompt, store)
         if USE_LLM_PLANNER:
             plan = await self._plan_synthesis(projection, store)
         elif _plan_candidates:

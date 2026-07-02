@@ -1516,6 +1516,7 @@ async def run_continuous_pipeline(
             "embedder": embedder,
             "clustering": clustering,
             "convergence_reason": detector.state.reason or "unknown",
+            "scout_gate_skips": int(ps.scout_gate_skips) if ps else 0,
             "action_shares": {k: round(v, 4) for k, v in final_shares.items()},
             "n_clusters": {
                 "surviving": len(_final_proj.surviving),

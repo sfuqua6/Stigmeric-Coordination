@@ -661,6 +661,21 @@ PEER_PRUNE_MIN_MEMBERS = _int_env(  "SWARM_PEER_PRUNE_MIN_MEMBERS", PEER_PRUNE_M
 PEER_PRUNE_FACTOR      = _float_env("SWARM_PEER_PRUNE_FACTOR",      PEER_PRUNE_FACTOR)
 
 # ---------------------------------------------------------------------------
+# Scout pre-call gate (compute program, 2026-07-01)
+# ---------------------------------------------------------------------------
+# Novelty was enforced AFTER generation (select_novel_claim, dedup) — the LLM
+# call was already spent by the time the near-duplicate got filtered. This
+# gate moves the check ahead of the call: when the field's recent novelty
+# rate is below the floor (and enough INITIALs + a full sample window exist),
+# a worker that drew SCOUT is re-dispatched to a develop/validate action
+# instead of burning a call re-generating the model's modal claim. The floor
+# sits above the convergence halt floor (0.05) so gating starts before
+# halting. 0 disables the gate.
+SCOUT_GATE_NOVELTY_FLOOR = _float_env("SWARM_SCOUT_GATE_NOVELTY_FLOOR", 0.10)
+SCOUT_GATE_MIN_INITIALS  = _int_env(  "SWARM_SCOUT_GATE_MIN_INITIALS",  8)
+SCOUT_GATE_WINDOW        = _int_env(  "SWARM_SCOUT_GATE_WINDOW",        40)
+
+# ---------------------------------------------------------------------------
 # Fix P — Planner (position-space SynthesisPlan)
 # ---------------------------------------------------------------------------
 # Max clusters rendered in Section 1 = the synthesis "depth" / net width.

@@ -223,8 +223,11 @@ All convergence thresholds are overridable via environment variables. This is cr
 | `MAX_TIME_S` | `SWARM_MAX_TIME_S` | `900.0` |
 | `NOVELTY_SAT_WINDOW` | `SWARM_NOVELTY_SAT_WINDOW` | `40` |
 | `NOVELTY_SAT_FLOOR` | `SWARM_NOVELTY_SAT_FLOOR` | `0.05` |
+| `RENDER_STABLE_ITERS` | `SWARM_RENDER_STABLE_ITERS` | `40` |
 
 A novelty-saturation gate (`NOVELTY_SAT_*`) can short-circuit the quality-hold / no-new-surviving waits: when the last `NOVELTY_SAT_WINDOW` clusterable deposits opened essentially no new idea-space (`store.novelty_rate(...) < NOVELTY_SAT_FLOOR`), the detector treats the field as exhausted.
+
+**Render-set stability halt (`RENDER_STABLE_ITERS`, 0 disables).** The primary defense against `cap_time` endings: near-duplicate "dust" clusters keep resetting the surviving/novelty counters (fragmentation masquerades as exploration), so the detector also watches the only thing the readout consumes — the top-`RENDER_K` set chosen by `build_plan()` plus each selected cluster's evidence counts. Unchanged for `RENDER_STABLE_ITERS` iterations ⇒ halt with reason `render_set_stable`. A companion **pre-call scout gate** (`SCOUT_GATE_*` in `core/config.py`, `scout_gate_engaged()` in `worker_pool.py`) demotes SCOUT draws to exploit actions once field novelty falls below `SCOUT_GATE_NOVELTY_FLOOR` (0.10) — the novelty check moved *ahead* of the LLM call instead of discarding its output afterwards. Skip count lands in `summary.json: scout_gate_skips`.
 
 Tests that spawn subprocesses (test_phase_isolation, test_heterogeneous_routing, test_kb_default_off) must set `SWARM_MIN_TIME_S=0 SWARM_MIN_ITERATIONS=5 SWARM_MAX_ITERATIONS=20` etc. in the subprocess env dict, or they will time out waiting for the 60-second minimum wall. The `convergence.py` module reads these at import time.
 

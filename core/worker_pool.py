@@ -173,6 +173,9 @@ class PoolState:
     # backend call; entries older than SEARCH_WINDOW_S are pruned at
     # check time. Caps DDG hits so response times stay sub-second.
     search_timestamps: deque = field(default_factory=lambda: deque(maxlen=64))
+    # SCOUT calls skipped by the pre-call novelty gate (each is an LLM call
+    # NOT spent re-generating the modal claim). Surfaced in the pool summary.
+    scout_gate_skips: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def try_reserve_search(self) -> bool:
@@ -229,6 +232,30 @@ class PoolState:
 # ---------------------------------------------------------------------------
 # Action selection
 # ---------------------------------------------------------------------------
+
+def scout_gate_engaged(store, field_state) -> bool:
+    """True when a SCOUT LLM call would almost certainly be wasted.
+
+    Novelty was enforced only AFTER generation (select_novel_claim / dedup) —
+    the call cost was already paid by the time the near-duplicate got
+    discarded. This is the pre-call version: once the field has a real
+    INITIAL base and a full novelty window shows recent clusterable deposits
+    opening (almost) no new idea-regions, another scout call will re-sample
+    the model's modal claim. The caller re-dispatches the worker to an
+    exploit action instead. Scalars only (novelty rate, counts) — no-leak
+    safe. Disabled when SCOUT_GATE_NOVELTY_FLOOR <= 0.
+    """
+    from core.config import (
+        SCOUT_GATE_NOVELTY_FLOOR, SCOUT_GATE_MIN_INITIALS, SCOUT_GATE_WINDOW,
+    )
+    if SCOUT_GATE_NOVELTY_FLOOR <= 0:
+        return False
+    if getattr(field_state, "n_initials", 0) < SCOUT_GATE_MIN_INITIALS:
+        return False
+    if store.novelty_sample_count() < SCOUT_GATE_WINDOW:
+        return False
+    return store.novelty_rate(SCOUT_GATE_WINDOW) < SCOUT_GATE_NOVELTY_FLOOR
+
 
 def choose_action(field_state: FieldState, worker_history: deque,
                   pool_state: PoolState, rng: random.Random,
@@ -895,6 +922,25 @@ class Worker:
                                local_biases=local_biases)
         if action is None:
             return None
+
+        # Pre-call scout gate: don't spend an LLM call re-scouting a
+        # saturated field — re-dispatch this worker to an exploit action.
+        # choose_action falls back to SCOUT when nothing else has a valid
+        # precondition; in that case skip the iteration (free) rather than
+        # fire the wasted call.
+        if action == SCOUT and scout_gate_engaged(store, field_state):
+            pool_state.scout_gate_skips += 1
+            demoted = choose_action(
+                field_state, self.recent_actions, pool_state, self._rng,
+                disabled_actions=set(self._disabled_actions or set()) | {SCOUT},
+                local_biases=local_biases)
+            if pool_state.scout_gate_skips % 10 == 1:
+                print(f"[gate] scout demoted (field novelty "
+                      f"{store.novelty_rate():.2f} < floor); "
+                      f"{pool_state.scout_gate_skips} skip(s) so far")
+            if demoted is None or demoted == SCOUT:
+                return None
+            action = demoted
 
         # Target sampling. If precondition fails at sample time (race with
         # other workers), re-pick action once with a fresh snapshot.

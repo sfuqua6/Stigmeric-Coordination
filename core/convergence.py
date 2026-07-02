@@ -9,9 +9,13 @@ True. There are three halt paths, evaluated in order:
        - TWO independent validator deposits, each with score >= 0.7
      Then run >= 30 more iterations to let dissent surface; if dissent
      pressure rises in that window, un-flip and continue.
-  2. Saturation: 60 iterations without a new surviving cluster AND
+  2. Render-set stability: the top-RENDER_K cluster set the composer would
+     read (chosen by build_plan) has identical membership AND evidence
+     signatures for RENDER_STABLE_ITERS iterations. Robust to dust-cluster
+     fragmentation, which resets the other counters.
+  3. Saturation: 60 iterations without a new surviving cluster AND
      |Δ max_strength over last 60| < 0.02.
-  3. Cap: hit MAX_ITERATIONS or MAX_TIME.
+  4. Cap: hit MAX_ITERATIONS or MAX_TIME.
 
 Hard floors prevent premature halt:
   - iterations >= MIN_ITERATIONS (default 50)
@@ -89,6 +93,21 @@ SAT_WINDOW = 60
 NOVELTY_SAT_WINDOW = _int_env("SWARM_NOVELTY_SAT_WINDOW", 40)
 NOVELTY_SAT_FLOOR = _float_env("SWARM_NOVELTY_SAT_FLOOR", 0.05)
 
+# Render-set stability halt (the compute-waste fix, 2026-07-01).
+#
+# Why the other halts never fire on real runs: near-duplicate claims in the
+# 0.65-0.85 similarity band open NEW dust clusters instead of joining existing
+# ones, so every "no new surviving cluster" / novelty counter keeps resetting —
+# the field's failure mode (duplicate spray) masquerades as perpetual
+# exploration, and runs die on cap_time (see hey fable.md: every substantive
+# run). This halt watches the only thing the readout actually consumes: the
+# top-RENDER_K render set chosen by build_plan(). When the render set AND the
+# evidence signatures of its clusters (members/support/dissent/verification
+# counts) are unchanged for RENDER_STABLE_ITERS iterations, further iterations
+# cannot change the answer — dust cluster #57 opening somewhere in the tail
+# does not reset this counter. 0 disables.
+RENDER_STABLE_ITERS = _int_env("SWARM_RENDER_STABLE_ITERS", 40)
+
 # Hard caps.
 MAX_ITERATIONS = _int_env("SWARM_MAX_ITERATIONS", 2000)
 MAX_TIME_S = _float_env("SWARM_MAX_TIME_S", 900.0)
@@ -105,6 +124,11 @@ class DetectorState:
     n_inter_cluster_edges_last: int = 0  # from last tick; used for MIN_INTER_CLUSTER_EDGES floor
     strength_history: deque = field(default_factory=lambda: deque(maxlen=SAT_WINDOW))
     novelty_rate_last: float = 1.0       # fraction of recent deposits opening new regions
+    # Render-set stability: signature of the current build_plan render set
+    # (rep_id + evidence counts per cluster) and how many iterations it has
+    # been unchanged. See RENDER_STABLE_ITERS.
+    render_signature_last: tuple = ()
+    iterations_render_stable: int = 0
     reason: str = ""
 
 
@@ -185,6 +209,16 @@ class ConvergenceDetector:
         # Cheap novelty probe (no projection needed; read alongside it).
         self.state.novelty_rate_last = self.store.novelty_rate(NOVELTY_SAT_WINDOW)
 
+        # Render-set stability: advance only while the signature is non-empty
+        # and unchanged; any change (different clusters selected OR new
+        # evidence landing on a selected cluster) resets the counter.
+        sig = self._render_signature(proj)
+        if sig and sig == self.state.render_signature_last:
+            self.state.iterations_render_stable += iters_advanced
+        else:
+            self.state.iterations_render_stable = 0
+        self.state.render_signature_last = sig
+
         # New surviving cluster?
         if n_surviving > self.state.n_surviving_last:
             self.state.iterations_since_new_surviving = 0
@@ -205,6 +239,35 @@ class ConvergenceDetector:
             # Quality lost — un-flip and reset the hold counter.
             self.state.quality_met_at_iter = None
             self.state.iterations_since_quality = 0
+
+    def _render_signature(self, proj) -> tuple:
+        """Signature of what the synthesizer would read if the run halted now.
+
+        build_plan is the same deterministic selector the readout uses, so
+        this is not a proxy — it IS the render set. Per selected cluster the
+        signature carries the evidence-shape counts; a SUPPORT/OBJECT/
+        VERIFICATION landing on a rendered cluster changes the signature and
+        resets stability, so a run halts only when the part of the field that
+        reaches the page has genuinely stopped moving. Returns () on any
+        failure (never blocks other halt paths)."""
+        try:
+            from .projection import build_plan
+            plan = build_plan(proj, self.store)
+        except Exception:
+            return ()
+        by_rep = {
+            cp.representative_id: cp
+            for cp in (proj.surviving + proj.contested + proj.unverified)
+        }
+        sig = []
+        for rid in plan.render_clusters:
+            cp = by_rep.get(rid)
+            if cp is None:
+                sig.append((rid, -1, -1, -1, -1))
+            else:
+                sig.append((rid, len(cp.member_ids), len(cp.support_set),
+                            len(cp.dissent_set), len(cp.verification_set)))
+        return tuple(sorted(sig))
 
     def _evaluate_quality(self, proj) -> bool:
         """At least one cluster passes the quality gate.
@@ -290,6 +353,18 @@ class ConvergenceDetector:
                 and self.state.iterations_since_quality
                 >= QUALITY_HOLD_ITERATIONS):
             self.state.reason = "quality"
+            return True
+
+        # Render-set stability halt: the top-RENDER_K set the composer would
+        # read is unchanged (same clusters, same evidence counts) for a full
+        # window. Dust clusters opening in the tail cannot reset this — only
+        # changes to what actually reaches the page do. This is the primary
+        # defense against paying for post-saturation churn (cap_time endings).
+        if (RENDER_STABLE_ITERS > 0
+                and self.state.n_surviving_last > 0
+                and self.state.render_signature_last
+                and self.state.iterations_render_stable >= RENDER_STABLE_ITERS):
+            self.state.reason = "render_set_stable"
             return True
 
         # Saturation halt

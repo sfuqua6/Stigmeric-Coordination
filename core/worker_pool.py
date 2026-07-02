@@ -1662,6 +1662,49 @@ class Worker:
                             "score": atom_score,
                             "snippet_tag": snippet_tag,
                         })
+                # Adversarial pass: search for DISCONFIRMING evidence.
+                # Everything above searched FOR each atom; verification that
+                # never looks for counter-evidence is a topicality check, not
+                # a fitness function. For every evidenced atom, fetch
+                # counter-evidence and score it with the FACTUAL schema
+                # regardless of task_type ("does this snippet support the
+                # claim?" — supports=false at high confidence IS measured
+                # contradiction), then discount the atom's score by it.
+                # Abstains (no counter-evidence found) discount nothing.
+                from core.config import (
+                    ADVERSARIAL_VERIFY, ADVERSARIAL_VERIFY_WEIGHT,
+                )
+                if ADVERSARIAL_VERIFY and atom_results:
+                    async def _counter_score(a: dict):
+                        if a.get("snippet_tag", "(no result)") == "(no result)":
+                            return None  # unevidenced atom: nothing to discount
+                        base_q = (a.get("query")
+                                  or relax_query(a["text"]) or a["text"][:60])
+                        c_snip, c_tag, _cq = await _retrieve_for_query(
+                            f"{base_q} criticism counterargument evidence against"
+                        )
+                        adv = await _safe_score_atom(
+                            a["text"], c_snip, chosen_llm, task_type=None,
+                        )
+                        return adv, c_tag
+                    _advs = await asyncio.gather(
+                        *[_counter_score(a) for a in atom_results],
+                        return_exceptions=True,
+                    )
+                    for a, adv in zip(atom_results, _advs):
+                        if not isinstance(adv, tuple):
+                            continue
+                        adv_score, c_tag = adv
+                        # adv < 0.5 => the counter-snippet contradicts the atom.
+                        contradiction = max(0.0, 0.5 - adv_score) * 2.0
+                        if contradiction > 0.0:
+                            a["score"] = max(
+                                0.0,
+                                a["score"] - ADVERSARIAL_VERIFY_WEIGHT * contradiction,
+                            )
+                            a["counter_evidence"] = c_tag
+                            a["contradiction"] = round(contradiction, 3)
+
                 # Mark which atoms were actually backed by retrieved evidence
                 # (vs. abstained at 0.5 for lack of a snippet). The verification
                 # SCORE should measure how well evidence supported the atoms we

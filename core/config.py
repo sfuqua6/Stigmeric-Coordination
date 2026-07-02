@@ -645,6 +645,18 @@ SAFE_BATCH_ATOMS = os.environ.get(
 # Atoms per validate call on the batched API path (the per-atom vLLM loop keeps 3).
 SAFE_BATCH_MAX_ATOMS = _int_env("SWARM_SAFE_BATCH_MAX_ATOMS", 3)
 
+# Adversarial verification: for every evidenced atom, ALSO search for
+# disconfirming evidence ("<atom terms> criticism counterargument evidence
+# against") and discount the atom score by the measured contradiction
+# (score -= WEIGHT * contradiction, contradiction in [0,1]). Without this,
+# verification was confirmatory-only — every query searched FOR the claim,
+# so verification measured topicality, not truth. Costs ~1 extra search +
+# 1 extra score call per evidenced atom; disable for latency ablation with
+# SWARM_ADVERSARIAL_VERIFY=0.
+ADVERSARIAL_VERIFY = os.environ.get(
+    "SWARM_ADVERSARIAL_VERIFY", "1").strip() in ("1", "true", "True")
+ADVERSARIAL_VERIFY_WEIGHT = _float_env("SWARM_ADVERSARIAL_VERIFY_WEIGHT", 0.6)
+
 # Intake
 CHUNK_WORDS            = _int_env("SWARM_CHUNK_WORDS",          CHUNK_WORDS)
 CHUNKS_PER_SCOUT_MAX   = _int_env("SWARM_CHUNKS_PER_SCOUT_MAX", CHUNKS_PER_SCOUT_MAX)

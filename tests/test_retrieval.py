@@ -162,6 +162,15 @@ class TestCohereCorpusRetriever(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestCompositeRetriever(unittest.TestCase):
+    def setUp(self):
+        # The agentic search stack (search_tool.search) is now the
+        # composite's PRIMARY source. These tests pin the LEGACY fallthrough
+        # chain (cohere -> wiki -> web -> placeholder), so silence the
+        # primary; its own behavior is covered by the search_tool tests.
+        p = patch("core.retrieval._agentic_search", return_value=[])
+        p.start()
+        self.addCleanup(p.stop)
+
     def _mock_cohere_empty(self, comp):
         """Replace comp._cohere with one that returns []."""
         from core.retrieval import CohereCorpusRetriever

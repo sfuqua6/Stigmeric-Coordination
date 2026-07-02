@@ -36,6 +36,11 @@ from pathlib import Path
 from typing import Optional
 
 from .intake import CorpusChunk
+# The agentic search stack (Tavily → StackExchange/S2 → DDG → Wikipedia →
+# Cohere, with relevance gate, BM25+dense RRF, MMR, page enrichment, and the
+# shared on-disk/query caches). Module-level alias so tests can patch
+# core.retrieval._agentic_search.
+from .search_tool import search as _agentic_search
 
 # ---------------------------------------------------------------------------
 # Timeouts and limits
@@ -434,7 +439,25 @@ class CompositeRetriever(Retriever):
         self._web = WebRetriever()
 
     def retrieve(self, query: str, target_chars: int = 8000) -> list[CorpusChunk]:
-        # Primary: Cohere pre-computed Wikipedia embeddings.
+        # PRIMARY: the agentic search stack. The scout corpus previously came
+        # from this module's own parallel DDG/Wikipedia clients — with none of
+        # search_tool's relevance gate, BM25+dense RRF, MMR diversification,
+        # page enrichment, or shared caches — i.e. strictly worse chunks
+        # feeding the same clusters as every other retrieval in the run.
+        # The legacy cohere→wiki→web chain below is now the fallback.
+        try:
+            n = max(_MIN_USEFUL_CHUNKS, min(24, target_chars // 600))
+            agentic_chunks = _agentic_search(query, max_results=n)
+        except Exception as exc:
+            agentic_chunks = []
+            print(f"[retrieval] agentic search stack crashed: "
+                  f"{type(exc).__name__}: {exc}")
+        if len(agentic_chunks) >= _MIN_USEFUL_CHUNKS:
+            print(f"[retrieval] sources combined: agentic_search="
+                  f"{len(agentic_chunks)} (legacy chain skipped)")
+            return agentic_chunks
+
+        # Legacy fallback: Cohere pre-computed Wikipedia embeddings.
         cohere_chunks: list[CorpusChunk] = []
         cohere_exc: Optional[Exception] = None
         try:
@@ -472,9 +495,12 @@ class CompositeRetriever(Retriever):
                 print(f"[retrieval] web retriever crashed: "
                       f"{type(exc).__name__}: {exc}")
 
-        combined = cohere_chunks + wiki_chunks + web_chunks
+        # Below-threshold agentic chunks still count toward the corpus.
+        combined = agentic_chunks + cohere_chunks + wiki_chunks + web_chunks
         if combined:
-            print(f"[retrieval] sources combined: cohere={len(cohere_chunks)} "
+            print(f"[retrieval] sources combined: "
+                  f"agentic={len(agentic_chunks)} "
+                  f"cohere={len(cohere_chunks)} "
                   f"wiki={len(wiki_chunks)} web={len(web_chunks)} "
                   f"total={len(combined)} (target>={_MIN_USEFUL_CHUNKS})")
             if len(combined) < _MIN_USEFUL_CHUNKS:

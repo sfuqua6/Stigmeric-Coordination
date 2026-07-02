@@ -480,7 +480,12 @@ WORKER_POSITION_WINDOW: int = 8
 #     verification_score >= SURVIVAL_VERIFY_MIN
 #     len(dissent_set)   >= SURVIVAL_DISSENT_MIN (=1)
 #     support_diversity  >= SURVIVAL_BROAD_SUPPORT
-SURVIVAL_MIN_SUPPORT_DIVERSITY = 3
+# Lowered 3 -> 2: the swarm's whole value is broad niche coverage via random
+# scout/partition split, but a niche claim found by ONE partition gets
+# support_diversity 1-2 and was filtered to weakly_supported, so the read-out
+# only ever surfaced the obvious high-consensus claims and lost on breadth. 2
+# admits the long tail while still requiring at least one corroborating angle.
+SURVIVAL_MIN_SUPPORT_DIVERSITY = 2
 SURVIVAL_REJECT_DISSENT_PRESSURE = 1.5
 SURVIVAL_CONTEST_MIN = 0.5
 
@@ -658,11 +663,12 @@ PEER_PRUNE_FACTOR      = _float_env("SWARM_PEER_PRUNE_FACTOR",      PEER_PRUNE_F
 # ---------------------------------------------------------------------------
 # Fix P — Planner (position-space SynthesisPlan)
 # ---------------------------------------------------------------------------
-# Max clusters rendered in Section 1. Raised 3 -> 5: with global composition
-# merging briefs into one argument, k=3 left most of the earned field unused
-# (groqgroq run: 16 surviving, 3 rendered — emergency response, EV lifecycle,
-# and sequencing clusters never reached the page). Cost: +2 render calls.
-RENDER_K             = 5
+# Max clusters rendered in Section 1 = the synthesis "depth" / net width.
+# Raised 5 -> 8 (and now driven by run_swarm --depth via SWARM_RENDER_K): k=5
+# surfaced only the obvious consensus claims and got out-covered on breadth by a
+# single direct call. A wider net is the swarm's point — it covers niche topics
+# via the random scout/partition split. Override per-run with --depth N.
+RENDER_K             = 8
 DISSENT_K            = 3    # max clusters rendered in Section 2 (dissent)
 PLANNER_MMR_LAMBDA   = 0.6  # λ for MMR cluster diversity selection in build_plan()
 VERIFICATION_WEIGHT  = 0.5  # weight of verification_score in composite cluster score

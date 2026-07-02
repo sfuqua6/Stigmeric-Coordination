@@ -398,8 +398,12 @@ class TestSemanticClustering(unittest.TestCase):
                  metadata={"depositor_agent_id": "forager_R1_1_medium_only"})
 
         proj = build_projection(store, has_validators=False)
+        # Include the unverified (credibility-hold) bucket: where the cluster
+        # LANDS depends on SURVIVAL_MIN_SUPPORT_DIVERSITY, which is tuned
+        # deliberately; this test only asserts the clustering, not the status.
         all_clusters = (proj.surviving + proj.contested +
-                        proj.weakly_supported + proj.rejected_by_field)
+                        proj.weakly_supported + proj.rejected_by_field +
+                        proj.unverified)
 
         # Both INITIALs should be in the same cluster (merged by similarity)
         total_members = sum(len(cp.member_ids) for cp in all_clusters)

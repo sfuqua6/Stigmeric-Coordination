@@ -278,11 +278,51 @@ def _is_dup_of_existing(candidate: str, served: dict[str, int]) -> bool:
     return False
 
 
+# Query-embedding memo for the semantic dedup pass (text -> unit vector or
+# None when the embedder is unavailable). Keyed by exact query text, so it is
+# safe across runs; capped to bound memory.
+_QUERY_VEC_CACHE: dict[str, Optional[list[float]]] = {}
+_QUERY_VEC_CACHE_MAX = 2048
+# Cosine at which two queries are "the same fetch". Deliberately high: 0.90
+# on all-MiniLM-L6-v2 means near-identical intent ("Apollo program cost
+# overruns" vs "how expensive was the Apollo program"), not mere topical
+# overlap — reusing results for merely-related queries would starve scouts
+# of genuinely new evidence.
+SEMANTIC_DUP_COS = 0.90
+
+
+def _query_vec(q: str) -> Optional[list[float]]:
+    if q in _QUERY_VEC_CACHE:
+        return _QUERY_VEC_CACHE[q]
+    vec: Optional[list[float]] = None
+    try:
+        from core.signal_store import _try_load_embedder
+        model = _try_load_embedder()
+        if model is not None:
+            import numpy as np
+            v = np.asarray(model.encode(q), dtype="float32")
+            n = float((v ** 2).sum() ** 0.5)
+            if n > 0:
+                vec = (v / n).tolist()
+    except Exception:
+        vec = None
+    if len(_QUERY_VEC_CACHE) < _QUERY_VEC_CACHE_MAX:
+        _QUERY_VEC_CACHE[q] = vec
+    return vec
+
+
 def find_cached_query(candidate: str, served: dict[str, int]) -> Optional[str]:
     """Return the served query the caller should reuse instead of refetching.
 
     Used by Worker._gather_target BEFORE search() to skip the network call
     when another worker already fetched substantially the same thing.
+
+    Two passes: cheap lexical (exact / stop-word fingerprint / SequenceMatcher
+    >= DUP_RATIO), then semantic (embedding cosine >= SEMANTIC_DUP_COS).
+    The lexical pass alone was why real runs issued 57 searches with only 6
+    cache hits — workers phrase the same intent differently, and
+    SequenceMatcher can't see that "Apollo program cost overruns" and "how
+    expensive was the Apollo program" are one fetch.
     """
     if not candidate:
         return None
@@ -302,7 +342,27 @@ def find_cached_query(candidate: str, served: dict[str, int]) -> Optional[str]:
         if r > best_ratio:
             best_ratio = r
             best_q = served_q
-    return best_q if best_q is not None and best_ratio >= DUP_RATIO else None
+    if best_q is not None and best_ratio >= DUP_RATIO:
+        return best_q
+    # Semantic pass. Only well-served queries participate; embedder
+    # unavailable (or mock string fallback) degrades cleanly to lexical-only.
+    cv = _query_vec(candidate)
+    if cv is not None:
+        best_cos = 0.0
+        best_sq: Optional[str] = None
+        for served_q, n_results in served.items():
+            if n_results < MIN_GOOD_RESULTS:
+                continue
+            sv = _query_vec(served_q)
+            if sv is None:
+                continue
+            cos = sum(a * b for a, b in zip(cv, sv))
+            if cos > best_cos:
+                best_cos = cos
+                best_sq = served_q
+        if best_sq is not None and best_cos >= SEMANTIC_DUP_COS:
+            return best_sq
+    return None
 
 
 def relax_query(query: str, keep: int = 8) -> str:

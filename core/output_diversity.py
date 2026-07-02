@@ -58,11 +58,25 @@ def _embed_bow(texts: list[str]) -> list[dict[str, float]]:
 
 
 def _embed_sbert(texts: list[str]) -> Optional[list[list[float]]]:
-    """Return sentence-transformers embeddings, or None if unavailable."""
+    """Unit-normalized embeddings via the shared SignalStore loader, or None.
+
+    Previously instantiated a THIRD SentenceTransformer copy of the same
+    all-MiniLM-L6-v2 weights (store + search_tool + here). The store's
+    loader is now the one canonical embedder and provides the
+    transformers-AutoModel fallback path.
+    """
     try:
-        from sentence_transformers import SentenceTransformer  # type: ignore
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        return model.encode(texts, normalize_embeddings=True).tolist()
+        from core.signal_store import _try_load_embedder
+        model = _try_load_embedder()
+        if model is None:
+            return None
+        import numpy as np
+        out: list[list[float]] = []
+        for t in texts:
+            v = np.asarray(model.encode(t), dtype="float32")
+            n = float((v ** 2).sum() ** 0.5)
+            out.append((v / n).tolist() if n > 0 else v.tolist())
+        return out
     except Exception:
         return None
 

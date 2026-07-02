@@ -198,15 +198,26 @@ class _TransformersMiniLMEmbedder:
         self._model = AutoModel.from_pretrained(self._MODEL_NAME)
         self._model.eval()
 
-    def encode(self, text: str):
+    def encode(self, text, normalize_embeddings: bool = False):
+        """SentenceTransformer.encode-compatible: accepts a single string or
+        a list of strings and the `normalize_embeddings` kwarg. This wrapper
+        is now the shared fallback embedder for search_tool and
+        output_diversity too (they delegate to _try_load_embedder), and
+        those callers batch lists and pass the kwarg.
+        """
         torch = self._torch
+        single = isinstance(text, str)
+        texts = [text] if single else list(text)
         with torch.no_grad():
-            batch = self._tok(text, truncation=True, max_length=256,
-                              return_tensors="pt")
-            hidden = self._model(**batch).last_hidden_state          # (1,T,H)
-            mask = batch["attention_mask"].unsqueeze(-1).float()     # (1,T,1)
+            batch = self._tok(texts, truncation=True, max_length=256,
+                              padding=True, return_tensors="pt")
+            hidden = self._model(**batch).last_hidden_state          # (B,T,H)
+            mask = batch["attention_mask"].unsqueeze(-1).float()     # (B,T,1)
             emb = (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
-        return emb[0].cpu().numpy()
+            if normalize_embeddings:
+                emb = emb / emb.norm(dim=1, keepdim=True).clamp(min=1e-9)
+        arr = emb.cpu().numpy()
+        return arr[0] if single else arr
 
 
 def _load_sentence_transformer():

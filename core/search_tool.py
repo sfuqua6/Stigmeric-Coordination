@@ -217,12 +217,19 @@ _EMBEDDER_CACHE: Optional[object] = None
 
 
 def _get_embedder():
-    """Lazy singleton: reuse the same model as SignalStore."""
+    """Lazy singleton: ACTUALLY reuse the SignalStore's embedder.
+
+    The docstring always claimed this; the body instantiated its own
+    SentenceTransformer — a second ~90 MB copy of identical weights plus a
+    second warmup. Delegating to the store's loader also inherits its
+    transformers-AutoModel fallback (torchcodec/FFmpeg breakage on Colab)
+    and its loud UNAVAILABLE diagnostics.
+    """
     global _EMBEDDER_CACHE
     if _EMBEDDER_CACHE is None:
         try:
-            from sentence_transformers import SentenceTransformer
-            _EMBEDDER_CACHE = SentenceTransformer("all-MiniLM-L6-v2")
+            from core.signal_store import _try_load_embedder
+            _EMBEDDER_CACHE = _try_load_embedder()
         except Exception:
             pass
     return _EMBEDDER_CACHE

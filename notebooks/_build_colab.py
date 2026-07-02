@@ -222,6 +222,134 @@ else:
             if k in s: print(f'  {k}: {s[k]}')"""))
 
 cells.append(md(
+"""## ⭐ Amplification-delta experiment (`eval/`) — the headline deliverable
+
+This is the experiment that decides the project: does wrapping a model **M** in
+the swarm beat just **calling M directly**? Measured blind, across model sizes.
+
+Five conditions on ONE pre-registered prompt set (`eval/prompts.py`):
+
+| | Condition | What |
+|---|---|---|
+| **A** | `swarm(M)` | your `run_swarm` output |
+| **B** | `direct(M)` | one *strong* call to M — the real baseline |
+| **C** | `cheap-scaffold(M)` | verify-then-revise (or best-of-N) — the "worth it vs 5 min of effort?" control |
+| **D** | `direct(M+)` | one call to a *stronger* model — the "small+swarm beats big-direct" claim |
+| **E** | `synth-prompt(M)` | one call to M given the swarm's own synthesis instruction (map positions → context-dependence → second-order effects → conditions conclusion) — the **attribution control**: if E ties A, the value was the prompt, not the orchestration |
+
+Deltas: **Δ_amp = A−B**, **Δ_vs_simple = A−C**, **Δ_vs_strong = A−D**,
+**Δ_vs_prompt = A−E**.
+
+**Colab generates the answers; Claude is the judge.** Colab strips the swarm's
+formatting tells and emits a **blind packet** (`judging_packet.md`) — answers
+shown as anonymized Response 1/2, both orders, shuffled. You hand that to Claude
+(a far stronger judge than any free Groq model you'd otherwise settle for); drop
+the verdicts back and Colab tallies a **win-rate with a Wilson 95% CI** and a
+**cost multiple** — no weaker LLM judge anywhere in the loop.
+
+> **Guards against fooling yourself:** strong baseline B (not a strawman),
+> hard format-normalization, **Claude as a neutral judge** (a different family
+> from the Groq/local condition models — no self-preference), randomized
+> both-orders (ties on disagreement), and a **pre-registered** prompt set (no
+> peeking). A real win = Wilson lower bound clearly above 50%."""))
+
+cells.append(md("### Cell 10 — Minimal first run (A vs B vs E, 8 prompts)"))
+cells.append(code(
+"""# Generate conditions A (swarm) + B (direct-M) + E (synthesis-prompt control).
+# E costs one extra call per prompt and answers the attribution question.
+# Mock plumbing: prefix MOCK_LLM=1 and add SWARM_MIN_TIME_S=0 SWARM_MIN_ITERATIONS=5.
+M_MODEL = 'llama-3.1-8b-instant'   # model M (A/B/E). Blank -> local/mock.
+!python -m eval.ab_harness --name delta_min --mini 8 --conditions ABE --model "{M_MODEL}"
+"""))
+
+cells.append(md(
+"""### Cell 11 — Build the blind judging packet — **this is the Colab deliverable**
+
+Colab's job ends here: it emits the **raw, blind, normalized answers** for
+**Claude** to judge. No weaker LLM judge runs — the judge is Claude, not some
+Groq model you'd otherwise settle for.
+
+Every pair is shown twice (both orders) as anonymized *Response 1 / Response 2*,
+swarm formatting stripped, items shuffled — so the judge can't tell which is the
+swarm.
+
+**The packet is split into bounded PARTS** (`--max-chars`, default 60 KB each)
+so a big run can't truncate mid-item when you paste it to Claude — a dropped
+item would be a silently dropped judgment. Feed Claude **one part per turn**;
+verdicts merge across all parts by item id. Everything is bundled in
+`judging_packets.zip` for one download."""))
+cells.append(code(
+"""!python -m eval.judge eval/results/delta_min --pack   # add --max-chars 40000 for smaller parts
+from google.colab import files
+import glob
+parts = sorted(glob.glob('eval/results/delta_min/judging_packet*.md'))
+print(f'{len(parts)} part(s) — give each to Claude in its own turn:')
+for p in parts: print('  ', p)
+files.download('eval/results/delta_min/judging_packets.zip')   # all parts, one download
+"""))
+
+cells.append(md(
+"""### Cell 11b — Paste Claude's verdicts back, assemble the report
+
+Claude returns a verdict (`1` / `2` / `tie`) per item id. Put them in
+`verdicts.json` (or have Claude emit the whole JSON and upload it), then assemble
+the report — Wilson CIs, deltas, cost multiples. **No LLM runs here either**;
+this is pure tallying of Claude's judgments."""))
+cells.append(code(
+"""# Option A: upload a verdicts.json Claude produced
+# from google.colab import files; files.upload()   # -> verdicts.json
+# Option B: paste the dict inline:
+# import json; json.dump({...}, open('eval/results/delta_min/verdicts.json','w'), indent=2)
+
+!python -m eval.judge eval/results/delta_min --score-verdicts verdicts.json
+import pathlib
+rep = pathlib.Path('eval/results/delta_min/report.md')
+print(rep.read_text() if rep.exists() else 'fill verdicts.json first')
+"""))
+
+cells.append(md(
+"""### Cell 12 — The size sweep (the actual deliverable)
+
+Run **A vs B** at three model strengths so you can plot Δ_amp against size.
+Flat/rising = the thesis holds and is huge; falling to zero/negative = it's a
+small-model crutch. Each arm sets a different M; point `--model` at small / mid /
+frontier. This generates a **packet per arm for Claude to judge** — same blind
+protocol, no weaker LLM judge."""))
+cells.append(code(
+"""SWEEP = {
+    'small':    'llama-3.1-8b-instant',
+    'mid':      'llama-3.3-70b-versatile',
+    # 'frontier': 'deepseek-r1-distill-llama-70b',   # add a 3rd point
+}
+import subprocess, pathlib
+for size, model in SWEEP.items():
+    name = f'sweep_{size}'
+    subprocess.run(['python','-m','eval.ab_harness','--name',name,
+                    '--conditions','AB','--model',model], check=False)
+    subprocess.run(['python','-m','eval.judge',f'eval/results/{name}','--pack'],
+                   check=False)
+print('Hand each arm\\'s judging_packets.zip (its parts) to Claude, drop the verdicts back, then:')
+for size in SWEEP:
+    print(f"  !python -m eval.judge eval/results/sweep_{size} --score-verdicts verdicts.json")
+"""))
+
+cells.append(md("### Cell 12b — Δ_amp(M) size curve (after all arms are judged)"))
+cells.append(code(
+"""import json, pathlib
+print('Δ_amp(M) size curve:')
+print(f"{'size':10} {'model':32} {'win-rate':>9} {'Wilson95':>16} real?")
+SWEEP = {'small':'llama-3.1-8b-instant','mid':'llama-3.3-70b-versatile'}
+for size, model in SWEEP.items():
+    sc = pathlib.Path(f'eval/results/sweep_{size}/scores.json')
+    if not sc.exists():
+        print(f'{size:10} (not judged yet)'); continue
+    r = json.loads(sc.read_text())['pairs'].get('A_vs_B', {})
+    wl = r.get('wilson95', [0,0])
+    print(f"{size:10} {model:32} {r.get('win_rate',0):>8.0%} "
+          f"[{wl[0]:.2f},{wl[1]:.2f}]   {r.get('real_win')}")
+"""))
+
+cells.append(md(
 """## Troubleshooting
 
 **Groq `429` / rate-limited or quota exhausted** — free tier. The token-bucket in

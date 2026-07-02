@@ -6,6 +6,9 @@ turns it into the deltas that decide the project:
   delta_amp      = A vs B   (does the swarm amplify at all?)
   delta_vs_simple= A vs C   (does it beat a cheap scaffold?)
   delta_vs_strong= A vs D   (small+swarm vs big-direct — the real goal)
+  delta_vs_prompt= A vs E   (does orchestration beat its own synthesis
+                             prompt handed to ONE call? the attribution
+                             control — if E ties A, the value was the prompt)
 
 Five ways you'll fool yourself, and how this guards each:
   * strawman baseline   -> B uses a genuinely strong prompt (in ab_harness).
@@ -503,7 +506,7 @@ def score_from_verdicts(exp_dir: Path, idx, verdicts_path: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 _COND_NAME = {"A": "swarm(M)", "B": "direct(M)", "C": "cheap-scaffold(M)",
-              "D": "direct(M+)"}
+              "D": "direct(M+)", "E": "synth-prompt(M)"}
 
 
 def write_report(exp_dir: Path, meta: dict, pair_results: dict,
@@ -524,8 +527,9 @@ def write_report(exp_dir: Path, meta: dict, pair_results: dict,
     lines.append("| Comparison | n | win | tie | loss | win-rate | Wilson 95% | real win? | cost× |")
     lines.append("|---|--:|--:|--:|--:|--:|---|:--:|--:|")
     label_map = {"A_vs_B": "Δ_amp (A vs B)", "A_vs_C": "Δ_vs_simple (A vs C)",
-                 "A_vs_D": "Δ_vs_strong (A vs D)"}
-    for key in ("A_vs_B", "A_vs_C", "A_vs_D"):
+                 "A_vs_D": "Δ_vs_strong (A vs D)",
+                 "A_vs_E": "Δ_vs_prompt (A vs E)"}
+    for key in ("A_vs_B", "A_vs_C", "A_vs_D", "A_vs_E"):
         r = pair_results.get(key)
         if not r:
             continue
@@ -551,7 +555,7 @@ def write_report(exp_dir: Path, meta: dict, pair_results: dict,
         lines.append("")
 
     lines.append("## Per-prompt verdicts\n")
-    for key in ("A_vs_B", "A_vs_C", "A_vs_D"):
+    for key in ("A_vs_B", "A_vs_C", "A_vs_D", "A_vs_E"):
         r = pair_results.get(key)
         if not r:
             continue
@@ -559,7 +563,7 @@ def write_report(exp_dir: Path, meta: dict, pair_results: dict,
         lines.append("| prompt | winner | agreed orders? | rationale |")
         lines.append("|---|:--:|:--:|---|")
         win_name = {"A": "swarm", "B": "direct", "C": "scaffold",
-                    "D": "strong", "tie": "tie"}
+                    "D": "strong", "E": "synthprompt", "tie": "tie"}
         for pp in r["per_prompt"]:
             w = pp["winner"]
             mapped = win_name.get(w, w)
@@ -651,7 +655,7 @@ def main(argv: list[str]) -> int:
     rows = load_rows(exp_dir)
     idx = _index(rows)
 
-    pairs = [("A", "B"), ("A", "C"), ("A", "D")]
+    pairs = [("A", "B"), ("A", "C"), ("A", "D"), ("A", "E")]
     pairs = [(l, r) for (l, r) in pairs
              if any(l in c and r in c for c in idx.values())]
 

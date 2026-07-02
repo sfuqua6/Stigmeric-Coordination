@@ -16,10 +16,17 @@ scores them. Four conditions, all on the SAME prompt set:
                        it vs five minutes of effort" control.
   D  direct(M+)        ONE call to a STRONGER model. The headline claim
                        ("small+swarm beats big-direct") lives here.
+  E  synth-prompt(M)   ONE call to M given the swarm's own synthesis job as
+                       a prompt: map the competing positions, stakeholders,
+                       contexts where the answer flips, second-order effects,
+                       then compose a thesis-led synthesis ending with the
+                       conditions under which the thesis holds/fails. The
+                       attribution control: if E matches A, the value was
+                       the PROMPT, not the orchestration.
 
-Four deltas fall out: A-B (amplify at all), A-C (beat the cheap trick),
-A-D (the real goal), and the size curve delta_amp(M) over M in
-{small, mid, frontier}.
+Five deltas fall out: A-B (amplify at all), A-C (beat the cheap trick),
+A-D (the real goal), A-E (orchestration vs its own prompt), and the size
+curve delta_amp(M) over M in {small, mid, frontier}.
 
 Cost is recorded for every condition (latency, llm_calls, ~tokens) so the
 judge can report quality next to the cost multiple — a +2% win at 300x the
@@ -182,11 +189,47 @@ _BESTN_SELECT = (
     "QUESTION:\n{q}\n\n{candidates}\n\nBEST ANSWER:"
 )
 
+# Condition E: the swarm's own synthesis job, handed to ONE direct call.
+# Mirrors what the swarm does end-to-end — scouts explore the answer-space
+# (positions, stakeholders, contexts, second-order effects), then the
+# composer writes a thesis-led synthesis with a conditions conclusion
+# (requirements 1/3/6/8 of Synthesizer._compose_answer). If E matches A,
+# the swarm's edge was the prompt, not the orchestration. Keep the two in
+# sync: if the composer's writing requirements change, change this too.
+_SYNTH_DIRECT = (
+    "You are an expert analyst. Answer the question below by first mapping "
+    "the space of competing positions, then synthesizing them.\n\n"
+    "First, think through the answer-space carefully (do not include this "
+    "in your answer):\n"
+    "  - Enumerate the genuinely distinct positions on the question, "
+    "including ones you disagree with. For each: its strongest case and "
+    "the contexts where it holds.\n"
+    "  - Identify where the answer is CONTEXT-DEPENDENT: which "
+    "stakeholders, scales, places, or timeframes flip the answer.\n"
+    "  - Identify second-order and displacement effects: what the obvious "
+    "answer causes downstream that changes the assessment.\n\n"
+    "Then write the synthesis as your answer:\n"
+    "  1. Open with a 2-3 sentence direct answer — thesis first, before "
+    "any supporting detail.\n"
+    "  2. Order the argument logically — strongest material first, "
+    "complications and trade-offs after.\n"
+    "  3. Keep the strongest counter-positions IN the argument; engage "
+    "them rather than omitting them.\n"
+    "  4. Plain prose paragraphs. No markdown headers, no bullet lists.\n"
+    "  5. End by stating the CONDITIONS under which your thesis holds and "
+    "under which it fails (e.g. 'justified where X is already in place; "
+    "counterproductive where Y'). Do NOT end with generic advice "
+    "('policymakers must consider', 'careful planning is needed') — name "
+    "the specific conditions.\n\n"
+    "QUESTION:\n{q}\n\nSYNTHESIS:"
+)
 
-async def gen_direct(dm: DirectModel, text: str, max_tokens: int) -> tuple[str, Cost]:
-    """Condition B/D: one strong direct call."""
+
+async def gen_direct(dm: DirectModel, text: str, max_tokens: int,
+                     template: str = _STRONG_DIRECT) -> tuple[str, Cost]:
+    """Condition B/D (strong direct) / E (synthesis-prompt): one call."""
     cost = Cost()
-    ans = await dm.generate(_STRONG_DIRECT.format(q=text), max_tokens, 0.3, cost)
+    ans = await dm.generate(template.format(q=text), max_tokens, 0.3, cost)
     return ans, cost
 
 
@@ -345,7 +388,7 @@ class Row:
     pid: str
     task: str
     prompt: str
-    condition: str       # A | B | C | D
+    condition: str       # A | B | C | D | E
     label: str           # model/engine label
     answer: str
     cost: dict = field(default_factory=dict)
@@ -374,7 +417,7 @@ async def run_experiment(args) -> Path:
     dm: dict = {"m": None, "strong": None}
 
     def build_direct() -> None:
-        if (conds & set("BC")) and dm["m"] is None:
+        if (conds & set("BCE")) and dm["m"] is None:
             dm["m"] = DirectModel(args.model, force_local=_local)
         if "D" in conds and dm["strong"] is None:
             dm["strong"] = DirectModel(args.strong_model, force_local=_local)
@@ -413,6 +456,11 @@ async def run_experiment(args) -> Path:
                 ans, cost = await gen_direct(dm["strong"], p.text, args.max_tokens)
                 emit(Row(condition="D", label=dm["strong"].label, answer=ans,
                          cost=asdict(cost), **_base(p)))
+            if "E" in conds:
+                ans, cost = await gen_direct(dm["m"], p.text, args.max_tokens,
+                                             template=_SYNTH_DIRECT)
+                emit(Row(condition="E", label=f"{dm['m'].label}+synthprompt",
+                         answer=ans, cost=asdict(cost), **_base(p)))
 
         if _local:
             # Phase 1: all swarm(A) runs — each subprocess owns the GPU and frees
@@ -421,7 +469,7 @@ async def run_experiment(args) -> Path:
                 for p in plist:
                     print(f"\n[ab] ===== A swarm | prompt {p.pid} ({p.task}) =====")
                     do_swarm(p)
-            if conds & set("BCD"):
+            if conds & set("BCDE"):
                 build_direct()
                 for p in plist:
                     print(f"\n[ab] ===== direct | prompt {p.pid} ({p.task}) =====")
@@ -460,7 +508,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--name", default="delta",
                     help="experiment name (results dir under eval/results/)")
     ap.add_argument("--conditions", default="AB",
-                    help="subset of ABCD to generate (default AB)")
+                    help="subset of ABCDE to generate (default AB). E = the "
+                         "synthesis-prompt attribution control: one call to M "
+                         "given the swarm's own synthesis instruction.")
     ap.add_argument("--mini", type=int, default=0,
                     help="use only the first N pre-registered prompts (0 = full set)")
     ap.add_argument("--model", default=None,

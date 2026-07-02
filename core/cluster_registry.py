@@ -96,12 +96,23 @@ class ClusterRegistry:
     lock inside ClusterRegistry.
     """
 
+    # Cap on retained join-attempt similarity samples (calibration telemetry).
+    _JOIN_SIM_SAMPLE_CAP = 4000
+
     def __init__(self) -> None:
         self._clusters: dict[str, _Cluster] = {}
         self._signal_to_cluster: dict[str, str] = {}
         self._by_type: dict[str, list[str]] = {}
         self._member_embeddings: dict[str, list[float]] = {}
         self._total_deposits: int = 0   # global counter for LOUD log gate
+        # Calibration telemetry: best centroid similarity seen by each join
+        # attempt that had at least one candidate cluster, plus how many of
+        # those attempts actually joined. join_sim_stats() summarizes this so
+        # CLUSTER_JOIN_THRESHOLD can be set at the antimode of the real
+        # distribution instead of guessed (the 0.72 guess fragmented fields).
+        self._join_sim_samples: list[float] = []
+        self._join_attempts: int = 0
+        self._join_successes: int = 0
 
     # ---- public API --------------------------------------------------------
 
@@ -125,16 +136,24 @@ class ClusterRegistry:
         cluster_ids = self._by_type.get(signal_type, [])
         best_cid: Optional[str] = None
         best_margin = 0.0   # require sim >= the cluster's size-adjusted threshold
+        best_sim: Optional[float] = None  # calibration telemetry (thresholdless)
         for cid in cluster_ids:
             cl = self._clusters.get(cid)
             if cl is None or not cl.centroid:
                 continue
             sim = _dot(embedding, cl.centroid)
+            if best_sim is None or sim > best_sim:
+                best_sim = sim
             margin = sim - _effective_join_threshold(len(cl.member_ids))
             if margin >= 0.0 and (best_cid is None or margin > best_margin):
                 best_cid = cid
                 best_margin = margin
+        if best_sim is not None:
+            self._join_attempts += 1
+            if len(self._join_sim_samples) < self._JOIN_SIM_SAMPLE_CAP:
+                self._join_sim_samples.append(best_sim)
         if best_cid is not None:
+            self._join_successes += 1
             self._join(best_cid, signal_id, embedding)
             return best_cid
         return None
@@ -178,6 +197,30 @@ class ClusterRegistry:
         """All clusters (including empty ones) for a signal_type."""
         cids = self._by_type.get(signal_type, [])
         return [self._clusters[cid] for cid in cids if cid in self._clusters]
+
+    def join_sim_stats(self) -> dict:
+        """Distribution of best-centroid similarity across join attempts.
+
+        Calibration telemetry for CLUSTER_JOIN_THRESHOLD: dump one real run,
+        look at the deciles/histogram, and set the threshold at the antimode
+        between the same-claim mode (high sims) and the distinct-claim mode
+        (low sims). Attempts with no candidate cluster are excluded — they
+        carry no information about the threshold.
+        """
+        xs = sorted(self._join_sim_samples)
+        if not xs:
+            return {"n": 0}
+        def _q(p: float) -> float:
+            return round(xs[min(len(xs) - 1, int(p * len(xs)))], 4)
+        hist = [0] * 10
+        for v in xs:
+            hist[min(9, max(0, int(v * 10)))] += 1
+        return {
+            "n": len(xs),
+            "deciles": [_q(i / 10) for i in range(1, 10)],
+            "histogram_10bins": hist,
+            "join_rate": round(self._join_successes / max(1, self._join_attempts), 4),
+        }
 
     # ---- periodic divisive re-cluster (corrective) --------------------------
 

@@ -420,8 +420,18 @@ SEARCH_CODING_DOMAIN_BOOST = float(os.environ.get("SWARM_SEARCH_CODING_DOMAIN_BO
 # at-deposit clustering actually merges. Anti-mega-blob is handled by the size
 # penalty + reanchor/recluster split machinery below, which lets the base
 # threshold be this low safely.
-CLUSTER_JOIN_THRESHOLD = 0.72 if _TIER is not None else 0.55   # cosine sim to join an existing cluster
-CLUSTER_SPLIT_THRESHOLD = 0.55 if _TIER is not None else 0.42  # sim below which a member is ejected during reanchor
+# One value for all tiers: the paraphrase band is a property of the EMBEDDER
+# (all-MiniLM-L6-v2 on every tier), not of the GPU. The old Colab value (0.72)
+# sat in the upper half of the ~0.5-0.8 paraphrase band, so genuine paraphrases
+# in the 0.55-0.72 range opened new dust clusters instead of joining — real
+# Colab runs fragmented 49 INITIALs into 36 clusters (largest=4), which also
+# starved the render-set-stability halt (tail dust never enriches the top-K).
+# 0.55 is a mid-band prior; calibrate empirically from summary.json's
+# clustering.join_sim_stats (deciles + histogram of every join attempt's best
+# centroid similarity) — set the threshold at the antimode between the
+# same-claim and distinct-claim modes.
+CLUSTER_JOIN_THRESHOLD = 0.55    # cosine sim to join an existing cluster
+CLUSTER_SPLIT_THRESHOLD = 0.42   # sim below which a member is ejected during reanchor
 CLUSTER_REANCHOR_EVERY = 8        # recompute medoid every N deposits into a cluster
 # Anti-mega-blob: joining an already-large cluster requires HIGHER similarity, so
 # a vague central claim can't swallow the field (the "one blob + dust" pathology
@@ -435,7 +445,9 @@ CLUSTER_JOIN_MAX_THRESHOLD = 0.97 # cap so a cluster never becomes literally un-
 # projection. Lets the natural structure emerge after the field has spoken,
 # instead of locking in order-dependent greedy joins. MUST sit below JOIN, else
 # the recluster pass immediately re-shatters every cluster the join just formed.
-CLUSTER_COHESION_MIN = 0.60 if _TIER is not None else 0.48
+# MUST sit below CLUSTER_JOIN_THRESHOLD (see note above) — with JOIN unified
+# at 0.55, the old Colab value 0.60 would re-shatter every fresh join.
+CLUSTER_COHESION_MIN = 0.48
 CLUSTER_RECLUSTER_EVERY = 25      # iterations between global re-cluster passes (0 = off)
 CLUSTERING_ENABLED_TYPES = {"INITIAL", "SUPPORT", "OBJECTION"}
 
@@ -516,7 +528,12 @@ SURVIVAL_TASK_PROFILES = {
 # Default profile for unknown task types: behave like analysis.
 SURVIVAL_DEFAULT_PROFILE = {"requires_verification": False, "credibility_chain_depth": 3}
 SURVIVAL_CONTEST_MAX = 1.5
-SURVIVAL_VERIFY_MIN = 0.3
+# Compared against the [0,1] lineage mean of VERIFICATION strengths
+# (signal_store._avg_verification_strength). Validators score ~0.5 for
+# abstain/no-evidence, so the floor sits above the abstain plateau: a cluster
+# only counts as verified when genuinely confirming atoms (0.7+) lift the
+# mean past what retrieval failure alone would produce.
+SURVIVAL_VERIFY_MIN = 0.55
 SURVIVAL_DISSENT_MIN = 1
 SURVIVAL_BROAD_SUPPORT = 4
 
@@ -739,6 +756,9 @@ assert 0.0 < CLUSTER_SPLIT_THRESHOLD < CLUSTER_JOIN_THRESHOLD
 assert CLUSTER_REANCHOR_EVERY >= 1
 assert CLUSTER_JOIN_SIZE_PENALTY >= 0.0
 assert CLUSTER_JOIN_THRESHOLD <= CLUSTER_JOIN_MAX_THRESHOLD < 1.0
+# Recluster cohesion must sit below the join bar, else the periodic divisive
+# pass immediately re-shatters every cluster the join just formed.
+assert CLUSTER_COHESION_MIN < CLUSTER_JOIN_THRESHOLD
 assert PEER_PRUNE_MIN_MEMBERS >= 1
 assert 0.0 < PEER_PRUNE_FACTOR <= 1.0
 

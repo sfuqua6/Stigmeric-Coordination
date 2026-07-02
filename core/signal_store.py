@@ -1125,6 +1125,11 @@ class SignalStore:
         with self._lock:
             return self._embeddings.get(signal_id)
 
+    def join_sim_stats(self) -> dict:
+        """Join-attempt similarity distribution (CLUSTER_JOIN_THRESHOLD calibration)."""
+        with self._lock:
+            return self._cluster_registry.join_sim_stats()
+
     def embedder_status(self) -> str:
         """'all-MiniLM-L6-v2' if semantic clustering/dedup is active, else a
         short reason it isn't. Surfaced in summary.json so a silently-degraded
@@ -1219,21 +1224,26 @@ class SignalStore:
     # ---- internals -------------------------------------------------------
 
     def _avg_verification_strength(self, signal_id: str) -> float:
-        """Signed-average strength of VERIFICATION signals on the lineage.
+        """Mean raw strength of VERIFICATION signals on the lineage, in [0, 1].
 
         Walks both the signal itself AND every ancestor, collecting any
         VERIFICATION signal that is (a) the node itself, or (b) a direct
-        child of the node. Deduplicates by ID.
+        child of the node. Deduplicates by ID. Returns 0.0 when the lineage
+        carries no VERIFICATION at all (distinct from "verified false":
+        validators emit ~0.5 for abstain/inconclusive and ~0.0 only for an
+        explicit contradiction).
 
-        §5 validator fix: strength below 0.3 counts as anti-evidence.
-        The signed contribution is (strength - 0.3) for each signal,
-        normalised by count. This means a VERIFICATION at strength 0.0
-        contributes -0.3 per signal (strong contradiction), while one at
-        strength 1.0 contributes +0.7 (strong support).
-
-        Return is in (-0.3, 0.7]. Callers (provenance boost in deposit())
-        use this value directly; BOOST_THRESHOLD (0.7) is calibrated
-        against this range so only genuine positive verifications trigger.
+        History: this used to return a SIGNED mean, (strength - 0.3) per
+        signal, range (-0.3, 0.7]. That silently broke both consumers,
+        which are calibrated for [0, 1]:
+          - the provenance boost fires at avg >= BOOST_THRESHOLD (0.7),
+            which on the signed scale required every verification to be a
+            perfect 1.0 — the boost never fired on real runs;
+          - projection's survival gate compares against SURVIVAL_VERIFY_MIN,
+            and summary.json's avg_verification_score read as noise around
+            the -0.3 offset (including negative values).
+        Anti-evidence semantics now live where they belong: a low raw score
+        keeps the mean below both thresholds.
         """
         seen_ver: dict[str, "Signal"] = {}
         chain = [signal_id] + self.ancestor_ids(signal_id)
@@ -1247,9 +1257,7 @@ class SignalStore:
                     seen_ver[child.id] = child
         if not seen_ver:
             return 0.0
-        # Signed average: strength < 0.3 is anti-evidence
-        signed_sum = sum((v.strength - 0.3) for v in seen_ver.values())
-        return signed_sum / len(seen_ver)
+        return sum(v.strength for v in seen_ver.values()) / len(seen_ver)
 
     def _delete_locked(self, signal_id: str) -> None:
         s = self._signals.pop(signal_id, None)

@@ -119,7 +119,14 @@ ACTION_PRECONDITIONS: dict[str, Callable[[FieldState], bool]] = {
     # (signals_with_many_children) keeps OBJECT from firing on lone INITIALs.
     CRITIQUE: lambda f: f.n_initials >= 2,
     OBJECT:   lambda f: f.n_initials >= 3,
-    VALIDATE: lambda f: f.n_clusters_with_support_div_ge_2 >= 1,
+    # VALIDATE used to require an INITIAL with >= 2 SUPPORT children. When
+    # DEVELOP spread thin (24 workers, support scattered), no INITIAL ever
+    # crossed 2, the precondition never passed, and the validator sat out
+    # entire runs (10-run delta_sweep_small batch: VALIDATE share 0.0,
+    # avg_verification_score exactly 0.0). Verification eligibility must not
+    # depend on support accumulation — a bare INITIAL is verifiable, and
+    # early verification is what steers development toward grounded claims.
+    VALIDATE: lambda f: f.n_initials >= 1,
     # REFINE previously gated on n_surviving_unverified, which FieldState.
     # from_store never populates — that path was always 0, so REFINE never
     # fired. Pivot to: there's a cluster worth polishing (i.e., one with

@@ -1460,6 +1460,9 @@ async def run_continuous_pipeline(
             "n_clusters": n_clusters_total,
             "largest_cluster": largest_cluster,
             "multi_member_clusters": multi_member,
+            # Calibration telemetry: set CLUSTER_JOIN_THRESHOLD at the antimode
+            # of this distribution (see core/cluster_registry.join_sim_stats).
+            "join_sim_stats": store.join_sim_stats(),
         }
         if not embedder_ok:
             print(f"\n[pipeline] *** WARNING: embedder {embedder} — semantic "

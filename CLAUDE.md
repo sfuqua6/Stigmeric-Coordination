@@ -11,6 +11,16 @@ A from-scratch rebuild of the original stigmergic multi-agent LLM pipeline that 
 
 This is the canonical pipeline, at the repository root. The original it replaced (`run_task.py` + the `swarm/` package) is preserved unmaintained under `legacy/`. Treat the no-leak rule as a hard architectural constraint when changing agents or the signal store.
 
+## Empirical status — read before claiming wins
+
+The core hypothesis (a swarm of partitioned agents out-reasons a single call of the same or a stronger model) is **currently unproven and losing on the head-to-head evidence**. `hey fable.md` (repo root) is the evidence-first audit, quoting the repo's own artifacts: 0 judged wins across all comparisons in `outputs/kb/` and `eval/results/`, `avg_verification_score` ≈ 0, `self_bleu` 0.62–0.69 (the field converges on near-duplicate claims), and substantive runs ending on `cap_time` rather than convergence. Fixes landed since that audit: reader-answer split (`core/clean_answer.py`), judge normalization + neutral local judge, condition E attribution control, render-set stability halt, pre-call scout gate.
+
+Rules of evidence for any future claim of a swarm win:
+- It must come from `eval/ab_harness.py` conditions judged by `eval/judge.py` (blind, both orders). A verdict with `agreement: false` is position bias, not signal.
+- The Wilson lower bound must clear 0.5 at a non-trivial n (the existing n=2–8 runs prove nothing either way).
+- **Condition E is the attribution control**: a single direct call given the swarm's own synthesis instruction. If E matches A, the value was the prompt, not the orchestration. Never report A-vs-B without A-vs-E.
+- Never report behavioral numbers from `outputs_mock/` or MOCK runs (P0.1).
+
 ## Commands
 
 ```bash
@@ -28,6 +38,9 @@ python run_swarm.py debate "..." --use-kb                  # OPT IN to cross-run
 python run_swarm.py debate "..." --reset-kb                # quarantine existing KB entries
 python run_swarm.py debate "..." --ignore-kb               # explicit no-op alias (KB already off by default)
 python run_swarm.py debate "..." --show-partition-overlap  # surface Jaccard input-overlap diag
+python run_swarm.py debate "..." --workers=4               # pool size (default 24; use ~4 on laptop GGUF)
+python run_swarm.py debate "..." --legacy-rounds           # old round/phase scheduler (repro / GGUF laptop only)
+python run_swarm.py debate "..." --synth-verbose           # old combined answer.txt (telemetry inline; default is clean reader answer + diagnostics.md)
 
 # Develop without a GPU / model download
 MOCK_LLM=1 python run_swarm.py debate "Test thesis"
@@ -52,6 +65,12 @@ python tools/ab_run.py debate "..." --judge                # ...and run the pair
 python tools/judge_answers.py "<prompt>" A/answer.txt B/answer.txt  # pairwise quality judge (position-bias-mitigated)
 python kb_migrate.py                                        # knowledge-base schema migration
 python synthesize.py                                        # re-render synthesis from a saved store
+
+# Amplification-delta eval — the canonical swarm-vs-direct comparison (see Empirical status above)
+MOCK_LLM=1 python -m eval.ab_harness --mini 8 --conditions AB     # plumbing check only
+GROQ_API_KEY=... python -m eval.ab_harness --mini 8 --conditions ABCDE   # real: A=swarm, B=direct M, C=best-of-N revise, D=strong M+, E=direct M + synthesis prompt (attribution control)
+python -m eval.ab_harness ... --backend local                     # single-GPU parity (B/C/D/E on the same local model as A)
+python -m eval.judge eval/results/<exp>                           # blind pairwise judge, both orders, Wilson CIs → report.md
 ```
 
 Mock-mode and real-model runs land in different directories on purpose — see Outputs below.
@@ -62,15 +81,13 @@ Start here when exploring or debugging a live run. It is a one-page table of eve
 
 ## Architecture
 
-### Pipeline shape (`run_swarm.py`)
+### Pipeline shape (`run_swarm.py` + `core/worker_pool.py`)
 
-Each round runs two phases against the shared `SignalStore`:
+**The default is the continuous worker pool** (`run_continuous_pipeline` → `core/worker_pool.py:run_pool`): ~24 workers loop concurrently against the shared `SignalStore`. Each tick a worker picks an action — SCOUT / DEVELOP / CHAIN / CRITIQUE / OBJECT / VALIDATE / REFINE — via `choose_action()` (share-based balancing, optional cluster-local biases, pre-call scout gate). There are no rounds or phases; a `decay_loop` ticks decay/prune in parallel and `ConvergenceDetector` (`core/convergence.py`) decides when to halt. SCOUT and VALIDATE always search; DEVELOP searches when its sampled INITIAL has < 2 SUPPORT children.
 
-- **Phase A:** Scouts and Validators in parallel. Validators must run *before* downstream agents so VERIFICATION signals exist when the provenance boost is computed. (Reordering this breaks the boost — see the comment block in `run_swarm.py` for P2.3 / R6.)
-- **Phase B:** Foragers/Developers, Critics, and Haters in parallel. They now see VERIFICATION signals from Phase A.
-- After both phases: decay all signals, prune below `PRUNE_THRESHOLD`, log diversity metrics over `AgentContextRecord`s.
+The old round/phase scheduler is preserved behind `--legacy-rounds` (Phase A: scouts + validators, so VERIFICATION signals exist when the provenance boost is computed; Phase B: developers/critics/haters; then decay + prune + diversity logging). Use it only to reproduce old artifacts or on the GGUF laptop path where noted.
 
-After `NUM_ROUNDS` rounds, the `Synthesizer` reads the surviving signal DAG and produces the final answer.
+After halt, the `Synthesizer` reads the surviving signal DAG and produces the final answer. `core/clean_answer.py:split_answer()` then splits it: reader-facing Sections 1 (+2) → `answer.txt`; all field telemetry (Section 3, PROCESS NOTES, citation graph) → `diagnostics.md`. `--synth-verbose` / `SWARM_SYNTH_VERBOSE=1` restores the old combined output. The faithfulness audit still runs on the full pre-split text.
 
 ### Role activation (`ROLES_FOR_TASK` in `run_swarm.py`)
 
@@ -178,11 +195,11 @@ All tunables live in one validated module: agent counts, decay/amplify/prune thr
 
 `LLM_CONCURRENCY = 1` is intentional for a 6 GB laptop GPU running 4-bit NF4. Synthesizer cluster calls will parallelize when this rises.
 
-**Stigmergy gap feature flags** (all `False` by default, gated in `config.py`):
+**Stigmergy gap feature flags** (now all `True` by default in `config.py` — this changed; older docs say False):
 - `USE_CLUSTER_AWARE_SAMPLING` — Gap 1: `sample_from_clusters()` biases workers toward their semantic home cluster
 - `USE_TRAIL_AMPLIFICATION` — Gap 2: SUPPORT deposits amplify the whole cluster (pheromone trail)
-- `USE_LOCAL_ACTION_BIASES` — Gap 3: cluster-local state multipliers in `choose_action()`
-- `USE_WORKER_SEMANTIC_POSITION` — Gap 4: workers track a centroid of their prior deposits and pass it to sampling
+- `USE_LOCAL_ACTION_BIAS` — Gap 3: cluster-local state multipliers in `choose_action()`. **Known-dead on the hot path**: `worker_pool.iterate` computes local biases only *after* the primary `choose_action` call, so they only affect the two rare re-pick paths. Fix the ordering before trusting any ablation of this flag.
+- `USE_WORKER_POSITION` — Gap 4: workers track a centroid of their prior deposits and pass it to sampling
 
 ### LLM backends (`core/llm*.py`)
 
@@ -272,7 +289,8 @@ Cross-run consensus/rejection memory. **Default is OFF** — pass `--use-kb` to 
 
 ## Outputs
 
-- `outputs/` — real-LLM runs. Each run is a timestamped subdirectory containing `answer.txt`, `citations.json`, `kb_diff.json`, `lineage.dot`, `renderer_audit.json`, `round_log.json`, `run_meta.json`, `signals.json`, `summary.json`.
+- `outputs/` — real-LLM runs. Each run is a timestamped subdirectory containing `answer.txt` (clean reader answer: Sections 1–2 only), `diagnostics.md` (field telemetry moved out of the answer), `citations.json`, `kb_diff.json`, `lineage.dot`, `renderer_audit.json`, `round_log.json`, `run_meta.json`, `signals.json`, `summary.json`.
+- `eval/results/` — amplification-delta experiments (`conditions.jsonl`, `scores.json`, `report.md`). The `plumbing_check/` subdir is MOCK-mode and carries no behavioral signal.
 - `outputs_mock/` — `MOCK_LLM=1` runs. **Kept deliberately separate** (per P0.1) so mock artifacts cannot be confused with empirical evidence. MockLLM emits SHA1-seeded phrases regardless of input, so anything in `outputs_mock/` proves plumbing, not behavior.
 
 ## support_diversity — read this before writing tests or changing projection
@@ -315,7 +333,7 @@ The old public names `role_diversity` / `overall_diversity` / `format_report` ar
 
 ## Constraints to respect
 
-- Hardware target is a single 6 GB consumer GPU (RTX 3060 Laptop, 4-bit NF4). Multi-GPU and model-serving are explicitly out of scope.
+- The 6 GB consumer GPU (RTX 3060 Laptop, 4-bit NF4) is the **development environment**, not the research ceiling. The stated research priority is answer quality over cost and wall-clock — a provable quality win at a large cost multiple is acceptable; a cheap loss is not. Bigger-compute targets are A100/L40S (Longleaf) and Colab H100 (see `Stigmergic_Swarm__Compute_Request_Focused.md`). Multi-GPU model-serving infrastructure is still out of scope.
 - Mock mode is for plumbing checks only — never report behavioral or diversity numbers from `outputs_mock/`.
 - The colony biomimicry primitives, `dialogue_coordinator`, `Signal.responses`, `evaluate_insights_enhanced`, `deposit_with_context`, and the mode/phase/task-type/signal-type quadruple-classification system from the legacy pipeline (`legacy/`) were removed deliberately. Don't re-introduce them without a plan.
 - See `DEFERRED.md` for the active list of known gaps (logit dynamics tuning, retriever calibration, A/B baseline runs, KB threshold calibration, etc.) before starting a new architectural change.

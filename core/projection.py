@@ -1904,7 +1904,9 @@ def _apply_survival_filter(cp: ClusterProjection, has_validators: bool,
                             <= SURVIVAL_CONTEST_MAX (1.5)
     4. credibility gate   — passed (1)-(3) but must satisfy ANY of:
                               FACTUAL profile (requires_verification=True):
-                                verification_score >= SURVIVAL_VERIFY_MIN (0.3)
+                                verification_score >= SURVIVAL_VERIFY_MIN
+                                  ([0,1] lineage mean; floor sits above the
+                                  0.5 validator-abstain plateau)
                                 len(dissent_set)   >= 1
                                 support_diversity  >= SURVIVAL_BROAD_SUPPORT (4)
                               NON-FACTUAL profile (requires_verification=False):

@@ -841,6 +841,12 @@ class Worker:
         # each round's build_projection() call. Empty until then (genome=None
         # falls back to the standard single-signal prompt in action builders).
         self._genome_cache: dict = {}
+        # Gap 3: id of the last target this worker acted on. Local action
+        # biases for the NEXT iteration are computed from this signal's
+        # cluster neighborhood — workers stay in a semantic region (Gaps 1/4),
+        # so last-target state is the right context for "what does my part of
+        # the field need". None until the first targeted action.
+        self._last_target_id: Optional[str] = None
         # Bundle-disabled actions (cached). Roles set to None in the bundle's
         # ROLE_TO_ENGINE map cause their action to drop out of choose_action.
         self._disabled_actions: frozenset = self._compute_disabled_actions()
@@ -915,7 +921,14 @@ class Worker:
     async def iterate(self, store: SignalStore, pool_state: PoolState,
                       field_state: FieldState) -> Optional[str]:
         """Run one iteration. Returns the action name on deposit, None on skip."""
-        local_biases: dict = {}  # populated after first gather_target
+        # Gap 3: local biases from the last target's cluster neighborhood,
+        # computed BEFORE the primary choose_action so they actually shape
+        # selection. (They were previously computed after the action was
+        # already chosen, which made USE_LOCAL_ACTION_BIAS a no-op on the
+        # hot path.) store.get returns None for pruned signals -> {} biases.
+        local_biases: dict = self._local_action_biases(
+            store, store.get(self._last_target_id) if self._last_target_id else None,
+        )
         action = choose_action(field_state, self.recent_actions, pool_state,
                                self._rng,
                                disabled_actions=self._disabled_actions,
@@ -948,8 +961,11 @@ class Worker:
             action, store, pool_state, field_state,
         )
 
-        # Gap 3: update local biases from first available target.
+        # Gap 3: refresh local biases from the freshly sampled target so the
+        # re-pick paths below react to where this iteration actually landed.
         local_biases = self._local_action_biases(store, target)
+        if target is not None:
+            self._last_target_id = target.id
 
         # If the action needs a target and none is available, re-snapshot
         # and re-pick. Cap re-pick at 1 to avoid livelock.
@@ -978,6 +994,13 @@ class Worker:
             )
             if new_target is not None and new_target.id != target.id:
                 target = new_target
+
+        # Gap 3: the target is final past this point — remember it so the
+        # NEXT iteration's local biases reflect where this worker actually
+        # worked (the earlier assignment may have been replaced by the
+        # re-pick or cooldown paths above).
+        if target is not None:
+            self._last_target_id = target.id
 
         # Build prompt
         prompt = self._build_prompt(action, target, retrieved_chunks, query,
@@ -1492,6 +1515,14 @@ class Worker:
             target = validate_target or _sample_well_supported_cluster_head(
                 store, pool_state.recent_targets, self._rng,
             )
+            if target is None:
+                # No cluster has accumulated 2 SUPPORTs yet. Verify a bare
+                # INITIAL rather than skipping: the precondition was loosened
+                # (actions.py VALIDATE) precisely because waiting for support
+                # starved the validator out of entire runs, and early
+                # verification steers development toward grounded claims.
+                fallback = store.sample_weighted(INITIAL, 1)
+                target = fallback[0] if fallback else None
             if target is None:
                 return None, [], "", None
             # SAFE: decompose the cluster representative into atomic facts,

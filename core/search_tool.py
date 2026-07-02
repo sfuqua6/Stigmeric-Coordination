@@ -773,6 +773,63 @@ def _stackexchange_search(query: str, max_results: int) -> list[CorpusChunk]:
     return out
 
 
+def _scholar_enabled() -> bool:
+    """Semantic Scholar aux backend toggle (default ON; SWARM_SEARCH_SCHOLAR=0
+    to disable)."""
+    return os.environ.get("SWARM_SEARCH_SCHOLAR", "1").strip() \
+        not in ("0", "false", "False")
+
+
+def _semanticscholar_search(query: str, max_results: int) -> list[CorpusChunk]:
+    """Semantic Scholar paper search (free, anonymous, no key).
+
+    Aux backend for analysis/debate tasks — the same role Stack Exchange plays
+    for coding. Paper abstracts are the densest free source of the quantified,
+    citable particulars the swarm needs to out-evidence a flagship's parametric
+    memory (DDG snippets are 300 chars of SEO text; abstracts carry effect
+    sizes, sample counts, and named findings). Unauthenticated rate limits are
+    shared-pool and 429s are common — short timeout, fail-soft [].
+    """
+    try:
+        import requests
+    except ImportError:
+        return []
+    try:
+        resp = requests.get(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            params={
+                "query": query[:200],
+                "limit": min(max_results, 5),
+                "fields": "title,abstract,url,year,citationCount",
+            },
+            timeout=6,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SwarmBot/1.0)"},
+        )
+        if resp.status_code != 200:
+            return []
+        items = resp.json().get("data", []) or []
+    except Exception as exc:
+        print(f"[search] semanticscholar failed: {type(exc).__name__}: {exc}")
+        return []
+    out: list[CorpusChunk] = []
+    for i, it in enumerate(items):
+        title = (it.get("title") or "").strip()
+        abstract = re.sub(r"\s+", " ", (it.get("abstract") or "")).strip()
+        if not (title and abstract):
+            continue
+        year = it.get("year") or ""
+        url = it.get("url") or ""
+        cid = f"s2_{i}_{hashlib.sha1((url or title).encode()).hexdigest()[:8]}"
+        out.append(CorpusChunk(
+            chunk_id=cid,
+            text=f"{title} ({year}). {abstract[:1500]}",
+            source_tag=f"{title[:120]} | {url}",
+        ))
+    if out:
+        print(f"[search] semanticscholar ok: {len(out)} results for {query!r}")
+    return out
+
+
 def _wikipedia_search(query: str, max_results: int) -> list[CorpusChunk]:
     """Wikipedia summary search — the free, key-free fallback backend.
 
@@ -910,17 +967,21 @@ def _search_impl(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
 
     started = time.time()
 
-    # Coding tasks: Stack Exchange runs ALONGSIDE the web backend and merges
-    # — SO answers are the densest implementation/pitfall evidence available
-    # for free, and the coding domain prior in _quality_rerank then keeps
-    # them ahead of blogspam.
-    se_chunks: list[CorpusChunk] = []
+    # Task-matched aux backend runs ALONGSIDE the web backend and merges.
+    # Coding: Stack Exchange — SO answers are the densest implementation/
+    # pitfall evidence available for free (the coding domain prior in
+    # _quality_rerank then keeps them ahead of blogspam). Analysis/debate:
+    # Semantic Scholar — paper abstracts carry the quantified particulars
+    # (effect sizes, sample counts, named findings) that DDG snippets don't.
+    aux_chunks: list[CorpusChunk] = []
     if task_type == "coding":
-        se_chunks = _stackexchange_search(query, max_results)
+        aux_chunks = _stackexchange_search(query, max_results)
+    elif task_type in ("analysis", "debate") and _scholar_enabled():
+        aux_chunks = _semanticscholar_search(query, max_results)
 
     chunks = _tavily_search(query, max_results)
     if chunks:
-        chunks = _dedupe_chunks(se_chunks + chunks, max_results * 2)
+        chunks = _dedupe_chunks(aux_chunks + chunks, max_results * 2)
         chunks = _diversify(chunks, query, max_results, task_type)
         _save_cache(query, chunks, max_results)
         print(f"[search] tavily ok: {len(chunks)} results for {query!r} "
@@ -929,27 +990,27 @@ def _search_impl(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
 
     chunks = _ddg_search(query, max_results)
     if chunks and len(chunks) >= _MIN_FOLLOWUP_RESULTS:
-        chunks = _dedupe_chunks(se_chunks + chunks, max_results * 2)
+        chunks = _dedupe_chunks(aux_chunks + chunks, max_results * 2)
         chunks = _diversify(chunks, query, max_results, task_type, enrich_pages=True)
         _save_cache(query, chunks, max_results)
         print(f"[search] ddg ok: {len(chunks)} results for {query!r} "
               f"in {time.time() - started:.1f}s")
         return chunks
 
-    if chunks or se_chunks:
+    if chunks or aux_chunks:
         followup = _build_followup_query(query, task_type)
         if followup:
             followup_chunks = _ddg_search(followup, max_results)
             if followup_chunks:
                 merged = _dedupe_chunks(
-                    se_chunks + chunks + followup_chunks, max_results)
+                    aux_chunks + chunks + followup_chunks, max_results)
                 merged = _diversify(merged, query, max_results, task_type, enrich_pages=True)
                 _save_cache(query, merged, max_results)
                 print(f"[search] ddg follow-up ok: {len(merged)} results for {query!r} "
                       f"(+{len(followup_chunks)} from follow-up {followup!r}) "
                       f"in {time.time() - started:.1f}s")
                 return merged
-        merged = _dedupe_chunks(se_chunks + chunks, max_results)
+        merged = _dedupe_chunks(aux_chunks + chunks, max_results)
         merged = _diversify(merged, query, max_results, task_type, enrich_pages=True)
         _save_cache(query, merged, max_results)
         print(f"[search] ddg ok (small batch): {len(merged)} results for {query!r} "
@@ -988,6 +1049,29 @@ def _search_impl(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
             _save_cache(query, chunks, max_results)
             print(f"[search] ddg follow-up only ok: {len(chunks)} results for {query!r} "
                   f"via follow-up {followup!r} in {time.time() - started:.1f}s")
+            return chunks
+
+    # Last rung: relax the query to its content terms and retry DDG, then
+    # Wikipedia. Over-specific phrasings (planned atom queries, scout claim
+    # fragments) routinely match zero pages while their keywords match
+    # thousands; a keyword retry is nearly free compared to returning an
+    # empty corpus slot. Local import: query_planner pulls in signal_store,
+    # which search_tool must not require at module load.
+    from .query_planner import relax_query
+    relaxed = relax_query(query)
+    if relaxed:
+        chunks = _ddg_search(relaxed, max_results)
+        if chunks:
+            chunks = _diversify(chunks, query, max_results, task_type,
+                                enrich_pages=True)
+        else:
+            chunks = _wikipedia_search(relaxed, max_results)
+            if chunks:
+                chunks = _diversify(chunks, query, max_results, task_type)
+        if chunks:
+            _save_cache(query, chunks, max_results)
+            print(f"[search] relaxed-query rescue: {len(chunks)} results for "
+                  f"{query!r} via {relaxed!r} in {time.time() - started:.1f}s")
             return chunks
 
     print(

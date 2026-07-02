@@ -305,6 +305,58 @@ def find_cached_query(candidate: str, served: dict[str, int]) -> Optional[str]:
     return best_q if best_q is not None and best_ratio >= DUP_RATIO else None
 
 
+def relax_query(query: str, keep: int = 8) -> str:
+    """Deterministic recall fallback for a query that returned zero hits.
+
+    Planned atom queries fail on SPECIFICITY, not topic — a 12-word phrasing
+    with connective tissue matches no page even though the underlying facts
+    are indexed everywhere (PIPELINE_MAP issue #15: most atoms end up with no
+    evidence). Reduce the query to its highest-signal content terms — numbers,
+    proper-noun-looking tokens, and non-stopword words — in original order,
+    capped at `keep` terms.
+
+    Unlike `_fingerprint` (compare-only, sorted), this IS meant to be emitted
+    as a keyword query. Returns "" when relaxation would not change the query
+    (already minimal), so callers can skip a pointless identical retry.
+    No LLM call; pure string surgery.
+    """
+    if not query:
+        return ""
+    # Connectives that survive _STOP but carry no retrieval signal in a
+    # keyword query.
+    _weak = _STOP | {
+        "whether", "since", "although", "despite", "versus", "among",
+        "between", "during", "within", "without", "across", "toward",
+        "towards", "could", "would", "should", "there", "their", "other",
+    }
+    tokens = [t.strip(".,;:?!\"'()[]{}") for t in query.split()]
+    tokens = [t for t in tokens if t]
+    # (position, token, high_signal): numbers and proper-noun-looking tokens
+    # are the particulars the atom asserts — they win cap slots over generic
+    # content words.
+    cands: list[tuple[int, str, bool]] = []
+    seen: set[str] = set()
+    for i, t in enumerate(tokens):
+        low = t.lower()
+        has_digit = any(c.isdigit() for c in t)
+        is_proper = t[0].isupper() and i > 0
+        is_content = low not in _weak and len(low) > 2
+        if not (has_digit or is_proper or is_content):
+            continue
+        if low in seen:
+            continue
+        seen.add(low)
+        cands.append((i, t, has_digit or is_proper))
+    if len(cands) > keep:
+        high = [c for c in cands if c[2]][:keep]
+        low_sig = [c for c in cands if not c[2]][: keep - len(high)]
+        cands = sorted(high + low_sig, key=lambda c: c[0])
+    relaxed = " ".join(t for _, t, _hs in cands)
+    if not relaxed or relaxed.lower() == query.strip().lower():
+        return ""
+    return relaxed
+
+
 def _seed(*parts) -> int:
     """SHA1-derived integer seed; avoids modulo collapse across small periods."""
     raw = "|".join(str(p) for p in parts).encode("utf-8")

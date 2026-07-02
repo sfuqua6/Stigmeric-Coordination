@@ -539,6 +539,31 @@ def _is_no_result_snippet(snippet: str) -> bool:
 _SAFE_ABSTAIN_SCORE = 0.5
 
 
+def _snippet_from_hits(hits: list, max_hits: int = 2,
+                       chars_per_hit: int = 350) -> tuple[str, str]:
+    """Build the atom-evidence snippet from the top search hits.
+
+    Widened from `hits[0].text[:300]` (PIPELINE_MAP #15): a single 300-char
+    window frequently clipped the exact sentence carrying the figure the atom
+    asserts, so a true, well-indexed claim scored 0.5 "inconclusive". Two
+    sources also let the scorer see a confirm/contradict split instead of
+    whichever landed first. The returned tag is the primary (first) source.
+    """
+    parts: list[str] = []
+    tag0 = ""
+    for h in hits[:max_hits]:
+        tag = (getattr(h, "source_tag", "") or "")[:120]
+        body = (getattr(h, "text", "") or "")[:chars_per_hit]
+        if not body.strip():
+            continue
+        if not tag0:
+            tag0 = tag
+        parts.append(f"[{tag}]\n{body}")
+    if not parts:
+        return "(no result)", "(no result)"
+    return "\n\n".join(parts), (tag0 or "(unnamed source)")
+
+
 async def _safe_score_atom(atom_text: str, snippet: str, llm,
                             task_type: str = None) -> float:
     """Score one atomic fact against a retrieved snippet.
@@ -551,18 +576,21 @@ async def _safe_score_atom(atom_text: str, snippet: str, llm,
     # snippet being scored ~0.0 as a false refutation; also saves a round-trip).
     if _is_no_result_snippet(snippet):
         return _SAFE_ABSTAIN_SCORE
+    # Snippet cap 350 -> 750: sized to the widened two-source evidence window
+    # (_snippet_from_hits) — truncating back to 350 here would silently drop
+    # the second source retrieval just paid for.
     if task_type in _NON_FACTUAL_TASKS:
         prompt = (
             f"Does this snippet substantively engage with the following claim?\n"
             f"Claim: {atom_text}\n"
-            f"Snippet: {snippet[:350]}\n"
+            f"Snippet: {snippet[:750]}\n"
             f"Reply with only: SCORE: X.X  (1.0=fully engages, 0.0=irrelevant)"
         )
     else:
         prompt = (
             f"How does this snippet relate to the following factual claim?\n"
             f"Claim: {atom_text}\n"
-            f"Snippet: {snippet[:350]}\n"
+            f"Snippet: {snippet[:750]}\n"
             f"Reply with only: SCORE: X.X\n"
             f"  1.0 = snippet directly confirms the claim\n"
             f"  0.5 = snippet is on-topic but neither confirms nor refutes\n"
@@ -712,8 +740,10 @@ async def _safe_score_atoms_batch(items: list[dict], llm,
         )
         verb = "support"
     # Number the prompt lines 1..k over the scorable subset; map back via `scorable`.
+    # 350 -> 750 chars: match the widened two-source evidence window
+    # (_snippet_from_hits); see the same cap in _safe_score_atom.
     block = "\n\n".join(
-        f"[{j + 1}] CLAIM: {items[i]['text']}\n    SNIPPET: {items[i]['snippet'][:350]}"
+        f"[{j + 1}] CLAIM: {items[i]['text']}\n    SNIPPET: {items[i]['snippet'][:750]}"
         for j, i in enumerate(scorable)
     )
     k = len(scorable)
@@ -1427,6 +1457,7 @@ class Worker:
                 from core.search_tool import search as _search
                 from core.query_planner import (
                     plan_step_back, plan_hyde_query, find_cached_query,
+                    relax_query,
                 )
                 from core.config import SAFE_BATCH_ATOMS, SAFE_BATCH_MAX_ATOMS
 
@@ -1443,15 +1474,30 @@ class Worker:
                             hits = await asyncio.to_thread(_search, atom_query, max_results=2)
                         elif pool_state.try_reserve_search():
                             hits = await asyncio.to_thread(_search, atom_query, max_results=2)
+                        # Recall ladder (PIPELINE_MAP #15): a planned query that
+                        # returns nothing almost always failed on specificity,
+                        # not topic. Retry ONCE with the query relaxed to its
+                        # content terms (numbers/entities/keywords) before
+                        # abstaining — each un-evidenced atom is a hole in
+                        # verification coverage. Budget-honest: the retry
+                        # reserves its own search slot.
+                        if not hits:
+                            relaxed = relax_query(atom_query)
+                            if relaxed and pool_state.try_reserve_search():
+                                r_hits = await asyncio.to_thread(
+                                    _search, relaxed, max_results=2)
+                                if r_hits:
+                                    print(f"[safe] relaxed-query rescue: "
+                                          f"{atom_query!r} -> {relaxed!r}")
+                                    hits, atom_query = r_hits, relaxed
                     if hits and atom_query:
                         prev = pool_state.served_queries.get(atom_query, 0)
                         pool_state.served_queries[atom_query] = max(prev, len(hits))
                         if not query:
                             query = atom_query
                     if hits:
-                        tag = (getattr(hits[0], "source_tag", "") or "")[:120]
-                        body = (getattr(hits[0], "text", "") or "")[:300]
-                        return f"[{tag}]\n{body}", (tag or "(unnamed source)"), atom_query
+                        snippet, tag = _snippet_from_hits(hits)
+                        return snippet, tag, atom_query
                     return f"(no result for: {atom_query!r})", "(no result)", atom_query
 
                 # vLLM batches atom calls internally so 3 atoms cost ~1× wall-clock;

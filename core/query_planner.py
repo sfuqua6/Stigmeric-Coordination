@@ -581,6 +581,42 @@ async def plan_hyde_query(topic: str, llm) -> str:
     return topic
 
 
+async def plan_search_query(text: str, llm) -> str:
+    """Step-Back + HyDE folded into ONE LLM call.
+
+    The old pipeline was two serial calls per hot-loop iteration
+    (plan_step_back -> plan_hyde_query): one to name the broader topic, one
+    to draft a hypothetical excerpt and mine its vocabulary. This asks for
+    the end product directly — the content words a reliable source about the
+    text's broader topic would contain — halving the per-iteration planner
+    calls with the same vocabulary-alignment intent. Falls back to the
+    deterministic sentence fragment on any failure. Mock mode returns the
+    fragment so plumbing tests stay fast.
+    """
+    if not text:
+        return ""
+    if _is_mock():
+        return _extract_sentence_fragment(text, max_words=6)
+    prompt = (
+        "You are choosing a web-search query. Think of the broader topic this "
+        "text addresses, and of the vocabulary a reliable encyclopedia "
+        "article about that topic would use. Reply with ONLY a 4-8 word "
+        "keyword query made of that vocabulary — no explanation, no "
+        "punctuation at the end.\n\n"
+        f"Text: {text[:200].strip()}"
+    )
+    try:
+        raw = await llm.generate(prompt, role="planner", max_tokens=20,
+                                 temperature=0.3)
+        result = raw.strip().strip('"\'.,').split("\n")[0].strip()
+        words = result.split()
+        if 2 <= len(words) <= 12 and _is_clean_fragment(result):
+            return result
+    except Exception:
+        pass
+    return _extract_sentence_fragment(text, max_words=6)
+
+
 async def rate_confidence(claim: str, llm) -> float:
     """FLARE confidence proxy: self-rated certainty about a claim from parametric memory.
 

@@ -593,6 +593,11 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                 llm=llm, strategy=strat, strategy_name=name,
                 task_prompt=task_prompt,
                 cloud_provider=cloud_provider,
+                # Schema selector: non-factual tasks get the engages/quality
+                # prompt+parse (see core.actions.validate_prompt) instead of
+                # supports/confidence, which pinned verification to ~0 on
+                # debate/analysis when sources argue rather than corroborate.
+                task_type=task_type,
             ))
         foragers = []
         for i in range(NUM_FORAGERS):

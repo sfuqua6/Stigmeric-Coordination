@@ -25,13 +25,12 @@ validator falls back to its assigned sampling strategy.
 
 from __future__ import annotations
 
-import json
 import os
 import random
-import re
 from typing import Optional
 
 from agents.base import BaseAgent
+from core.actions import validate_prompt, validate_parse
 from core.signal_store import SignalStore, Signal
 from core.signal_types import INITIAL, SUPPORT, VERIFICATION
 from core.config import MAX_TOKENS_VALIDATOR
@@ -56,12 +55,18 @@ class Validator(BaseAgent):
 
     def __init__(self, agent_id: str, llm, strategy: SamplingStrategy,
                  strategy_name: str, task_prompt: str,
-                 cloud_provider: str = "none"):
+                 cloud_provider: str = "none",
+                 task_type: Optional[str] = None):
         super().__init__(agent_id, llm)
         self.strategy = strategy
         self.strategy_name = strategy_name
         self.task_prompt = task_prompt
         self._cloud_provider = cloud_provider
+        # Selects the schema in core.actions.validate_prompt/validate_parse.
+        # None -> factual supports/confidence semantics (coding/stock, and
+        # the pre-unification legacy default). Pass the run's task_type to
+        # get the non-factual engages/quality schema on debate/analysis.
+        self._task_type = task_type
 
     def _maybe_cloud_call(self, claim_content: str) -> Optional[str]:
         if self._cloud_provider == 'anthropic':
@@ -94,67 +99,35 @@ class Validator(BaseAgent):
         if not samples:
             return (
                 "No claim to verify.\n\n"
-                'Reply with this JSON: {"supports": false, "confidence": 0.0, "note": "no claim"}'
+                'Reply with this JSON: {"supports": false, "confidence": 0.0, "reasoning": "no claim"}'
             )
         s = samples[0]
-        count_hint = (
-            f"There are currently {store_count} verification signals in the store. "
-            f"Verify a distinct claim.\n"
-        )
         keyphrase = _extract_keyphrase(s.content)
         external = _wiki_lookup(keyphrase)
         if _DIAGNOSTIC:
             print(f"[validator-diag {self.agent_id}] keyphrase={keyphrase!r}")
-        # JSON output is far more reliably parseable on non-reasoning Instruct
-        # models (Phase K). Falls back to "SCORE: X" regex if the model
-        # ignores the JSON format.
+        # Single-sourced prompt: core.actions.validate_prompt is the one
+        # schema (task-aware). This class previously carried a drifted copy
+        # (single supports/confidence schema, "note" key) — a --legacy-rounds
+        # or stock run silently reintroduced the pinned-to-zero verification
+        # the continuous path had already fixed.
+        prompt = validate_prompt(self.task_prompt, s, external,
+                                 task_type=self._task_type)
         return (
-            f"TASK: {self.task_prompt}\n\n"
-            f"{count_hint}"
-            f"Verify the following claim against the external snippet.\n\n"
-            f"---CLAIM [{s.id}]---\n{s.content}\n---END CLAIM---\n\n"
-            f"---EXTERNAL SNIPPET---\n{external}\n---END SNIPPET---\n\n"
-            f"Reply with EXACTLY this JSON object (no other text):\n"
-            f'{{"supports": true|false, "confidence": <number in [0,1]>, '
-            f'"note": "<one short sentence>"}}\n\n'
-            f"`supports` is true if the snippet plausibly backs the claim, "
-            f"false if it contradicts or fails to address it. `confidence` "
-            f"is your subjective certainty in the assessment."
+            f"{prompt}\n\n"
+            f"(There are currently {store_count} verification signals in the "
+            f"store; verify a distinct claim.)"
         )
 
     def parse(self, raw: str) -> tuple[str, float]:
-        text = raw.strip()
+        text = (raw or "").strip()
         if _DIAGNOSTIC:
             print(f"[validator-diag {self.agent_id}] raw={text[:300]!r}")
-        # Phase K: try JSON first. If the model produced extra text around
-        # the JSON object, extract the first {...} block.
-        score = 0.5
-        json_match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
-        if json_match:
-            try:
-                parsed = json.loads(json_match.group(0))
-                supports = bool(parsed.get("supports", False))
-                conf = float(parsed.get("confidence", 0.5))
-                conf = max(0.0, min(1.0, conf))
-                # Combine into a single score: supports=True → conf, supports=False → 1-conf
-                # but clamp so a low-confidence "false" doesn't accidentally
-                # land near 0.5 and read as a non-call.
-                score = conf if supports else max(0.0, 1.0 - conf)
-                note = str(parsed.get("note", "")).strip()
-                if note:
-                    text = note
-                return text, score
-            except (ValueError, TypeError):
-                pass
-        # Fallback: legacy SCORE: regex (kept for cases where the model
-        # produces freeform text despite the JSON instruction).
-        m = re.search(r"score\s*[:=]\s*([+-]?(?:\d+\.?\d*|\.\d+))", text, re.IGNORECASE)
-        if m:
-            try:
-                score = max(0.0, min(1.0, float(m.group(1))))
-            except ValueError:
-                pass
-        return text, score
+        # Single-sourced parsing: brace-balanced JSON extraction + task-aware
+        # scoring live in core.actions.validate_parse (with the SCORE: regex
+        # fallback). Keeps this class schema-identical to the continuous path.
+        pd = validate_parse(text, task_type=self._task_type)
+        return pd.content, pd.strength
 
 
 # ---------------------------------------------------------------------------

@@ -1288,22 +1288,20 @@ class Worker:
                     self._query_history,
                     task_type=self.task_type,
                 )
-                # Step-Back + HyDE (FLARE-light): once past cold-start, lift the
-                # query to a higher abstraction level so the vocabulary matches
-                # confirming documents rather than the question itself.  Skip
-                # if the resulting query is already well-served (FLARE-light dedup).
+                # Query reformulation (FLARE-light): once past cold-start, lift
+                # the query so the vocabulary matches confirming documents
+                # rather than the question itself. ONE combined LLM call
+                # (plan_search_query) — this used to be two serial calls
+                # (step-back, then HyDE) per scout iteration. Skip if the
+                # result is already well-served (FLARE-light dedup).
                 if query and pool_state.cold_start_done:
-                    from core.query_planner import plan_step_back, plan_hyde_query
+                    from core.query_planner import plan_search_query
                     _scout_llm = self._llm_for_action(SCOUT)
                     try:
-                        _step_back = await plan_step_back(query, _scout_llm)
-                        _hyde_q = await plan_hyde_query(_step_back, _scout_llm)
-                        # Prefer HyDE query; fall back to step-back phrase; then keep original.
-                        if _hyde_q and find_cached_query(_hyde_q, pool_state.served_queries) is None:
-                            query = _hyde_q
-                        elif _step_back and find_cached_query(_step_back, pool_state.served_queries) is None:
-                            query = _step_back
-                        # else: original query is fine (already cached or HyDE failed)
+                        _reform = await plan_search_query(query, _scout_llm)
+                        if _reform and find_cached_query(_reform, pool_state.served_queries) is None:
+                            query = _reform
+                        # else: original query is fine (already cached or reform failed)
                     except Exception:
                         pass
                 cached_q = find_cached_query(query, pool_state.served_queries) if query else None
@@ -1385,22 +1383,31 @@ class Worker:
                 try:
                     from core.search_tool import search as _search, summarize_for_signal
                     from core.query_planner import (
-                        plan_develop_query, find_cached_query,
-                        rate_confidence, plan_step_back, plan_hyde_query,
+                        plan_develop_query, find_cached_query, plan_search_query,
                     )
                     _dev_llm = self._llm_for_action(DEVELOP)
-                    _conf = await rate_confidence(target.content, _dev_llm)
+                    # Code-side FLARE gate. This was an LLM self-rating call
+                    # (rate_confidence) on EVERY sparse-support DEVELOP — a
+                    # per-iteration round-trip to produce one scalar. The
+                    # lineage already carries the same information: a SEARCH
+                    # child means someone retrieved for this claim, and
+                    # verification_strength is the [0,1] external-grounding
+                    # mean. Grounded lineage -> skip retrieval.
+                    _has_search_child = any(
+                        (c := store.get(cid)) is not None and c.type == SEARCH
+                        for cid in store.by_parent(target.id)
+                    )
+                    _conf = 1.0 if _has_search_child else store.verification_strength(target.id)
                     if _conf >= _FLARE_TAU:
-                        # LM is confident — skip retrieval for this iteration.
+                        # Lineage already grounded — skip retrieval this iteration.
                         pass
                     else:
-                        # Low confidence: build HyDE query from step-back of target.
-                        _step_back = await plan_step_back(target.content, _dev_llm)
-                        _hyde_q = await plan_hyde_query(_step_back, _dev_llm)
-                        # Fall back to stance-based query if HyDE returned nothing clean.
+                        # Ungrounded: ONE combined reformulation call (was
+                        # step-back + HyDE, two serial calls).
+                        _reform = await plan_search_query(target.content, _dev_llm)
                         query = (
-                            _hyde_q
-                            if _hyde_q
+                            _reform
+                            if _reform
                             else plan_develop_query(
                                 target.content, pool_state.served_queries,
                                 task_type=self.task_type,
@@ -1532,10 +1539,7 @@ class Worker:
             query = ""
             try:
                 from core.search_tool import search as _search
-                from core.query_planner import (
-                    plan_step_back, plan_hyde_query, find_cached_query,
-                    relax_query,
-                )
+                from core.query_planner import find_cached_query, relax_query
                 from core.config import SAFE_BATCH_ATOMS, SAFE_BATCH_MAX_ATOMS
 
                 # Shared per-atom retrieval: run `atom_query` through the search
@@ -1631,9 +1635,16 @@ class Worker:
                         snippet = ""
                         snippet_tag = "(no result)"
                         try:
-                            step_back = await plan_step_back(atom_text, chosen_llm)
-                            hyde_q = await plan_hyde_query(step_back, chosen_llm)
-                            snippet, snippet_tag, atom_query = await _retrieve_for_query(hyde_q or step_back)
+                            # Deterministic atom query. This was step-back +
+                            # HyDE — TWO LLM calls per atom — and HyDE baked
+                            # confirmation bias into verification retrieval:
+                            # it drafted a *confirming* document and searched
+                            # its vocabulary. relax_query extracts the atom's
+                            # own content terms (numbers/entities/keywords)
+                            # code-side; the recall ladder in
+                            # _retrieve_for_query still handles misses.
+                            _atom_q = relax_query(atom_text) or atom_text[:80]
+                            snippet, snippet_tag, atom_query = await _retrieve_for_query(_atom_q)
                         except Exception:
                             snippet, snippet_tag, atom_query = "(no result)", "(no result)", ""
                         # Score this atom against its snippet.

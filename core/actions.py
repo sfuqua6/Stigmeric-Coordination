@@ -145,6 +145,51 @@ _TYPE_LINE_RE = _re.compile(r"^\s*TYPE\s*[:=]\s*(\w+)",
                             _re.IGNORECASE | _re.MULTILINE)
 _PARENT_LINE_RE = _re.compile(r"^\s*PARENT\s*[:=]\s*([A-Za-z0-9_\-]+)",
                               _re.IGNORECASE | _re.MULTILINE)
+
+
+def extract_json_object(text: str) -> Optional[dict]:
+    """First balanced {...} block in `text` that parses as a JSON object.
+
+    Replaces the old flat `re.search(r"\\{[^{}]*\\}")`, which could not match
+    nested objects: a brace inside the reasoning string, or a reasoning-model
+    preamble containing {...}, made it fail or capture garbage — producing
+    the silent score=0.5 defaults behind validator_raw.log. This scanner is
+    string-aware (quotes / escapes), walks brace depth, and returns the first
+    balanced candidate that json.loads to a dict. Returns None when no
+    parseable object exists (callers then use their text fallbacks).
+    """
+    s = text or ""
+    i = s.find("{")
+    while i != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for j in range(i, len(s)):
+            ch = s[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(s[i:j + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except ValueError:
+                        pass
+                    break  # malformed or non-dict candidate; try next '{'
+        i = s.find("{", i + 1)
+    return None
 _SCORE_RE = _re.compile(r"score\s*[:=]\s*([+-]?(?:\d+\.?\d*|\.\d+))",
                         _re.IGNORECASE)
 # Drop these lines wholesale — they're internal protocol or pure metadata.
@@ -211,10 +256,13 @@ def _parse_parent(text: str, store: SignalStore) -> Optional[str]:
 
 
 def _type_parent_instruction() -> str:
+    # Position-neutral wording: this block now sits in the STATIC prefix of
+    # every action prompt (before the dynamic signal content) so vLLM prefix
+    # caching can reuse it — don't reference "above"/"below".
     return (
         "Before your response, on two separate lines, emit:\n"
         "  TYPE: <SUPPORT|INITIAL|OBJECTION|CRITIQUE_NEGATIVE|CRITIQUE_POSITIVE>\n"
-        "  PARENT: <signal_id from above|none>\n"
+        "  PARENT: <the bracketed signal_id shown in this prompt|none>\n"
         "Use 'none' as PARENT only if seeding a fresh INITIAL.\n"
     )
 
@@ -248,26 +296,31 @@ def scout_prompt(task_prompt: str, retrieved_chunks: list,
     if k <= 1:
         ask = (
             f"Produce ONE concise initial claim or observation grounded in "
-            f"this evidence. One or two sentences only.\n\n"
-            f"CLAIM:"
+            f"the evidence shown in this prompt. One or two sentences only."
         )
+        cue = "CLAIM:"
     else:
         ask = (
-            f"Produce {k} DISTINCT initial claims grounded in this evidence, "
-            f"numbered 1. to {k}. Each claim: one or two sentences. Each must "
+            f"Produce {k} DISTINCT initial claims grounded in the evidence "
+            f"shown in this prompt, numbered 1. to {k}. Each claim: one or "
+            f"two sentences. Each must "
             f"take a genuinely different angle — e.g. a specific mechanism, a "
             f"counterexample or limitation, a cost or trade-off, an affected "
             f"group, a quantitative detail, a second-order consequence. Do "
             f"NOT write {k} paraphrases of the same obvious point; the most "
-            f"obvious claim may appear at most once.\n\n"
-            f"CLAIMS:\n1."
+            f"obvious claim may appear at most once."
         )
+        cue = "CLAIMS:\n1."
+    # Static-first ordering (prefix-cache): TASK + instruction are identical
+    # across every SCOUT call of a run, so vLLM reuses their KV prefix; the
+    # per-iteration evidence/reseed follow; the tiny generation cue is last.
     return (
         f"TASK: {task_prompt}\n\n"
+        f"{ask}\n\n"
         f"{evidence_intro}\n\n"
         f"---EVIDENCE---\n{evidence_text}\n---END EVIDENCE---\n"
         f"{reseed}\n"
-        f"{ask}"
+        f"{cue}"
     )
 
 
@@ -506,7 +559,8 @@ def develop_prompt(task_prompt: str, target: Signal,
             f"targets_atom={atom.atom_id!r}.\n"
         )
         develop_instruction = (
-            f"Target the weakest atom above. One or two sentences of "
+            f"Target the weakest atom shown in this prompt. One or two "
+            f"sentences of "
             f"concrete evidence that directly supports it. Your sentence "
             f"MUST contain at least one concrete particular — a number, a "
             f"named city/program/study, or a date — that is NOT already in "
@@ -516,22 +570,25 @@ def develop_prompt(task_prompt: str, target: Signal,
     else:
         atom_block = ""
         develop_instruction = (
-            f"Produce ONE concise development of this signal: supporting "
+            f"Produce ONE concise development of the signal shown in this "
+            f"prompt: supporting "
             f"evidence, an extension, or a refinement that anticipates the "
-            f"challenge above (if any). One or two sentences. Your "
+            f"challenge (if one is shown). One or two sentences. Your "
             f"development MUST add information the signal does not already "
             f"contain — ideally a concrete particular (a number, a named "
             f"city/program/study, a date, a mechanism). Restating the "
             f"signal in different words is worthless and will be rejected."
         )
+    # Static-first ordering (prefix-cache): instruction block before the
+    # per-iteration signal/dissent/retrieval content.
     return (
         f"TASK: {task_prompt}\n\n"
         f"You observe one signal in the shared store. You do not know who "
         f"deposited it.\n\n"
-        f"---SIGNAL [{target.id}]---\n{target.content}\n---END SIGNAL---\n"
-        f"{dissent_block}{retrieval_block}{atom_block}\n"
         f"{develop_instruction}\n\n"
         f"{_type_parent_instruction()}\n"
+        f"---SIGNAL [{target.id}]---\n{target.content}\n---END SIGNAL---\n"
+        f"{dissent_block}{retrieval_block}{atom_block}\n"
         f"DEVELOPMENT:"
     )
 
@@ -554,19 +611,20 @@ def develop_parse(raw: str, genome=None) -> ParsedDeposit:
 # ---------------------------------------------------------------------------
 
 def chain_prompt(task_prompt: str, target_support: Signal) -> str:
+    # Static-first ordering (prefix-cache): instruction before the signal.
     return (
         f"TASK: {task_prompt}\n\n"
         f"You see a SUPPORT signal already developing a claim. Build the "
         f"next step in the chain: a sub-claim, a downstream consequence, "
         f"or a finer-grained piece of evidence that extends THIS support "
         f"specifically — not the original INITIAL.\n\n"
-        f"---SUPPORT [{target_support.id}]---\n{target_support.content}\n"
-        f"---END SUPPORT---\n\n"
         f"One or two sentences. Do not restate the original — your step "
         f"must add information it does not contain, ideally a concrete "
         f"particular (a number, a named city/program/study, a date, a "
         f"mechanism). Paraphrase will be rejected.\n\n"
         f"{_type_parent_instruction()}\n"
+        f"---SUPPORT [{target_support.id}]---\n{target_support.content}\n"
+        f"---END SUPPORT---\n\n"
         f"CHAINED DEVELOPMENT:"
     )
 
@@ -594,18 +652,22 @@ def critique_prompt(task_prompt: str, target: Signal,
         )
     else:
         atom_block = ""
+    # Static-first ordering (prefix-cache): instruction + format before the
+    # per-iteration artifact/atom content.
     return (
         f"TASK: {task_prompt}\n\n"
-        f"Evaluate this deposited artifact on its merits.\n\n"
-        f"---ARTIFACT [{target.id}]---\n{target.content}\n---END ARTIFACT---\n"
-        f"{atom_block}\n"
+        f"Evaluate the deposited artifact shown in this prompt on its "
+        f"merits.\n\n"
         f"Write a brief critique (one or two sentences) and assign a "
         f"quality score in [0, 1] reflecting how well the artifact stands "
         f"as a claim. Score >= 0.5 means well-formed; < 0.5 means it has "
         f"significant weaknesses. Format:\n\n"
         f"CRITIQUE: <your critique>\n"
         f"SCORE: <number between 0 and 1>\n\n"
-        f"{_type_parent_instruction()}"
+        f"{_type_parent_instruction()}\n"
+        f"---ARTIFACT [{target.id}]---\n{target.content}\n---END ARTIFACT---\n"
+        f"{atom_block}\n"
+        f"Write the CRITIQUE and SCORE lines now."
     )
 
 
@@ -665,14 +727,18 @@ def object_prompt(task_prompt: str, representatives: list[Signal],
         )
     else:
         atom_block = ""
+    # Static-first ordering (prefix-cache): framing + challenge instruction
+    # before the per-iteration representatives/atom content.
     return (
         f"TASK: {task_prompt}\n\n"
         f"You see a consensus cluster forming in the shared signal store, "
-        f"represented by {len(representatives)} signal(s):\n\n"
-        f"{rep_lines}\n"
-        f"{atom_block}\n"
+        f"represented by the signal(s) shown in this prompt.\n\n"
         f"{challenge_instruction}\n\n"
         f"{_type_parent_instruction()}\n"
+        f"---CLUSTER REPRESENTATIVES---\n"
+        f"{rep_lines}\n"
+        f"---END REPRESENTATIVES---\n"
+        f"{atom_block}\n"
         f"OBJECTION:"
     )
 
@@ -706,15 +772,16 @@ def validate_prompt(task_prompt: str, target: Signal,
     not corroboration, and asking for corroboration produces
     `supports: false` with high confidence and a verification score of 0.
     """
+    # Static-first ordering (prefix-cache): instruction + JSON schema before
+    # the per-iteration claim/snippet; one-line reply cue last.
     if task_type in _NON_FACTUAL_TASKS:
         return (
             f"TASK: {task_prompt}\n\n"
             f"Assess whether the external snippet substantively engages with "
-            f"the topic of this claim. You are NOT asked to confirm or deny "
+            f"the topic of the claim shown in this prompt. You are NOT asked "
+            f"to confirm or deny "
             f"the claim — only to judge whether the snippet brings relevant "
             f"evidence, argument, or scholarly context that bears on it.\n\n"
-            f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
-            f"---EXTERNAL SNIPPET---\n{external_snippet}\n---END SNIPPET---\n\n"
             f"Reply with EXACTLY this JSON object (no other text):\n"
             f'{{"engages": true|false, "quality": <number in [0,1]>, '
             f'"reasoning": "<one short sentence>"}}\n\n'
@@ -722,18 +789,23 @@ def validate_prompt(task_prompt: str, target: Signal,
             f"claim's topic (even from a different angle or with different "
             f"conclusions). `quality` rates the snippet's substantive depth "
             f"and source credibility (0 = thin/irrelevant, 1 = rigorous "
-            f"and on-topic)."
+            f"and on-topic).\n\n"
+            f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
+            f"---EXTERNAL SNIPPET---\n{external_snippet}\n---END SNIPPET---\n\n"
+            f"Reply now with ONLY the JSON object."
         )
     return (
         f"TASK: {task_prompt}\n\n"
-        f"Verify this claim against the external snippet.\n\n"
-        f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
-        f"---EXTERNAL SNIPPET---\n{external_snippet}\n---END SNIPPET---\n\n"
+        f"Verify the claim shown in this prompt against the external "
+        f"snippet.\n\n"
         f"Reply with EXACTLY this JSON object (no other text):\n"
         f'{{"supports": true|false, "confidence": <number in [0,1]>, '
         f'"reasoning": "<one short sentence>"}}\n\n'
         f"`supports` is true if the snippet plausibly backs the claim, "
-        f"false if it contradicts or fails to address it."
+        f"false if it contradicts or fails to address it.\n\n"
+        f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
+        f"---EXTERNAL SNIPPET---\n{external_snippet}\n---END SNIPPET---\n\n"
+        f"Reply now with ONLY the JSON object."
     )
 
 
@@ -751,10 +823,9 @@ def validate_parse(raw: str, task_type: Optional[str] = None) -> ParsedDeposit:
     text = (raw or "").strip()
     score = 0.5
     note = text
-    json_match = _re.search(r"\{[^{}]*\}", text, _re.DOTALL)
-    if json_match:
+    parsed = extract_json_object(text)
+    if parsed is not None:
         try:
-            parsed = json.loads(json_match.group(0))
             if task_type in _NON_FACTUAL_TASKS:
                 # Non-factual: prefer engages/quality if the model emitted
                 # them. Otherwise ADAPT a supports/confidence response
@@ -853,33 +924,36 @@ def refine_prompt(task_prompt: str, target: Signal,
                 f"Rebut by strengthening THAT ATOM SPECIFICALLY — new evidence, "
                 f"a scope qualification, or a counter-example.\n"
             )
+        # Static-first ordering (prefix-cache): instruction before the
+        # per-iteration claim/challenge/atom content.
         return (
             f"TASK: {task_prompt}\n\n"
-            f"This claim has been challenged by another agent. Produce ONE "
+            f"The claim shown in this prompt has been challenged by another "
+            f"agent. Produce ONE "
             f"SUPPORT that directly rebuts the named weakness — acknowledging "
             f"the challenge, then giving evidence, narrowing the scope, or "
             f"qualifying the original claim so the challenge no longer "
             f"applies. Do NOT ignore the challenge or restate the original "
             f"claim verbatim.\n\n"
-            f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
-            f"---CHALLENGE [{dissent.id}] (strength={dissent.strength:.2f})---\n"
-            f"{dissent.content}\n---END CHALLENGE---\n"
-            f"{atom_block}\n"
             f"One or two sentences. Your SUPPORT should be readable as a "
             f"reply to the challenge: it must engage what the challenge "
             f"actually says.\n\n"
             f"{_type_parent_instruction()}\n"
+            f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
+            f"---CHALLENGE [{dissent.id}] (strength={dissent.strength:.2f})---\n"
+            f"{dissent.content}\n---END CHALLENGE---\n"
+            f"{atom_block}\n"
             f"REBUTTAL:"
         )
     return (
         f"TASK: {task_prompt}\n\n"
-        f"This claim survived structural filtering but lacks external "
+        f"The claim shown in this prompt survived structural filtering but "
+        f"lacks external "
         f"verification. Produce ONE supporting refinement that makes the "
         f"claim more concrete, specific, or testable — narrowing where "
-        f"verification could target.\n\n"
-        f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
-        f"One or two sentences.\n\n"
+        f"verification could target. One or two sentences.\n\n"
         f"{_type_parent_instruction()}\n"
+        f"---CLAIM [{target.id}]---\n{target.content}\n---END CLAIM---\n\n"
         f"REFINEMENT:"
     )
 

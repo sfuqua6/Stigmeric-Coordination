@@ -645,18 +645,33 @@ class MultiEngineRouter:
     # Per-call routing
     # ------------------------------------------------------------------
 
-    def engine_for(self, role: str):
+    def engine_for(self, role: str, worker_id: Optional[int] = None):
         """Return the LLM backend that should serve `role`.
 
         Disabled roles raise — callers should check action_disabled() (or
         the engine bundle's ROLE_TO_ENGINE entry) and drop the action
         BEFORE generate() is invoked.
+
+        When the role maps to a LIST of engines and `worker_id` is given,
+        the binding is STABLE per worker (`spec[worker_id % len(spec)]`)
+        instead of per-call round-robin. Rationale (intake diversity): a
+        scout should keep ONE model family for the whole run so each corpus
+        partition is explored by a consistent prior, and different
+        partitions by different priors — prior diversity × input diversity.
+        Per-call round-robin gave every worker every prior in turn, which
+        re-homogenizes the field.
         """
         if role in self.disabled_roles:
             raise RuntimeError(
                 f"role {role!r} is disabled in bundle {self.bundle_name!r}; "
                 f"check ACTION_TO_ROLE / ROLE_TO_ENGINE before calling generate()"
             )
+        spec = self._role_to_engine.get(role)
+        if worker_id is not None and isinstance(spec, list) and spec:
+            engine_name = spec[worker_id % len(spec)]
+            llm = self.engines.get(engine_name)
+            if llm is not None:
+                return llm
         counter = self._round_robin_state.get(role, 0)
         engine_name = _role_engine_key(self._role_to_engine, role, counter)
         if engine_name is None:

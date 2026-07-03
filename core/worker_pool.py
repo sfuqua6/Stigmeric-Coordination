@@ -916,7 +916,14 @@ class Worker:
             return self.llm
         from core.config import ACTION_TO_ROLE
         role = ACTION_TO_ROLE.get(action, "forager")
-        return self.router.engine_for(role)
+        try:
+            # Routers that support it (MultiEngineRouter) bind list-form
+            # roles STABLY per worker: this worker keeps one model family
+            # for the whole run, so its partition is explored by one
+            # consistent prior (intake diversity = prior × partition).
+            return self.router.engine_for(role, worker_id=self.worker_id)
+        except TypeError:
+            return self.router.engine_for(role)
 
     async def iterate(self, store: SignalStore, pool_state: PoolState,
                       field_state: FieldState) -> Optional[str]:
@@ -1163,6 +1170,13 @@ class Worker:
         meta = dict(parsed.metadata or {})
         meta["depositor_agent_id"] = self.agent_id
         meta["action"] = action
+        # Family attribution: which model produced this deposit. Enables
+        # per-family analysis on heterogeneous bundles (which family's
+        # claims survive? does cross-family verification score differently?)
+        # without touching the no-leak rule — it's a scalar tag, never prose.
+        _eng = getattr(chosen_llm, "name", None)
+        if _eng:
+            meta["engine"] = str(_eng)[:80]
         if _grounding_meta is not None:
             meta["numbers_grounded"] = _grounding_meta
 

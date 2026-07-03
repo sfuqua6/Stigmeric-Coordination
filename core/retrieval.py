@@ -416,6 +416,39 @@ class WebRetriever(Retriever):
 # CompositeRetriever
 # ---------------------------------------------------------------------------
 
+def _poison_chunks() -> list[CorpusChunk]:
+    """Adversarial-robustness harness: inject known-false documents.
+
+    SWARM_POISON_FILE points at a JSON list of {"id", "text", ...} docs
+    containing canary claims (fake entities/figures that exist nowhere
+    else). They are appended to the scout corpus like any retrieved chunk —
+    tagged with a PLAUSIBLE source tag, because the experiment measures
+    whether the FIELD (partitioning, cross-family verification, adversarial
+    counter-evidence, dissent) rejects them, not whether a string filter
+    does. tools/poison_report.py measures canary adoption in the answer and
+    surviving clusters. Ground truth is objective: we planted them.
+    """
+    path = os.environ.get("SWARM_POISON_FILE", "").strip()
+    if not path:
+        return []
+    try:
+        docs = json.loads(Path(path).read_text(encoding="utf-8"))
+        chunks = [
+            CorpusChunk(
+                chunk_id=f"poison_{d.get('id', i)}",
+                text=str(d["text"]),
+                source_tag=str(d.get("source_tag", "Journal of Urban Policy Review")),
+            )
+            for i, d in enumerate(docs)
+        ]
+        print(f"[poison] injected {len(chunks)} poisoned chunk(s) from {path} "
+              f"(adversarial-robustness run — see tools/poison_report.py)")
+        return chunks
+    except Exception as exc:
+        print(f"[poison] failed to load {path!r}: {type(exc).__name__}: {exc}")
+        return []
+
+
 class CompositeRetriever(Retriever):
     """Cohere → Wikipedia → Web → placeholder fallback.
 
@@ -452,10 +485,11 @@ class CompositeRetriever(Retriever):
             agentic_chunks = []
             print(f"[retrieval] agentic search stack crashed: "
                   f"{type(exc).__name__}: {exc}")
+        poison = _poison_chunks()
         if len(agentic_chunks) >= _MIN_USEFUL_CHUNKS:
             print(f"[retrieval] sources combined: agentic_search="
                   f"{len(agentic_chunks)} (legacy chain skipped)")
-            return agentic_chunks
+            return agentic_chunks + poison
 
         # Legacy fallback: Cohere pre-computed Wikipedia embeddings.
         cohere_chunks: list[CorpusChunk] = []
@@ -496,7 +530,7 @@ class CompositeRetriever(Retriever):
                       f"{type(exc).__name__}: {exc}")
 
         # Below-threshold agentic chunks still count toward the corpus.
-        combined = agentic_chunks + cohere_chunks + wiki_chunks + web_chunks
+        combined = agentic_chunks + cohere_chunks + wiki_chunks + web_chunks + poison
         if combined:
             print(f"[retrieval] sources combined: "
                   f"agentic={len(agentic_chunks)} "

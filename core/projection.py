@@ -1812,11 +1812,23 @@ def _aggregate_cluster(
         if s is not None and s.type == CRITIQUE_POSITIVE
     )
 
-    ver_scores = []
-    for mid in member_ids:
-        vs = initial_metrics.get(mid, {}).get("ver_score", 0.0)
-        ver_scores.append(vs)
-    verification_score = sum(ver_scores) / max(1, len(ver_scores))
+    # Verification is a property of the CLAIM, not of how many paraphrase
+    # members the cluster accumulated: average only over members a validator
+    # actually reached (ver_score > 0). The old mean-over-ALL-members diluted
+    # by unvisited members — a 10-member cluster with one 0.9-verified rep
+    # scored 0.09, so SURVIVAL_VERIFY_MIN (0.55) was unreachable for exactly
+    # the clusters that attracted the most corroboration (root cause of the
+    # avg_verification_score ≈ 0.02–0.05 seen on every real run). A cluster
+    # no validator visited still scores 0.0; a visited-but-abstained cluster
+    # (validators emit ~0.5) still sits below the 0.55 floor.
+    ver_scores = [
+        vs for mid in member_ids
+        for vs in (initial_metrics.get(mid, {}).get("ver_score", 0.0),)
+        if vs > 0.0
+    ]
+    verification_score = (
+        sum(ver_scores) / len(ver_scores) if ver_scores else 0.0
+    )
 
     # Phase 3C: cluster-level support_depth = max chain depth across members.
     support_depth = max(

@@ -115,22 +115,30 @@ def _strip_type_parent_lines(text: str) -> str:
 # Reasoning-block stripping (P0.2 / R3 / M3)
 # ---------------------------------------------------------------------------
 
-# Catches leading scratchpad sentences emitted by reasoning-tuned models:
+# Catches LEADING scratchpad sentences emitted by reasoning-tuned models:
 #   DeepSeek-R1-Distill: "Alright, so I need to...", "Okay, so...", "Hmm, ..."
 #   Generic chain-of-thought: "Step 1:", "Let me think", "Reasoning:", etc.
 #   "Wait," self-corrections mid-generation.
-# Pattern: match one or more consecutive lines that begin with a known marker,
-# stopping at the first blank line (double newline) or end of string.
+# Anchored at the START of the text (\A), one line per application; the
+# repeat-until-stable loop in strip_reasoning eats multi-line preambles.
+#
+# Deliberately NOT in the marker list, and deliberately not MULTILINE:
+#   - "First," / "Second," / "Third," are the canonical structure of
+#     argumentative prose — the exact genre agents deposit. The old pattern
+#     matched them at ANY line start (MULTILINE) and deleted the whole line,
+#     silently mutilating legitimate enumerated arguments anywhere in the
+#     deposit. CoT that leads with an ordinal after the openers are stripped
+#     is kept: the cost of keeping one CoT-ish line is far below the cost of
+#     destroying a valid "First, ... Second, ..." argument.
+#   - Interior paragraphs are never touched now; only the leading run of
+#     marker lines is treated as scratchpad.
 _SCRATCHPAD_RE = _re.compile(
-    r"^(?:"
+    r"\A\s*(?:"
     r"step\s*\d+[:.)]"
     r"|let me(?:\s+think|\s+consider|\s+break|\s+start|\s+work|\s+re-?read|\s+re-?state)?"
     r"|let'?s\s+"
     r"|reasoning:"
     r"|chain of thought:"
-    r"|first,?\s+"
-    r"|second,?\s+"
-    r"|third,?\s+"
     r"|alright,?\s+"
     r"|okay,?\s+"
     r"|ok,?\s+"
@@ -138,8 +146,8 @@ _SCRATCHPAD_RE = _re.compile(
     r"|wait,?\s+"
     r"|hmm,?\s+"
     r"|now,?\s+i(?:'ll|'m|\s+need|\s+want|\s+should|\s+will)"
-    r").*?(?:\n\n|$)",
-    _re.IGNORECASE | _re.MULTILINE,
+    r").*?(?:\n|$)",
+    _re.IGNORECASE,
 )
 
 def strip_reasoning(text: str) -> str:
@@ -168,7 +176,8 @@ def strip_reasoning(text: str) -> str:
     out = _re.sub(r"<think>.*", "", out, flags=_re.DOTALL | _re.IGNORECASE)
 
     # Strip leading scratchpad-style sentences (apply repeatedly until stable
-    # to handle multi-paragraph preambles).
+    # to handle multi-line preambles; the pattern is \A-anchored so interior
+    # paragraphs are never touched).
     prev = None
     while prev != out:
         prev = out

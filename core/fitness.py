@@ -39,48 +39,63 @@ USE_ENTITY_RESOLUTION: bool = False  # Wikidata gating; set True on Colab/A100
 # compute_composite_fitness.  Weights that are 0.0 skip their term computation.
 _WEIGHTS: dict[str, dict[str, float]] = {
     "coding": {
-        "semantic_strength": 0.10,
-        "grounding":         0.30,
-        "topology":          0.10,
-        "centroid_stability":0.10,
-        "novelty_density":   0.10,
-        "trajectory":        0.10,
-        "entity_resolution": 0.20,
+        "field_support": 0.10,
+        "consensus": 0.05,
+        "verification": 0.25,
+        "semantic_strength": 0.06,
+        "grounding": 0.18,
+        "topology": 0.06,
+        "centroid_stability": 0.06,
+        "novelty_density": 0.06,
+        "trajectory": 0.06,
+        "entity_resolution": 0.12,
     },
     "analysis": {
-        "semantic_strength": 0.20,
-        "grounding":         0.20,
-        "topology":          0.15,
-        "centroid_stability":0.20,
-        "novelty_density":   0.15,
-        "trajectory":        0.10,
+        "field_support": 0.15,
+        "consensus": 0.10,
+        "verification": 0.15,
+        "semantic_strength": 0.12,
+        "grounding": 0.12,
+        "topology": 0.09,
+        "centroid_stability": 0.12,
+        "novelty_density": 0.09,
+        "trajectory": 0.06,
         "entity_resolution": 0.00,
     },
     "debate": {
-        "semantic_strength": 0.15,
-        "grounding":         0.15,
-        "topology":          0.20,
-        "centroid_stability":0.15,
-        "novelty_density":   0.20,
-        "trajectory":        0.15,
+        "field_support": 0.15,
+        "consensus": 0.10,
+        "verification": 0.15,
+        "semantic_strength": 0.09,
+        "grounding": 0.09,
+        "topology": 0.12,
+        "centroid_stability": 0.09,
+        "novelty_density": 0.12,
+        "trajectory": 0.09,
         "entity_resolution": 0.00,
     },
     "problem_solving": {
-        "semantic_strength": 0.15,
-        "grounding":         0.25,
-        "topology":          0.15,
-        "centroid_stability":0.15,
-        "novelty_density":   0.15,
-        "trajectory":        0.15,
+        "field_support": 0.15,
+        "consensus": 0.10,
+        "verification": 0.10,
+        "semantic_strength": 0.10,
+        "grounding": 0.16,
+        "topology": 0.10,
+        "centroid_stability": 0.10,
+        "novelty_density": 0.10,
+        "trajectory": 0.09,
         "entity_resolution": 0.00,
     },
     "creative": {
-        "semantic_strength": 0.10,
-        "grounding":         0.05,
-        "topology":          0.15,
-        "centroid_stability":0.15,
-        "novelty_density":   0.30,
-        "trajectory":        0.25,
+        "field_support": 0.15,
+        "consensus": 0.10,
+        "verification": 0.00,
+        "semantic_strength": 0.08,
+        "grounding": 0.04,
+        "topology": 0.11,
+        "centroid_stability": 0.11,
+        "novelty_density": 0.22,
+        "trajectory": 0.19,
         "entity_resolution": 0.00,
     },
 }
@@ -182,6 +197,7 @@ def compute_composite_fitness(
     task_type: Optional[str],
     all_genomes: list,
     cap_llm: float = CAP_LLM,
+    field: Optional[dict] = None,
 ) -> tuple[float, dict]:
     """Compute composite fitness and per-term breakdown for one genome.
 
@@ -218,6 +234,21 @@ def compute_composite_fitness(
         "trajectory":         _trajectory_score(genome.trajectory),
         "entity_resolution":  _entity_resolution_score(genome.atoms),
     }
+
+    # Field-evidence terms (vocabulary unification). Survival classification
+    # and composite_fitness previously shared ZERO features: survival used
+    # support/dissent/verification counts, fitness used geometry — so
+    # build_plan ranked survivors by a metric unrelated to why they survived.
+    # `field` carries the ClusterProjection's evidence scalars; terms only
+    # enter (and only dilute the normalization) when it is provided.
+    if field is not None:
+        from .config import SURVIVAL_BROAD_SUPPORT
+        sd = float(field.get("support_diversity", 0.0))
+        dp = max(0.0, float(field.get("dissent_pressure", 0.0)))
+        vs = float(field.get("verification_score", 0.0))
+        terms["field_support"] = min(1.0, sd / max(1, SURVIVAL_BROAD_SUPPORT))
+        terms["consensus"] = 1.0 / (1.0 + dp)          # dissent_pressure is log1p >= 0
+        terms["verification"] = max(0.0, min(1.0, vs))  # honest [0,1] lineage mean
 
     # Weighted sum — skip terms with weight=0 to avoid useless computation
     total_w = sum(weights.get(k, 0.0) for k in terms)

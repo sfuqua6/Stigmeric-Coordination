@@ -1335,7 +1335,17 @@ def build_projection(
     for cp in cluster_projections:
         if cp.genome is None:
             continue
-        cf, breakdown = _compute_fitness(cp.genome, task_type, all_genomes)
+        # Vocabulary unification: pass the cluster's field-evidence scalars
+        # so fitness shares features with survival (field_support/consensus/
+        # verification terms) instead of ranking survivors by geometry alone.
+        cf, breakdown = _compute_fitness(
+            cp.genome, task_type, all_genomes,
+            field={
+                "support_diversity": cp.support_diversity,
+                "dissent_pressure": cp.dissent_pressure,
+                "verification_score": cp.verification_score,
+            },
+        )
         cp.genome.composite_fitness = cf
         cp.genome.fitness_breakdown.update(breakdown)
 

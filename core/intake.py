@@ -98,13 +98,35 @@ def chunk_corpus(text: str, source_tag: str = "corpus"):
 
 
 def partition_for_scouts(chunks, num_scouts: int):
-    """Assign chunks to scouts in non-overlapping contiguous blocks."""
+    """Assign chunks to scouts in non-overlapping SEMANTIC groups.
+
+    The corpus arrives relevance-ranked (MMR output of the agentic search
+    stack), so the old contiguous-block split gave scout 0 the best chunks
+    and later scouts the tail — partitions were POSITIONAL, not topical, and
+    "input diversity" was partly a quality gradient. Semantic partitioning
+    clusters chunks around farthest-point seeds in embedding space, so each
+    scout explores a topically distinct region of the evidence. Falls back
+    to contiguous blocks when the embedder is unavailable or the corpus is
+    tiny. Same invariants either way: partition_id stamped on every
+    assigned chunk, every scout gets a (possibly empty) partition, at most
+    CHUNKS_PER_SCOUT_MAX chunks per scout.
+    """
     if num_scouts <= 0:
         return []
     if not chunks:
         return [ScoutPartition(scout_index=i, chunks=[]) for i in range(num_scouts)]
 
     per_scout = max(1, min(CHUNKS_PER_SCOUT_MAX, (len(chunks) + num_scouts - 1) // num_scouts))
+
+    if len(chunks) >= num_scouts * 2:
+        semantic = _partition_semantic(chunks, num_scouts, per_scout)
+        if semantic is not None:
+            return semantic
+
+    return _partition_contiguous(chunks, num_scouts, per_scout)
+
+
+def _partition_contiguous(chunks, num_scouts: int, per_scout: int):
     partitions = []
     cursor = 0
     for s in range(num_scouts):
@@ -118,6 +140,65 @@ def partition_for_scouts(chunks, num_scouts: int):
             for s2 in range(s + 1, num_scouts):
                 partitions.append(ScoutPartition(scout_index=s2, chunks=[]))
             return partitions
+    return partitions
+
+
+def _partition_semantic(chunks, num_scouts: int, per_scout: int):
+    """Farthest-point seeds + capacity-bounded nearest-seed assignment.
+
+    Returns None when embeddings are unavailable (caller falls back).
+    """
+    try:
+        from .signal_store import _try_load_embedder
+        model = _try_load_embedder()
+        if model is None:
+            return None
+        import numpy as np
+        vecs = []
+        for c in chunks:
+            v = np.asarray(model.encode(c.text[:600]), dtype="float32")
+            n = float((v ** 2).sum() ** 0.5)
+            if n <= 0:
+                return None
+            vecs.append(v / n)
+    except Exception:
+        return None
+
+    import numpy as np
+    V = np.stack(vecs)                       # (N, d), unit rows
+    # Farthest-point seeding: start from chunk 0 (highest-ranked), then
+    # repeatedly take the chunk least similar to any existing seed.
+    seeds = [0]
+    while len(seeds) < min(num_scouts, len(chunks)):
+        sims_to_seeds = V @ V[seeds].T       # (N, n_seeds)
+        max_sim = sims_to_seeds.max(axis=1)
+        max_sim[seeds] = np.inf              # never re-pick a seed
+        seeds.append(int(max_sim.argmin()))
+
+    # Capacity-bounded assignment: highest-affinity pairs first, so each
+    # chunk lands with its most similar seed that still has room.
+    sims = V @ V[seeds].T                    # (N, S)
+    order = sorted(
+        ((float(sims[i, s]), i, s) for i in range(len(chunks))
+         for s in range(len(seeds))),
+        reverse=True,
+    )
+    assigned: dict[int, int] = {}
+    counts = [0] * num_scouts
+    for _sim, i, s in order:
+        if i in assigned or counts[s] >= per_scout:
+            continue
+        assigned[i] = s
+        counts[s] += 1
+
+    partitions = [ScoutPartition(scout_index=s, chunks=[]) for s in range(num_scouts)]
+    for i, s in sorted(assigned.items()):
+        chunks[i].partition_id = f"partition_{s}"
+        partitions[s].chunks.append(chunks[i])
+    n_used = len(assigned)
+    print(f"[intake] semantic partitioning: {n_used}/{len(chunks)} chunks -> "
+          f"{sum(1 for p in partitions if p.chunks)} topical partitions "
+          f"(<= {per_scout} each; farthest-point seeds)")
     return partitions
 
 

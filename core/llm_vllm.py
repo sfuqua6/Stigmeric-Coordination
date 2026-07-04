@@ -349,14 +349,23 @@ class VLLMBackend:
         except Exception:
             return prompt
 
+    # Callers check this before passing schema= (other backends don't take it).
+    supports_schema = True
+
     async def generate(self, prompt: str, role: str = "agent",
                        max_tokens: int = 120,
                        temperature: float = 0.7,
-                       lora_request=None) -> str:
+                       lora_request=None,
+                       schema: dict = None) -> str:
         """Generate one completion. Pass lora_request to select a LoRA adapter.
 
         lora_request: an instance of vllm.lora.request.LoRARequest or None.
         Ignored if the engine wasn't loaded with enable_lora=True.
+
+        schema: optional JSON schema — constrains decoding so the model
+        CANNOT emit non-conforming output (guided decoding). Callers gate on
+        `supports_schema`; on vLLM API drift the constraint silently drops
+        and the robust downstream parsers handle the free-text output.
 
         Sampling params are pulled from SAMPLING_PER_ENGINE[engine_tag],
         with per-call temperature/max_tokens overriding the engine default
@@ -370,13 +379,32 @@ class VLLMBackend:
             engine_defaults = {}
         # Per-call overrides (caller-supplied temperature / max_tokens always
         # take precedence over the engine default).
-        params = SamplingParams(
+        params_kwargs = dict(
             max_tokens=max_tokens,
             temperature=max(0.05, temperature),
             top_p=engine_defaults.get("top_p", 0.92),
             repetition_penalty=engine_defaults.get("repetition_penalty", 1.15),
             stop=_STOP_TOKENS,
         )
+        if schema is not None:
+            # vLLM renamed this across versions: try the newer
+            # structured_outputs, then guided_decoding; else drop the
+            # constraint (parsers still handle free text).
+            try:
+                from vllm.sampling_params import StructuredOutputsParams
+                params_kwargs["structured_outputs"] = StructuredOutputsParams(json=schema)
+            except Exception:
+                try:
+                    from vllm.sampling_params import GuidedDecodingParams
+                    params_kwargs["guided_decoding"] = GuidedDecodingParams(json=schema)
+                except Exception:
+                    pass
+        try:
+            params = SamplingParams(**params_kwargs)
+        except TypeError:
+            params_kwargs.pop("structured_outputs", None)
+            params_kwargs.pop("guided_decoding", None)
+            params = SamplingParams(**params_kwargs)
         self._request_counter += 1
         req_id = f"req-{self._request_counter}"
         final_output = None

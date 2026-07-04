@@ -809,6 +809,34 @@ def validate_prompt(task_prompt: str, target: Signal,
     )
 
 
+def validate_schema(task_type: Optional[str] = None) -> dict:
+    """JSON schema for guided decoding of the validator verdict.
+
+    Passed to engines with `supports_schema` (vLLM) so the model literally
+    cannot emit a non-conforming verdict; validate_parse still handles the
+    free-text case for engines without constrained decoding.
+    """
+    if task_type in _NON_FACTUAL_TASKS:
+        return {
+            "type": "object",
+            "properties": {
+                "engages": {"type": "boolean"},
+                "quality": {"type": "number", "minimum": 0, "maximum": 1},
+                "reasoning": {"type": "string", "maxLength": 300},
+            },
+            "required": ["engages", "quality"],
+        }
+    return {
+        "type": "object",
+        "properties": {
+            "supports": {"type": "boolean"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "reasoning": {"type": "string", "maxLength": 300},
+        },
+        "required": ["supports", "confidence"],
+    }
+
+
 def validate_parse(raw: str, task_type: Optional[str] = None) -> ParsedDeposit:
     """Parse the validator's JSON. Schema is task-aware.
 

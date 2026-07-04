@@ -1020,9 +1020,20 @@ class Worker:
 
         spec = ACTION_REGISTRY[action]
         chosen_llm = self._llm_for_action(action)
+        # Guided-JSON decoding: on engines that support constrained decoding
+        # (vLLM, supports_schema=True), the validator verdict is grammar-
+        # constrained to the task-aware schema — the model cannot emit a
+        # non-conforming verdict, so the score-0.5 parse-failure default is
+        # structurally unreachable. Other engines fall back to prompt-and-
+        # robust-parse (extract_json_object).
+        _gen_kw = {}
+        if action == VALIDATE and getattr(chosen_llm, "supports_schema", False):
+            from core.actions import validate_schema
+            _gen_kw["schema"] = validate_schema(self.task_type)
         raw = await chosen_llm.generate(
             prompt, role=action.lower(),
             max_tokens=spec.max_tokens, temperature=spec.temperature,
+            **_gen_kw,
         )
 
         # Record the ATTEMPT unconditionally so the share window reflects

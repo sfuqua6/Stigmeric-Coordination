@@ -1027,9 +1027,14 @@ class Worker:
         # structurally unreachable. Other engines fall back to prompt-and-
         # robust-parse (extract_json_object).
         _gen_kw = {}
-        if action == VALIDATE and getattr(chosen_llm, "supports_schema", False):
-            from core.actions import validate_schema
-            _gen_kw["schema"] = validate_schema(self.task_type)
+        if getattr(chosen_llm, "supports_schema", False):
+            if action == VALIDATE:
+                from core.actions import validate_schema
+                _gen_kw["schema"] = validate_schema(self.task_type)
+            elif action == SCOUT:
+                from core.actions import scout_schema
+                from core.config import SCOUT_CLAIMS_PER_CALL
+                _gen_kw["schema"] = scout_schema(SCOUT_CLAIMS_PER_CALL)
         raw = await chosen_llm.generate(
             prompt, role=action.lower(),
             max_tokens=spec.max_tokens, temperature=spec.temperature,
@@ -1833,7 +1838,11 @@ class Worker:
                 )
                 if self._own_scout_excerpts else None
             )
-            return A.scout_prompt(self.task_prompt, retrieved, prior_own)
+            return A.scout_prompt(
+                self.task_prompt, retrieved, prior_own,
+                json_output=getattr(self._llm_for_action(SCOUT),
+                                    "supports_schema", False),
+            )
         if target is None:
             return None
         # Genome-aware: look up the cluster genome for this target signal.

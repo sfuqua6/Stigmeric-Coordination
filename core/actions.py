@@ -271,8 +271,30 @@ def _type_parent_instruction() -> str:
 # SCOUT
 # ---------------------------------------------------------------------------
 
+def scout_schema(k: int) -> dict:
+    """JSON schema for guided decoding of the scout claim portfolio.
+
+    With constrained decoding the K-way split is exact by construction —
+    no numbered-list marker surgery (split_scout_claims' regex path), no
+    merged/mis-split claims feeding near-duplicate INITIALs.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "claims": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 400},
+                "minItems": 1,
+                "maxItems": max(1, k),
+            },
+        },
+        "required": ["claims"],
+    }
+
+
 def scout_prompt(task_prompt: str, retrieved_chunks: list,
-                 prior_own_content: Optional[str] = None) -> str:
+                 prior_own_content: Optional[str] = None,
+                 json_output: bool = False) -> str:
     from core.config import SCOUT_CLAIMS_PER_CALL
     k = SCOUT_CLAIMS_PER_CALL
     if retrieved_chunks:
@@ -293,7 +315,21 @@ def scout_prompt(task_prompt: str, retrieved_chunks: list,
         excerpt = prior_own_content.replace("\n", " ").strip()
         reseed = (f'\nYou previously contributed: "{excerpt}"\n'
                   f"Every claim below must be genuinely different from that.\n")
-    if k <= 1:
+    if json_output:
+        # Guided decoding constrains the grammar to scout_schema(k); ask for
+        # the same shape so prompt and grammar agree.
+        ask = (
+            f"Produce {k} DISTINCT initial claims grounded in the evidence "
+            f"shown in this prompt. Each claim: one or two sentences. Each "
+            f"must take a genuinely different angle — a specific mechanism, "
+            f"a counterexample or limitation, a cost or trade-off, an "
+            f"affected group, a quantitative detail, a second-order "
+            f"consequence. Do NOT write {k} paraphrases of the same obvious "
+            f"point. Reply with ONLY this JSON object:\n"
+            f'{{"claims": ["<claim 1>", "..."]}}'
+        )
+        cue = "JSON:"
+    elif k <= 1:
         ask = (
             f"Produce ONE concise initial claim or observation grounded in "
             f"the evidence shown in this prompt. One or two sentences only."
@@ -349,6 +385,18 @@ def split_scout_claims(content: str) -> list[str]:
     text = (content or "").strip()
     if not text:
         return []
+    # JSON-first: guided-decoding scouts emit {"claims": [...]} — an exact
+    # K-way split with no marker heuristics. Free-text portfolios fall
+    # through to the numbered-marker path below.
+    obj = extract_json_object(text)
+    if obj is not None and isinstance(obj.get("claims"), list):
+        cleaned = [
+            str(p).replace("\n", " ").strip()
+            for p in obj["claims"]
+            if isinstance(p, str) and len(p.split()) >= 4 and not is_junk_output(p)
+        ]
+        if cleaned:
+            return cleaned
     pieces: list[str] = []
     matches = list(_CLAIM_MARKER_RE.finditer(text))
     if not matches:

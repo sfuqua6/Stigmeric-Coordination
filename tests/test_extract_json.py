@@ -72,3 +72,27 @@ def test_legacy_validator_delegates_schema():
     note, score = v.parse(raw)
     assert score == 0.8
     assert "engages {topic}" in note
+
+
+def test_split_scout_claims_json_first():
+    from core.actions import split_scout_claims
+    raw = ('{"claims": ["Congestion pricing cut Stockholm traffic twenty percent",'
+           ' "Car bans displace emissions to ride-hailing fleets in large cities"]}')
+    claims = split_scout_claims(raw)
+    assert len(claims) == 2
+    assert claims[0].startswith("Congestion pricing")
+
+
+def test_split_scout_claims_numbered_fallback():
+    from core.actions import split_scout_claims
+    raw = ("First claim about congestion pricing in Stockholm today.\n"
+           "2. Second claim about ride-hailing displacement effects here.")
+    claims = split_scout_claims(raw)
+    assert len(claims) == 2
+
+
+def test_scout_schema_shape():
+    from core.actions import scout_schema
+    s = scout_schema(4)
+    assert s["properties"]["claims"]["maxItems"] == 4
+    assert s["required"] == ["claims"]

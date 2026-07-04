@@ -685,38 +685,73 @@ async def _safe_decompose_and_plan(content: str, llm, max_atoms: int = 3) -> lis
     """
     prompt = (
         f"Break this claim into at most {max_atoms} independently verifiable "
-        f"atomic facts. For EACH fact emit exactly one line in this format:\n"
-        f"ATOM: <one-sentence proposition> | WEIGHT: <centrality 0.0-1.0> | "
-        f"QUERY: <4-8 word search-engine phrase for the broader topic>\n\n"
-        f"WEIGHT reflects how central the proposition is to the main assertion "
-        f"(1.0 = load-bearing; 0.1 = incidental background). QUERY should name "
-        f"the background concept a search engine would index, not restate the claim.\n\n"
+        f"atomic facts. WEIGHT reflects how central each proposition is to "
+        f"the main assertion (1.0 = load-bearing; 0.1 = incidental "
+        f"background). QUERY is a 4-8 word search-engine phrase naming the "
+        f"background concept a search engine would index, not a restatement "
+        f"of the claim.\n\n"
+        f"Reply with ONLY this JSON object:\n"
+        f'{{"atoms": [{{"text": "<one-sentence proposition>", '
+        f'"weight": <0.0-1.0>, "query": "<search phrase>"}}]}}\n\n'
         f"Claim: {content[:400]}"
     )
+    gen_kw = {}
+    if getattr(llm, "supports_schema", False):
+        gen_kw["schema"] = {
+            "type": "object",
+            "properties": {"atoms": {
+                "type": "array", "minItems": 1, "maxItems": max_atoms,
+                "items": {"type": "object", "properties": {
+                    "text": {"type": "string", "maxLength": 300},
+                    "weight": {"type": "number", "minimum": 0, "maximum": 1},
+                    "query": {"type": "string", "maxLength": 80}},
+                    "required": ["text", "weight", "query"]}}},
+            "required": ["atoms"],
+        }
     for _attempt in range(2):
         try:
             raw = await llm.generate(
-                prompt, role="validator", max_tokens=320, temperature=0.2
+                prompt, role="validator", max_tokens=320, temperature=0.2,
+                **gen_kw,
             )
             atoms: list[dict] = []
-            for line in raw.strip().splitlines():
-                if "ATOM:" not in line.upper():
-                    continue
-                parts = line.split("|")
-                atom_text = parts[0].split(":", 1)[-1].strip().strip('"\'')
-                weight = 1.0
-                query = ""
-                for seg in parts[1:]:
-                    su = seg.upper()
-                    if "WEIGHT:" in su:
-                        try:
-                            weight = max(0.1, min(1.0, float(seg.split(":", 1)[-1].strip())))
-                        except ValueError:
-                            pass
-                    elif "QUERY:" in su:
-                        query = seg.split(":", 1)[-1].strip().strip('"\'')
-                if atom_text and len(atom_text.split()) >= 3:
-                    atoms.append({"text": atom_text, "weight": weight, "query": query})
+            # JSON-first (exact under guided decoding; robust brace-balanced
+            # extraction otherwise).
+            from core.actions import extract_json_object
+            obj = extract_json_object(raw)
+            if obj is not None and isinstance(obj.get("atoms"), list):
+                for a in obj["atoms"][:max_atoms]:
+                    try:
+                        text = str(a.get("text", "")).strip()
+                        if len(text.split()) < 3:
+                            continue
+                        atoms.append({
+                            "text": text[:300],
+                            "weight": max(0.1, min(1.0, float(a.get("weight", 1.0)))),
+                            "query": str(a.get("query", "")).strip()[:80],
+                        })
+                    except (TypeError, ValueError):
+                        continue
+            if not atoms:
+                # Legacy line-format fallback (pre-JSON models / format drift).
+                for line in raw.strip().splitlines():
+                    if "ATOM:" not in line.upper():
+                        continue
+                    parts = line.split("|")
+                    atom_text = parts[0].split(":", 1)[-1].strip().strip('"\'')
+                    weight = 1.0
+                    query = ""
+                    for seg in parts[1:]:
+                        su = seg.upper()
+                        if "WEIGHT:" in su:
+                            try:
+                                weight = max(0.1, min(1.0, float(seg.split(":", 1)[-1].strip())))
+                            except ValueError:
+                                pass
+                        elif "QUERY:" in su:
+                            query = seg.split(":", 1)[-1].strip().strip('"\'')
+                    if atom_text and len(atom_text.split()) >= 3:
+                        atoms.append({"text": atom_text, "weight": weight, "query": query})
             if atoms:
                 return atoms[:max_atoms]
         except Exception:
@@ -776,26 +811,57 @@ async def _safe_score_atoms_batch(items: list[dict], llm,
     k = len(scorable)
     prompt = (
         f"For each numbered claim, does its snippet {verb} the claim?\n"
-        f"Reply with exactly {k} lines, one per claim, in this format:\n"
-        f"<number>: SCORE: X.X   ({criterion})\n\n"
+        f"Score each in [0, 1]: {criterion}.\n"
+        f"Reply with ONLY this JSON object, one entry per claim, keyed by "
+        f"the claim number:\n"
+        f'{{"scores": [{{"i": 1, "score": 0.7}}, ...]}}\n\n'
         f"{block}"
     )
+    gen_kw = {}
+    if getattr(llm, "supports_schema", False):
+        gen_kw["schema"] = {
+            "type": "object",
+            "properties": {"scores": {
+                "type": "array", "minItems": 1, "maxItems": k,
+                "items": {"type": "object", "properties": {
+                    "i": {"type": "integer", "minimum": 1, "maximum": k},
+                    "score": {"type": "number", "minimum": 0, "maximum": 1}},
+                    "required": ["i", "score"]}}},
+            "required": ["scores"],
+        }
     for _attempt in range(2):
         try:
             raw = await llm.generate(
-                prompt, role="validator", max_tokens=12 * k + 20, temperature=0.1
+                prompt, role="validator", max_tokens=14 * k + 30, temperature=0.1,
+                **gen_kw,
             )
             found = False
-            for m in re.finditer(
-                r"\[?(\d+)\]?\s*[:.\)]?\s*SCORE\s*[:=]\s*([0-9.]+)", raw, re.IGNORECASE
-            ):
-                j = int(m.group(1)) - 1
-                if 0 <= j < k:
+            # JSON-first: entries are index-KEYED ("i"), so a reordered or
+            # partial reply cannot desync the score-to-atom mapping the way
+            # the positional "<n>: SCORE:" lines could.
+            from core.actions import extract_json_object
+            obj = extract_json_object(raw)
+            if obj is not None and isinstance(obj.get("scores"), list):
+                for e in obj["scores"]:
                     try:
-                        scores[scorable[j]] = max(0.0, min(1.0, float(m.group(2))))
-                        found = True
-                    except ValueError:
-                        pass
+                        j = int(e.get("i", 0)) - 1
+                        if 0 <= j < k:
+                            scores[scorable[j]] = max(0.0, min(1.0, float(e["score"])))
+                            found = True
+                    except (TypeError, ValueError, KeyError):
+                        continue
+            if not found:
+                # Legacy positional-line fallback.
+                for m in re.finditer(
+                    r"\[?(\d+)\]?\s*[:.\)]?\s*SCORE\s*[:=]\s*([0-9.]+)", raw, re.IGNORECASE
+                ):
+                    j = int(m.group(1)) - 1
+                    if 0 <= j < k:
+                        try:
+                            scores[scorable[j]] = max(0.0, min(1.0, float(m.group(2))))
+                            found = True
+                        except ValueError:
+                            pass
             if found:
                 return scores
         except Exception:

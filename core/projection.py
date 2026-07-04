@@ -1782,27 +1782,28 @@ def _aggregate_cluster(
         if pid:
             support_partitions.add((pid, s.depositor))
 
-    # Fallback to action/strategy parse for SUPPORT signals without partition_id
-    # (pre-Fix-A deposits) and for CRITIQUE_POSITIVE signals (which count toward
-    # support but don't carry partition_id).
-    strategy_names: set[str] = set()
+    # Union, not sum. The old `len(partitions) + len(strategy_names)` summed
+    # two different UNITS of independence, inflating diversity (part of the
+    # "support_diversity=62" artifact; the survival bar was lowered 3->2
+    # partly to compensate). Now ONE discriminator set: partitioned SUPPORTs
+    # contribute their (partition, role) pair; partition-less signals
+    # (CRITIQUE_POSITIVE, pre-Fix-A deposits) contribute their DEPOSITOR
+    # AGENT — four distinct critics endorsing is four independent reads,
+    # but one agent depositing four times (or four action names from one
+    # agent) is one.
+    discriminators: set = {("partition",) + pair for pair in support_partitions}
     for sid in all_support:
         s = store.get(sid)
         if not s:
             continue
         if s.type == SUPPORT and (s.partition_id or s.metadata.get("partition_id", "")):
-            continue   # already counted in support_partitions
-        action = s.metadata.get("action", "")
-        if action:
-            strategy_names.add(action)
-            continue
-        strategy = _parse_strategy_name(s.metadata.get("depositor_agent_id", ""))
-        if strategy:
-            strategy_names.add(strategy)
-
-    # Combined diversity score: (partition, role) pairs dominate; action names
-    # are additive for any non-partitioned contributions.
-    total_support_diversity = len(support_partitions) + len(strategy_names)
+            continue   # already counted via its (partition, role) pair
+        key = (s.metadata.get("depositor_agent_id", "")
+               or s.metadata.get("action", "")
+               or _parse_strategy_name(s.metadata.get("depositor_agent_id", "")))
+        if key:
+            discriminators.add(("agent", key))
+    total_support_diversity = len(discriminators)
 
     # Critic endorsements: CRITIQUE_POSITIVE signals in the support set.
     critic_endorsements = sum(

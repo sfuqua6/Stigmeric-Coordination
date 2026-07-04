@@ -43,11 +43,13 @@ Strength dynamics
 
 Similarity dedup
 ----------------
-At deposit, the new content is compared against recent same-type signals
-using sentence-transformer embeddings (with string-similarity fallback).
-If similarity >= DIVERSITY_THRESHOLD, the existing signal is amplified and
-the deposit is rejected. This is similarity over the *trace*, not over any
-agent's reasoning.
+At deposit, a string pre-screen (SequenceMatcher > 0.95 against the three
+most-recent same-type signals) rejects truly identical text and amplifies
+the existing twin. Near-duplicates below that are NOT rejected — they are
+embedded and routed into the same cluster by ClusterRegistry. (The old
+embedding-cosine rejection path and its DIVERSITY_THRESHOLD constant were
+removed; clustering, not rejection, is the dedup mechanism.) This is
+similarity over the *trace*, not over any agent's reasoning.
 """
 
 from __future__ import annotations
@@ -66,7 +68,6 @@ from .config import (
     PRUNE_THRESHOLD,
     AMPLIFY_FACTOR,
     EXPLORATION_BONUS,
-    DIVERSITY_THRESHOLD,
     BOOST_THRESHOLD,
     BOOST_BETA,
     USE_LOGIT_DYNAMICS,

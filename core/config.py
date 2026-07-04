@@ -195,7 +195,9 @@ DECAY_RATE = 0.05
 PRUNE_THRESHOLD = 0.30  # was 0.15; signals with no corroboration now actually leave (m12)
 AMPLIFY_FACTOR = 1.15  # was 1.3; lowered to slow strength saturation (M6/R4 partial)
 EXPLORATION_BONUS = 0.3
-DIVERSITY_THRESHOLD = 0.85
+# (DIVERSITY_THRESHOLD deleted: the embedding-cosine deposit-rejection path
+# it gated was removed — near-duplicates now cluster instead of being
+# rejected; see signal_store.py "Similarity dedup".)
 
 BOOST_THRESHOLD = 0.7
 BOOST_BETA = 0.2
@@ -562,7 +564,6 @@ assert 0.0 < PRUNE_THRESHOLD < 1.0
 assert PRUNE_THRESHOLD >= DECAY_RATE
 assert AMPLIFY_FACTOR >= 1.0
 assert 0.0 <= EXPLORATION_BONUS <= 1.0
-assert 0.0 <= DIVERSITY_THRESHOLD <= 1.0
 assert 0.0 <= BOOST_THRESHOLD <= 1.0
 assert 0.0 <= BOOST_BETA <= 1.0
 assert NUM_SCOUTS > 0 and NUM_FORAGERS > 0

@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚡ CURRENT WORK STATE — READ FIRST (updated 2026-07-24)
+
+**Staleness warning:** HEAD (`6d6a884`) is dated 2026-07-03. Everything below — ~2,300 insertions across ~20 files, all verified green — has been sitting uncommitted in the working tree for three weeks. Nothing has been run or committed since 2026-07-10. The single most protective first action in any session is committing this work in reviewable chunks.
+
+A large uncommitted overhaul is in the working tree (run `git status` / `git diff` before anything else — nothing below is committed):
+
+1. **`docs/CRITIQUE_LOOP_2026-07-06.md`** — the authoritative findings + rationale for every change (7 load-bearing findings; §8 = ordered plan; post-loop correction: the DEFAULT continuous pipeline never ran corpus partitioning at all — `partition_id` was the worker id).
+2. **DONE + VERIFIED (641 tests, 0 failures):** tranches 1–2 (audit-ordering fix already in synthesizer.py, signed trail, dissent dup-count weighting, INITIAL-only novelty, grounded quality gate, render-signature stability fixes, fitness cleanups + re-signed consensus, eval condition F, judge provenance/family checks, `summary.json: partitioner`) **plus the big one: corpus/facet partition wiring into the DEFAULT `run_continuous_pipeline`** (`assemble_partitions()` in run_swarm.py, `USE_CORPUS_PARTITIONS` flag, partitions flow into `run_pool`→Worker→SCOUT evidence→INITIAL `partition_id` stamping) — smoke-verified 20/20 INITIALs carry content partition_ids, zero worker_* leakage. **This closes the core architectural gap**: corpus partitioning now actually runs in production, not just on `--legacy-rounds`.
+3. **DONE + VERIFIED:** `eval/partition_probe.py` hardening (k=1 ZeroDiv fix, incremental crash-safe report writing, embedder/partitioner/output_lens provenance, degenerate-output filter, verbalized-sampling condition V, verdict withheld unless partitioner=="semantic"). 18/18 tests passed. Ready to re-run for real: `GROQ_API_KEY=... python -m eval.partition_probe --mini 20 --corpus retrieve --include-hot --v-condition`.
+4. **DONE + VERIFIED:** faithfulness-audit hardening in `agents/synthesizer.py` — per-sentence citation attribution (`_sentence_at`, falls back to paragraph only under 8 words), a negation screen (`negation_mismatch` flag when a citing sentence negates a claim the source never negated), and a consequential `_AUDIT_HARD_GATE` (env `SWARM_AUDIT_HARD_GATE`, default 12) that discards flagged prose and ships the existing extractive-fallback rendering instead, with `renderer_audit.json: gated=true` when it fires. `core/clean_answer.py` now keeps referenced `[N]` markers in answer.txt and appends a compact **Sources** block (previously ALL citations were stripped — the shipped answer had zero attribution). 53 passed / 5 skipped on the targeted test set, no new skips.
+5. **DONE + VERIFIED:** `docs/OVERCONTEXT_EVAL_PLAN.md` — the decisive A-vs-F over-context experiment. `eval/packs.py` (deterministic pack build/reuse), `run_swarm.py` `--corpus=pack:<path>` mode, `SWARM_DISABLE_LIVE_SEARCH=1` kill switch, `eval/ab_harness.py` flags `--prompt-set overcontext --pack-scale {1x,4x,16x}`, `eval/prompts.py: OVERCONTEXT_SET`. MOCK-verified A and F reference the identical pack (the property that makes the comparison valid); 22/22 targeted tests passed. **Real run not yet executed** — needs `GROQ_API_KEY`: `python -m eval.ab_harness --name overctx_16x --prompt-set overcontext --mini 8 --conditions ABEF --pack-scale 16x` then `python -m eval.judge eval/results/overctx_16x`. Kill criterion (pre-registered): if A doesn't beat F with Wilson lower bound > 0.5 at 16x, the compression thesis is falsified in its best-case regime.
+6. **All four implementation tranches from the critique loop are complete and the full suite is green: 642 passed, 8 skipped, 0 failures** (verified 2026-07-10, end-to-end, after all changes including synthesizer hardening). Nothing is committed yet — consider committing in reviewable chunks (`git diff --stat` shows ~17 files across partitioning/convergence/fitness/eval/synthesizer) rather than one giant commit.
+7. **Decision procedure — the path out of limbo (2026-07-24).** Verified state of the evidence: `eval/results/` contains ZERO real-LLM judged runs of the current design — `overctx_smoke/` is mock, both `partition_probe_20260706_*` runs are mock, and the one real-retrieval probe attempt (`partition_probe_20260703_214551/`) died before writing a report. Every judged loss in `hey fable.md` predates semantic partitioning, the clean-answer split, and conditions E/F. The project is not "failed"; it is **undecided, with the deciding experiment built and never run.** In order:
+   1. **Commit the working tree** in reviewable chunks (see item 6). Three weeks of verified work in an uncommitted state is the largest live risk to the project.
+   2. **Run the over-context experiment for real** (commands in item 5; needs only `GROQ_API_KEY`). It has a pre-registered kill criterion, so either outcome is a result: A beats F at 16x with Wilson LB > 0.5 → the compression thesis has its first supporting evidence, scale per the Longleaf request; A fails → the thesis is falsified in its best-case regime.
+   3. **Branch on the outcome.** Win → real partition-probe run (`GROQ_API_KEY=... python -m eval.partition_probe --mini 20 --corpus retrieve --include-hot --v-condition`), then null-model ablation (CRITIQUE_LOOP §8 Thesis 5), then bigger compute. Loss → write the negative result honestly (the eval methodology itself — blind both-order judging, position-bias detection, attribution controls E/F, pre-registration — is publishable and reusable) and redirect effort to the salvageable assets: the eval harness, the retrieval stack, the faithfulness-audit/clean-answer machinery, and the MCP tool surface (`mcp_server.py`).
+   Do not start new architectural work ahead of steps 1–2; every past cycle of building-before-measuring is how the repo accumulated three critique loops and zero decisive data points.
+
 ## What this codebase is
 
 A from-scratch rebuild of the original stigmergic multi-agent LLM pipeline that strictly enforces two principles:
@@ -13,12 +31,15 @@ This is the canonical pipeline, at the repository root. The original it replaced
 
 ## Empirical status — read before claiming wins
 
-The core hypothesis (a swarm of partitioned agents out-reasons a single call of the same or a stronger model) is **currently unproven and losing on the head-to-head evidence**. `hey fable.md` (repo root) is the evidence-first audit, quoting the repo's own artifacts: 0 judged wins across all comparisons in `outputs/kb/` and `eval/results/`, `avg_verification_score` ≈ 0, `self_bleu` 0.62–0.69 (the field converges on near-duplicate claims), and substantive runs ending on `cap_time` rather than convergence. Fixes landed since that audit: reader-answer split (`core/clean_answer.py`), judge normalization + neutral local judge, condition E attribution control, render-set stability halt, pre-call scout gate.
+The core hypothesis (a swarm of partitioned agents out-reasons a single call of the same or a stronger model) is **currently unproven and losing on the head-to-head evidence**. `hey fable.md` (repo root) is the evidence-first audit, quoting the repo's own artifacts: 0 judged wins across all comparisons in `outputs/kb/` and `eval/results/`, `avg_verification_score` ≈ 0, `self_bleu` 0.62–0.69 (the field converges on near-duplicate claims), and substantive runs ending on `cap_time` rather than convergence. **Update 2026-07-06:** the failure mode has since flipped — 30/41 `driveoutputs/` runs halt on `quality` at ~70s (seconds after the MIN_TIME floor), 10 on `saturation` with 0 survivors, 1 on `cap_time`. The quality gate for debate/analysis now additionally requires one verification signal above the abstain plateau (`requires_grounding` in `SURVIVAL_TASK_PROFILES`) so a "quality" halt says something about grounding. Fixes landed since that audit: reader-answer split (`core/clean_answer.py`), judge normalization + neutral local judge, condition E attribution control, render-set stability halt, pre-call scout gate.
 
 Rules of evidence for any future claim of a swarm win:
 - It must come from `eval/ab_harness.py` conditions judged by `eval/judge.py` (blind, both orders). A verdict with `agreement: false` is position bias, not signal.
 - The Wilson lower bound must clear 0.5 at a non-trivial n (the existing n=2–8 runs prove nothing either way).
 - **Condition E is the attribution control**: a single direct call given the swarm's own synthesis instruction. If E matches A, the value was the prompt, not the orchestration. Never report A-vs-B without A-vs-E.
+- **Condition F is the retrieval attribution control** (added 2026-07-06): a single direct call given evidence from the SAME retrieval stack the swarm uses. A-vs-B confounds orchestration with retrieval access (the swarm searches the web mid-run; B answers from memory). A-vs-F is the decisive comparison; A≈F at small evidence packs is expected — the compression thesis predicts A>F only when the pack outgrows a single context.
+- **Pre-2026-07-03 negative results do not test the current design**: semantic corpus partitioning (`_partition_semantic`, commit aba21ef) postdates every judged run in `outputs/kb/`. Check `summary.json: partitioner` ("semantic" | "contiguous" | "") before citing a run as evidence about partitioning.
+- **Know which pipeline you're reasoning about (verified 2026-07-06):** `partition_for_scouts` (and the facet web-partition block) runs only on the `--legacy-rounds` / phase-isolated paths. In the DEFAULT continuous pool, corpus partitioning never runs at all — `partition_id` is the depositing worker's agent_id (`core/worker_pool.py` ~1302–1314) and scout evidence is per-action live search via the query planner. `summary.json: partitioner` is `""` on every continuous run. The deployed diversity levers on the default path are: query-planner stance queries, multi-claim scout portfolio + novelty selection, and (with GroqRouter) model-family heterogeneity — NOT disjoint corpus partitions. Claims about "partitioning as the diversity engine" currently describe the legacy path and the probe, not production.
 - Never report behavioral numbers from `outputs_mock/` or MOCK runs (P0.1).
 
 ## Commands
@@ -68,7 +89,7 @@ python synthesize.py                                        # re-render synthesi
 
 # Amplification-delta eval — the canonical swarm-vs-direct comparison (see Empirical status above)
 MOCK_LLM=1 python -m eval.ab_harness --mini 8 --conditions AB     # plumbing check only
-GROQ_API_KEY=... python -m eval.ab_harness --mini 8 --conditions ABCDE   # real: A=swarm, B=direct M, C=best-of-N revise, D=strong M+, E=direct M + synthesis prompt (attribution control)
+GROQ_API_KEY=... python -m eval.ab_harness --mini 8 --conditions ABCDEF  # real: A=swarm, B=direct M, C=best-of-N revise, D=strong M+, E=direct M + synthesis prompt (attribution control), F=direct M + same retrieved evidence (single-call RAG — the practitioner baseline)
 python -m eval.ab_harness ... --backend local                     # single-GPU parity (B/C/D/E on the same local model as A)
 python -m eval.judge eval/results/<exp>                           # blind pairwise judge, both orders, Wilson CIs → report.md
 ```
@@ -102,7 +123,11 @@ Typed DAG of signals with strength dynamics. The no-leak rule is enforced here:
 
 Strength dynamics are gated by `USE_LOGIT_DYNAMICS` in `core/config.py`. The default path stores an internal `_logit` and applies additive deltas, projecting back through sigmoid. This fixed three real bugs documented at the top of the file: saturation crash, contrarian-drift via anti-decay, and order-dependence of decay × amplify. The legacy multiplicative path is preserved as a one-release escape hatch and exercised by `tests/test_logit_dynamics.py` — don't delete one without the other.
 
-Dedup is similarity-based over signal content (sentence-transformers embeddings with a string-similarity fallback). On a near-duplicate, the existing signal is amplified and the new deposit is rejected.
+Dedup is a **string pre-screen only**: SequenceMatcher ratio > 0.95 against the 3 most-recent same-type signals from the last 5 minutes. On a hit the existing signal is amplified (+`DELTA_DEDUP_AMPLIFY` logit), its `metadata["dup_count"]` is incremented (projection weights OBJECTION dissent by `1+√dup_count` — the dissent self-dedup fix), and the deposit is rejected. The old embedding-cosine rejection path was removed: paraphrases now **join clusters** instead of being rejected — clustering, not dedup, is the absorption channel.
+
+**Signed trail (2026-07-06, `USE_SIGNED_TRAIL`, default on).** An OBJECTION deposit dampens its target's cluster through the same `_amplify_cluster_trail` path a SUPPORT reinforces it (sign=-1). This is the store's only negative-evidence force — before it, no code path anywhere reduced strength in response to CRITIQUE/OBJECTION/failed VERIFICATION. `USE_EVAPORATION_DECAY` (default OFF — it trades away decay×amplify order-invariance, a deliberately fixed bug) is the ablation flag for ACO-style strength-proportional decay.
+
+**Novelty accounting is INITIAL-only**: `novelty_rate` counts only INITIAL deposits that opened a new cluster. SUPPORT/OBJECTION prose churn no longer registers as exploration (it could previously hold novelty above the saturation floor forever).
 
 **Partition invariant (hard enforcement).** Every INITIAL or SUPPORT signal *must* carry a non-empty `partition_id`. `deposit()` raises `AssertionError` if this is violated — this is intentional and loud. INITIAL signals get `partition_id` from `ScoutConfig.partition.partition_id` (set in `scout.py`). SUPPORT signals inherit it from their parent via the store's inheritance logic (lines 284–288 of `signal_store.py`), or explicitly via `deposit_meta["partition_id"]` which `base.py` now sets from the sampled parent's `partition_id` as a defensive redundancy. If you add a new agent role that deposits INITIAL or SUPPORT, you must supply `partition_id` in metadata or ensure the deposit has a parent that carries one.
 
@@ -133,7 +158,7 @@ A scratchpad-stripper (`_SCRATCHPAD_RE` in `base.py`) removes reasoning-tuned mo
 Two-layer read-out:
 
 1. **`core/projection.py`** — pure-Python DAG projection. No LLM. Classifies clusters as `surviving` / `contested` / `weakly_supported` / `rejected_by_field`. Computes `support_diversity`, `dissent_pressure`, `verification_score`. Surviving clusters carry an `unverified` flag when no validator reached them.
-2. **`agents/synthesizer.py`** — two-stage read-out on the sectioned path. Stage 1: one structured LLM call *per cluster* renders an evidence brief (isolates render failures). Stage 2 (`_compose_answer`): one bounded writer call receives ONLY the briefs + a scalar plan digest — never the store or corpus — and composes a coherent thesis-led Section 1, merging redundant claims and preserving citation tags. **Context-compression invariant:** composer input is O(K × brief), K ≤ ~6, independent of store size; the swarm remains the compression engine. Guards: minimum length + citation-tag retention ≥ 0.5; fallback chain is global composition → edge composition → plain join → deterministic extractive rendering (Section 1 is never empty, even on total API-token exhaustion). Hallucination safety comes from the post-hoc faithfulness audit (4-gram overlap per citation tag), not from structural isolation. The answer leads with Section 1; field telemetry (cluster counts, topology coverage, genome stats) lands in a PROCESS NOTES section at the end. Sections 3 and 4 are deterministic.
+2. **`agents/synthesizer.py`** — two-stage read-out on the sectioned path. Stage 1: one structured LLM call *per cluster* renders an evidence brief (isolates render failures). Stage 2 (`_compose_answer`): one bounded writer call receives ONLY the briefs + a scalar plan digest — never the store or corpus — and composes a coherent thesis-led Section 1, merging redundant claims and preserving citation tags. **Context-compression invariant:** composer input is O(K × brief), K = `RENDER_K` (8, `core/config.py`), each brief hard-capped at 200 words — independent of store size; the swarm remains the compression engine. Guards: minimum length + citation-tag retention ≥ 0.5; fallback chain is global composition → edge composition → plain join → deterministic extractive rendering (Section 1 is never empty, even on total API-token exhaustion). Hallucination safety comes from the post-hoc faithfulness audit (4-gram overlap per citation tag), not from structural isolation — **the audit runs on the pre-resolution text** (before `resolve_inline_citations` rewrites tags to `[N]` footnotes; running it after, as before 2026-07-06, meant it only ever audited the citation appendix). Section 2 consumes `plan.dissent_clusters` (planner-first ordering) and ends with bounded one-liners for quiet-minority clusters the planner demoted (`_MINORITY_ONELINER_CAP`), so distinct-but-uncontested positions reach the reader instead of dying in diagnostics.md. The answer leads with Section 1; field telemetry (cluster counts, topology coverage, genome stats) lands in a PROCESS NOTES section at the end. Sections 3 and 4 are deterministic.
 
 **Planning — deterministic by default (commit 70d816d).** There are two cluster-selection planners, but the LLM one is now **retired to opt-in** after 3/3 real runs hit a context wall at planning:
 
@@ -198,7 +223,7 @@ All tunables live in one validated module: agent counts, decay/amplify/prune thr
 **Stigmergy gap feature flags** (now all `True` by default in `config.py` — this changed; older docs say False):
 - `USE_CLUSTER_AWARE_SAMPLING` — Gap 1: `sample_from_clusters()` biases workers toward their semantic home cluster
 - `USE_TRAIL_AMPLIFICATION` — Gap 2: SUPPORT deposits amplify the whole cluster (pheromone trail)
-- `USE_LOCAL_ACTION_BIAS` — Gap 3: cluster-local state multipliers in `choose_action()`. **Known-dead on the hot path**: `worker_pool.iterate` computes local biases only *after* the primary `choose_action` call, so they only affect the two rare re-pick paths. Fix the ordering before trusting any ablation of this flag.
+- `USE_LOCAL_ACTION_BIAS` — Gap 3: cluster-local state multipliers in `choose_action()`. The old "known-dead on the hot path" note is stale: biases are now computed *before* the primary `choose_action` call (worker_pool.py, ~line 1000), so the flag is live and ablatable.
 - `USE_WORKER_POSITION` — Gap 4: workers track a centroid of their prior deposits and pass it to sampling
 
 ### LLM backends (`core/llm*.py`)
@@ -234,7 +259,8 @@ All convergence thresholds are overridable via environment variables. This is cr
 | `MIN_TIME_S` | `SWARM_MIN_TIME_S` | `60.0` |
 | `MIN_ITERATIONS` | `SWARM_MIN_ITERATIONS` | `50` |
 | `MIN_INITIALS_FOR_HALT` | `SWARM_MIN_INITIALS_FOR_HALT` | `6` |
-| `MIN_INTER_CLUSTER_EDGES` | `SWARM_MIN_INTER_CLUSTER_EDGES` | `1` |
+| `MIN_INTER_CLUSTER_EDGES` | `SWARM_MIN_INTER_CLUSTER_EDGES` | `0` (disabled) |
+| `QUALITY_GROUNDING_VER_MIN` | `SWARM_QUALITY_GROUNDING_VER_MIN` | `0.55` |
 | `SAT_NO_NEW_SURVIVING` | `SWARM_SAT_NO_NEW_SURVIVING` | `60` |
 | `MAX_ITERATIONS` | `SWARM_MAX_ITERATIONS` | `2000` |
 | `MAX_TIME_S` | `SWARM_MAX_TIME_S` | `900.0` |
@@ -287,6 +313,14 @@ Cross-run consensus/rejection memory. **Default is OFF** — pass `--use-kb` to 
 
 `--mode=baseline` runs N independent agents with no signal store, no partitioning, no provenance boost. This is the A/B comparison condition for the stigmergic hypothesis. Output is shape-compatible with stigmergic runs so `tools/compare_runs.py` can diff them.
 
+### MCP server (`mcp_server.py`, untracked)
+
+A standalone FastMCP server exposing the pipeline as three tools — `run_swarm` (subprocess wrapper around `run_swarm.py`, returns the clean `answer.txt`), `get_swarm_diagnostics`, `list_swarm_runs` — over stdio (Claude Code/Desktop) or streamable-HTTP on port 8756. Intent per `docs/ODYSSEUS_MCP.md`: let an external agent workspace call the swarm as an on-demand heavyweight tool. Functional and self-contained; not wired into the core pipeline and not part of the eval story. This is the consumer-facing surface if the research thesis fails.
+
+### Docs atlas (`docs/atlas/`, in progress)
+
+A planned numbered code atlas; only `04_agents.md` exists (detailed map of `agents/` with a refinement-opportunities list: duplicated run loops, dead `_maybe_cloud_call` flag, Validator/Hater test gaps, fragile TYPE/PARENT parsing). Treat it as documentation-in-progress, not authority — `docs/PIPELINE_MAP.md` remains the orientation entry point.
+
 ## Outputs
 
 - `outputs/` — real-LLM runs. Each run is a timestamped subdirectory containing `answer.txt` (clean reader answer: Sections 1–2 only), `diagnostics.md` (field telemetry moved out of the answer), `citations.json`, `kb_diff.json`, `lineage.dot`, `renderer_audit.json`, `round_log.json`, `run_meta.json`, `signals.json`, `summary.json`.
@@ -295,15 +329,10 @@ Cross-run consensus/rejection memory. **Default is OFF** — pass `--use-kb` to 
 
 ## support_diversity — read this before writing tests or changing projection
 
-`support_diversity` is computed in `_aggregate_cluster()` in `core/projection.py` as:
+`support_diversity` is computed in `_aggregate_cluster()` in `core/projection.py` as the size of a **union of independence discriminators** (one set, not a sum — the old `len(partitions) + len(strategy_names)` summed two different units of independence and inflated diversity; see the "Union, not sum" comment at the computation site):
 
-```
-total_support_diversity = len(support_partitions) + len(strategy_names)
-```
-
-where:
-- `support_partitions` = set of distinct `(partition_id, depositor)` pairs from SUPPORT signals that carry `partition_id`
-- `strategy_names` = set of distinct action/strategy names from SUPPORT signals that **do NOT** carry `partition_id` (fallback path for pre-partition-fix deposits)
+- SUPPORT signals that carry `partition_id` contribute their `("partition", partition_id, depositor)` tuple
+- partition-less support signals (CRITIQUE_POSITIVE, pre-partition-fix deposits) contribute `("agent", depositor_agent_id)` — four distinct critics endorsing is four independent reads; one agent depositing four times is one
 
 **Critical for tests:** if multiple SUPPORT signals share the same `(partition_id, depositor)` pair, `support_diversity = 1` regardless of how many signals there are. Test helpers that use a fixed `partition_id = "test_partition_0"` for all deposits AND a fixed `depositor = "forager"` will always produce `support_diversity = 1`.
 

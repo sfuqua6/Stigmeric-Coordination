@@ -45,10 +45,26 @@ def test_drops_all_telemetry():
     assert "PROCESS NOTES" in diag and "INITIAL_00012" in diag  # preserved
 
 
-def test_strips_brief_and_citation_scaffolding():
+def test_strips_brief_scaffolding_but_keeps_citation_markers():
+    # "Brief N" is leaked render scaffolding (a per-cluster brief label) and
+    # is stripped. [N]-style citation markers are kept in place — the reader
+    # answer now preserves provenance instead of stripping all attribution.
     reader, _ = split_answer(FULL)
     assert "Brief 1" not in reader and "Brief" not in reader
-    assert "[1]" not in reader and "[2]" not in reader and "[5]" not in reader
+    assert "[1]" in reader and "[2]" in reader and "[5]" in reader
+
+
+def test_appends_sources_block_for_referenced_footnotes():
+    # The reader answer gets a compact "Sources" block built from the
+    # synthesizer's "**Sources referenced above:**" appendix, but only for
+    # footnote numbers actually kept in the Section 1/2 prose.
+    reader, _ = split_answer(FULL)
+    assert "**Sources**" in reader
+    assert "[1] However, such a measure" in reader
+    # Sections 3/4 telemetry (support_diversity, composite_fitness, etc.)
+    # must still not leak into the reader answer via the Sources block.
+    assert "support_diversity=" not in reader
+    assert "composite_fitness" not in reader
 
 
 def test_leading_exec_summary_goes_to_diagnostics():

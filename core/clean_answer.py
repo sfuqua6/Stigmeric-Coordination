@@ -8,8 +8,21 @@ SUMMARY). Judges and humans only want the argument; the telemetry makes the
 deliverable 3-4x longer and reads as machine exhaust.
 
 split_answer() returns (reader, diagnostics):
-    reader      -> answer.txt      (Sections 1 [+2]; Brief/[N] scaffolding stripped)
+    reader      -> answer.txt      (Sections 1 [+2]; "Brief N" scaffolding
+                                     stripped, but [N]-style citation markers
+                                     are KEPT as written, and a compact
+                                     "Sources" block is appended listing only
+                                     the [N] footnotes actually referenced in
+                                     the kept prose)
     diagnostics -> diagnostics.md  (everything else, verbatim)
+
+Citation markers used to be stripped from the reader answer entirely, which
+shipped a reader-facing answer with zero attribution. They are now preserved
+in-place, and `_extract_referenced_sources()` pulls a short excerpt for each
+referenced footnote out of the synthesizer's "**Sources referenced above:**"
+appendix (in the discarded telemetry region) and appends a "Sources" block to
+the end of the reader answer — so the shipped answer.txt is self-contained
+without dragging the rest of the telemetry along with it.
 
 write_answer_files() is the wiring helper used at every answer.txt write site in
 run_swarm.py: it honors SWARM_SYNTH_VERBOSE (restore the old combined output) and
@@ -40,14 +53,12 @@ _DIAG_MARKERS = (
 _SEC1 = ("## 1.", "POSITION SYNTHESIS")
 
 # Leaked render scaffolding to strip from reader prose:
-#   "(Brief 6)" / "Brief 1"   — per-cluster brief labels the composer echoed
-#   "([1])" / "[1][2]"        — numeric citation tags whose source list we drop
+#   "(Brief 6)" / "Brief 1"   — per-cluster brief labels the composer echoed.
+# [N]-style citation markers are deliberately NOT stripped here anymore —
+# see _extract_referenced_sources() below, which is what gives them meaning
+# in the reader-facing answer.
 _SCAFFOLD = re.compile(
-    r"""\s*(?:
-            \(?\bBrief\s+\d+\b\)?
-          | \(\s*\[\d+\]\s*\)
-          | \[\d+\]
-        )""",
+    r"""\s*(?:\(?\bBrief\s+\d+\b\)?)""",
     re.IGNORECASE | re.VERBOSE,
 )
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,;:)])")
@@ -56,6 +67,59 @@ _MULTI_WS = re.compile(r"[ \t]{2,}")
 _TRAIL_RULE = re.compile(r"\s*-{3,}\s*$")
 
 _MIN_READER_CHARS = 200  # never ship an emptier answer than this
+
+# The synthesizer's numbered-footnote appendix (agents/synthesizer.py
+# resolve_inline_citations): a "**Sources referenced above:**" header
+# followed by one "[N] <excerpt>" line per resolved signal ID, ending at the
+# next "## "-prefixed section header (or end of string).
+_FOOTNOTE_BLOCK_RE = re.compile(
+    r"\*\*Sources referenced above:\*\*\s*\n+(.*?)(?=\n##|\Z)", re.DOTALL,
+)
+_FOOTNOTE_LINE_RE = re.compile(r"^\[(\d+)\]\s+(.*)$", re.MULTILINE)
+_READER_CITATION_RE = re.compile(r"\[(\d+)\]")
+_SOURCE_EXCERPT_CHARS = 100
+
+
+def _extract_referenced_sources(full: str, reader: str) -> str:
+    """Build a compact "Sources" block for the [N] markers kept in `reader`.
+
+    Pulls each referenced footnote's definition out of the "**Sources
+    referenced above:**" appendix in `full` (which otherwise lands entirely
+    in diagnostics.md) and truncates it to ~_SOURCE_EXCERPT_CHARS chars.
+    Numbers with no matching definition (or when no appendix exists at all)
+    are silently skipped — the reader answer never references a footnote
+    that has nothing to show for it.
+    """
+    referenced: set[int] = set()
+    for n in _READER_CITATION_RE.findall(reader):
+        try:
+            referenced.add(int(n))
+        except ValueError:
+            continue
+    if not referenced:
+        return ""
+
+    block_match = _FOOTNOTE_BLOCK_RE.search(full)
+    if not block_match:
+        return ""
+
+    definitions: dict[int, str] = {}
+    for num_str, content in _FOOTNOTE_LINE_RE.findall(block_match.group(1)):
+        num = int(num_str)
+        if num in referenced and num not in definitions:
+            definitions[num] = content.strip()
+
+    if not definitions:
+        return ""
+
+    lines = ["**Sources**", ""]
+    for num in sorted(definitions):
+        text = definitions[num]
+        excerpt = text[:_SOURCE_EXCERPT_CHARS]
+        if len(text) > _SOURCE_EXCERPT_CHARS:
+            excerpt += "..."
+        lines.append(f"[{num}] {excerpt}")
+    return "\n".join(lines)
 
 
 def split_answer(full: str) -> tuple[str, str]:
@@ -103,6 +167,10 @@ def split_answer(full: str) -> tuple[str, str]:
         # Degenerate Section 1 — better to ship the full text than an empty
         # answer. (Surface this in logs at the call site.)
         return full.strip(), diagnostics
+
+    sources_block = _extract_referenced_sources(full, reader)
+    if sources_block:
+        reader = reader.rstrip() + "\n\n" + sources_block
     return reader, diagnostics
 
 

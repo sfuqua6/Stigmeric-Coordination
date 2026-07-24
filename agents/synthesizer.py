@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -100,7 +101,14 @@ _SECTION_1_FALLBACK_CAP = 6
 # route more buckets through this section.
 _SECTION_3_RENDER_CAP = 10
 # Threshold above which the run-end summary prints a faithfulness warning.
+# Soft: the flagged prose still ships unchanged.
 _AUDIT_WARNING_THRESHOLD = 20
+# Hard gate: at or above this many flags, the composed Section 1 prose is
+# discarded and replaced with the deterministic extractive fallback (the
+# same code path used when every render call returns empty). Stricter than
+# _AUDIT_WARNING_THRESHOLD by design — a warning is advisory, this is
+# actionable and changes what ships. Override via SWARM_AUDIT_HARD_GATE.
+_AUDIT_HARD_GATE = int(os.environ.get("SWARM_AUDIT_HARD_GATE", "12"))
 
 # Revision loop parameters (improvement 5.2). K=1 round of critic + revise
 # after sectioned rendering. Set to 0 to disable (useful when synthesis time
@@ -148,6 +156,11 @@ _COMPOSE_MIN_CHARS = 200
 # one passage, and list up to _DISSENT_OVERFLOW_CAP of the rest as one-liners.
 _DISSENT_RENDER_CAP = 6
 _DISSENT_OVERFLOW_CAP = 8
+# Quiet-minority one-liners in Section 2: distinct positions the planner
+# demoted to section3_only. Without this the reader answer preserved only
+# high-dissent clusters — uncontested minority positions (often the majority
+# of the field) died silently in diagnostics.md.
+_MINORITY_ONELINER_CAP = 6
 _DISSENT_COMPOSE_MAX_TOKENS = 1200
 # Per-fragment char budget for the dissent composer's input. Six full
 # dissent paragraphs overflowed the AWQ rung's context window, truncating
@@ -1091,12 +1104,58 @@ class Synthesizer:
         # clusters plentiful: a real run produced 20 dissent renders / ~17K
         # chars of templated paragraphs that dwarfed Section 1 and broke the
         # whole-answer revision pass). Render only the top
-        # _DISSENT_RENDER_CAP clusters by dissent_pressure; compose those
-        # into one coherent passage; list the remainder as one-liners.
+        # _DISSENT_RENDER_CAP clusters; compose those into one coherent
+        # passage; list the remainder as one-liners.
         dissent_candidates.sort(key=lambda c: c.dissent_pressure, reverse=True)
+        # Planner-first ordering: build_plan already selects DISSENT_K dissent
+        # clusters with its own scoring; the render path used to ignore that
+        # selection entirely (the planner's dissent half was dead code) and
+        # re-rank purely by dissent_pressure. Planner picks lead the set;
+        # pressure-ranking fills the remaining render slots.
+        _plan_dissent_ids = [
+            cid for cid in plan.get("dissent_clusters", [])
+        ]
+        if _plan_dissent_ids:
+            _by_id = {c.representative_id: c for c in dissent_candidates}
+            _lead = [_by_id[cid] for cid in _plan_dissent_ids if cid in _by_id]
+            _lead_ids = {c.representative_id for c in _lead}
+            dissent_candidates = _lead + [
+                c for c in dissent_candidates
+                if c.representative_id not in _lead_ids
+            ]
         rendered_dissent = dissent_candidates[:_DISSENT_RENDER_CAP]
         overflow_dissent = dissent_candidates[_DISSENT_RENDER_CAP:]
-        if dissent_candidates or contradictions:
+
+        # Quiet-minority read-out: distinct positions the planner demoted
+        # (section3_only) previously died in diagnostics.md — the reader
+        # answer preserved only HIGH-DISSENT clusters, so uncontested
+        # minority positions vanished at the compression bottleneck.
+        # Bounded, deterministic, no LLM calls.
+        _dissent_ids_all = {c.representative_id for c in dissent_candidates}
+        _cp_by_id = {
+            c.representative_id: c
+            for c in (list(projection.surviving) + list(projection.contested)
+                      + list(getattr(projection, "unverified", []) or [])
+                      + list(getattr(projection, "weakly_supported", []) or []))
+        }
+        minority_lines: list[str] = []
+        for cid in plan.get("section3_only", []):
+            if len(minority_lines) >= _MINORITY_ONELINER_CAP:
+                break
+            if cid in _dissent_ids_all or cid in plan_render_ids:
+                continue
+            cp = _cp_by_id.get(cid)
+            rep = store.get(cid)
+            if rep is None:
+                continue
+            status = cp.status if cp is not None else "filtered"
+            sd = cp.support_diversity if cp is not None else 0
+            minority_lines.append(
+                f"- [{cid}] ({status}, support_diversity={sd}) "
+                f"{_truncate(rep.content, 110)}"
+            )
+
+        if dissent_candidates or contradictions or minority_lines:
             fragments = []
             # Parallel dissent renders — same independence guarantee as Section 1.
             _dissent_sem = asyncio.Semaphore(self._render_concurrency())
@@ -1172,6 +1231,12 @@ class Synthesizer:
                 fragments.append(
                     "Further contested positions, not expanded here:\n"
                     + "\n".join(lines)
+                )
+            if minority_lines:
+                fragments.append(
+                    "Minority positions the field neither developed nor "
+                    "contested (not expanded above; full detail in "
+                    "diagnostics):\n" + "\n".join(minority_lines)
                 )
             if fragments:
                 sections.append(
@@ -1310,6 +1375,92 @@ class Synthesizer:
         elif _is_api_backend and _SYNTHESIZER_REVISION_ROUNDS > 0:
             print("[synthesizer] revision skipped (API backend — prompt budget insufficient)")
 
+        # ------------------------------------------------------------------
+        # Post-hoc faithfulness audit + hard gate (runs BEFORE citation
+        # resolution — see note below).
+        # ------------------------------------------------------------------
+        # The faithfulness audit must run on the PRE-resolution text: once the
+        # inline tags are rewritten to [N] footnotes, the 4-gram check can only
+        # match raw IDs in the citation appendix (where they sit beside verbatim
+        # excerpts and pass trivially) — the prose itself goes unaudited.
+        _audit_text = answer
+        _gated = False
+
+        # Bug 3: wrap so an audit crash writes a -2 sentinel + error message
+        # rather than leaving renderer_audit.json absent (which made summary
+        # report audit_flags=-1 ambiguously). Sentinel semantics now:
+        #     0  = audit ran clean
+        #     N>=1 = audit ran, found N flags
+        #     -2 = audit crashed (audit_error field carries the reason)
+        audit_flags: Optional[list] = None
+        try:
+            audit_flags = _build_faithfulness_audit(_audit_text, projection, store)
+        except Exception as exc:
+            print(f"[synthesizer] faithfulness audit crashed: "
+                  f"{type(exc).__name__}: {exc}")
+            if output_dir is not None:
+                _write_crashed_audit(output_dir, exc)
+
+        # Hard gate (consequential — unlike the warning threshold below, this
+        # changes what ships). At/above _AUDIT_HARD_GATE flags, the composed
+        # Section 1 prose is not trustworthy enough to ship as-is: discard it
+        # and substitute the same deterministic extractive fallback used when
+        # every render call comes back empty (self-faithful by construction —
+        # see _extractive_position). Then re-run resolution, stamping, and a
+        # FINAL audit pass on the text that actually ships, so
+        # renderer_audit.json reflects the shipped answer, not the discarded
+        # draft.
+        if audit_flags is not None and len(audit_flags) >= _AUDIT_HARD_GATE:
+            extractive = (
+                self._extractive_position(rendered_surviving, store)
+                if rendered_surviving else ""
+            )
+            if extractive:
+                _section1_re = re.compile(
+                    r"(## 1\. POSITION SYNTHESIS\n\n).*?(?=\n\n## |\Z)",
+                    re.DOTALL,
+                )
+                _gate_note = (
+                    f"faithfulness gate: {len(audit_flags)} flags >= gate "
+                    f"({_AUDIT_HARD_GATE}); shipped extractive rendering"
+                )
+                if _section1_re.search(_audit_text):
+                    _replacement = (
+                        f"*(faithfulness gate: composed prose discarded — "
+                        f"{len(audit_flags)} flags >= gate ({_AUDIT_HARD_GATE}))*"
+                        f"\n\n{extractive}"
+                    )
+                    _audit_text = _section1_re.sub(
+                        lambda m: m.group(1) + _replacement, _audit_text, count=1,
+                    )
+                    if "## PROCESS NOTES" in _audit_text:
+                        _audit_text = _audit_text.rstrip() + "\n" + _gate_note
+                    else:
+                        _audit_text = (
+                            _audit_text.rstrip()
+                            + "\n\n---\n\n## PROCESS NOTES\n\n" + _gate_note
+                        )
+                    _gated = True
+                    print(f"[synthesizer] {_gate_note}")
+                    # Final audit pass on the text that actually ships.
+                    try:
+                        audit_flags = _build_faithfulness_audit(
+                            _audit_text, projection, store,
+                        )
+                    except Exception as exc:
+                        print(f"[synthesizer] post-gate faithfulness audit "
+                              f"crashed: {type(exc).__name__}: {exc}")
+                        if output_dir is not None:
+                            _write_crashed_audit(output_dir, exc)
+                        audit_flags = None
+            else:
+                print(f"[synthesizer] faithfulness gate would fire "
+                      f"({len(audit_flags)} flags >= {_AUDIT_HARD_GATE}) but "
+                      f"no extractive fallback is available (no rendered "
+                      f"clusters) — shipping composed prose unchanged")
+
+        answer = _audit_text
+
         # Resolve inline [INITIAL_XXXXX] citation tags to numbered footnotes
         # before stamping Section 4. External readers see bare signal IDs as
         # unfilled template tokens; numbered footnotes with a 120-char excerpt
@@ -1322,19 +1473,9 @@ class Synthesizer:
         answer = _stamp_citations(answer, projection, store,
                                    merge_groups=[])  # Fix P: no post-hoc merge
 
-        # ------------------------------------------------------------------
-        # Post-hoc faithfulness audit
-        # ------------------------------------------------------------------
-        # Bug 3: wrap so an audit crash writes a -2 sentinel + error message
-        # rather than leaving renderer_audit.json absent (which made summary
-        # report audit_flags=-1 ambiguously). Sentinel semantics now:
-        #     0  = audit ran clean
-        #     N>=1 = audit ran, found N flags
-        #     -2 = audit crashed (audit_error field carries the reason)
-        try:
-            audit_flags = _build_faithfulness_audit(answer, projection, store)
+        if audit_flags is not None:
             if output_dir is not None:
-                _write_faithfulness_audit(audit_flags, output_dir)
+                _write_faithfulness_audit(audit_flags, output_dir, gated=_gated)
             elif audit_flags:
                 print(
                     f"[synthesizer] faithfulness audit: {len(audit_flags)} flag(s) "
@@ -1343,7 +1484,9 @@ class Synthesizer:
             # Loud end-of-run warning when the audit is heavily flagged. 20+
             # is the empirical threshold past which a renderer pass is
             # producing more noise than signal and the synthesis prose
-            # should not be trusted without manual review.
+            # should not be trusted without manual review. (The hard gate
+            # above already acted on the flags; this is a secondary,
+            # non-actionable notice for whatever shipped.)
             if len(audit_flags) >= _AUDIT_WARNING_THRESHOLD:
                 audit_path = (
                     str(output_dir / "renderer_audit.json")
@@ -1355,11 +1498,6 @@ class Synthesizer:
                     f"may diverge from cited signals; review "
                     f"{audit_path} before citing this run."
                 )
-        except Exception as exc:
-            print(f"[synthesizer] faithfulness audit crashed: "
-                  f"{type(exc).__name__}: {exc}")
-            if output_dir is not None:
-                _write_crashed_audit(output_dir, exc)
 
         return answer
 
@@ -1760,6 +1898,10 @@ class Synthesizer:
             "section3_only": s3_ids,
             "merge_groups":  [],   # Fix P: no post-hoc merge
             "notes":         sp.planner_notes,
+            # build_plan's DISSENT_K selection — previously computed and then
+            # dropped here, leaving the render path to re-derive its own
+            # dissent set (the planner's dissent half was dead code).
+            "dissent_clusters": list(sp.dissent_clusters),
         }
 
     # -----------------------------------------------------------------------
@@ -3713,6 +3855,53 @@ def _build_cohesive_audit(
     return flags
 
 
+# Simple sentence splitter: break on '.', '!' or '?' followed by whitespace
+# and a capital letter. Not linguistically rigorous (abbreviations, decimals,
+# etc. can mis-split) but good enough to localize a citation tag to "the
+# sentence that contains it" rather than an entire multi-sentence paragraph.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+
+# Sentences shorter than this many words can't carry their own evidence
+# (e.g. "As shown. [ID]" or a fragment split oddly by the naive splitter) —
+# fall back to checking the whole paragraph for those.
+_SENTENCE_MIN_WORDS_FOR_ISOLATION = 8
+
+_WORD_RE = re.compile(r"[a-z']+")
+
+# Task 2 — negation screen. Word-boundary tokens that, if present in a
+# sentence whose citation otherwise passes the overlap check, may indicate
+# the prose asserts the OPPOSITE of what the source says (e.g. "It is false
+# that {quoted 4-gram}..." shares a 4-gram with the source and would
+# otherwise pass as faithful).
+_NEGATORS = frozenset({
+    "not", "no", "never", "false", "isn't", "doesn't", "don't", "cannot",
+    "can't", "wrong", "refuted", "refutes", "rejected", "rejects",
+    "contrary", "contradicts",
+})
+# Window (in source words) around the matched n-gram to search for a
+# corresponding negator before flagging a mismatch.
+_NEGATION_WINDOW_WORDS = 10
+
+
+def _sentence_spans(text: str) -> list[tuple[int, int]]:
+    """Split `text` into (start, end) character offsets per sentence."""
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for m in _SENTENCE_SPLIT_RE.finditer(text):
+        spans.append((start, m.start()))
+        start = m.end()
+    spans.append((start, len(text)))
+    return spans
+
+
+def _sentence_at(spans: list[tuple[int, int]], text: str, pos: int) -> str:
+    """Return the sentence substring of `text` containing offset `pos`."""
+    for s0, s1 in spans:
+        if s0 <= pos < s1:
+            return text[s0:s1]
+    return spans and text[spans[-1][0]:spans[-1][1]] or text
+
+
 def _build_faithfulness_audit(
     answer: str,
     projection: SynthesisProjection,
@@ -3720,18 +3909,31 @@ def _build_faithfulness_audit(
 ) -> list[dict]:
     """Check each cited cluster ID in the prose for faithfulness.
 
-    Two checks per cited ID:
+    Checks per cited ID:
       1. Existence: the ID must correspond to a real signal in the store.
          Fabricated IDs (e.g. [OPP_00145] that never existed) are flagged.
-      2. 4-gram overlap: for surviving/contested cluster reps, the paragraph
-         must share at least one 4-word sequence with that cluster's content.
-         Catches wrong-cluster citation and hallucinated prose.
+      2. Per-sentence n-gram overlap: for surviving/contested cluster reps,
+         the SENTENCE containing the citation tag must share at least one
+         n-gram (4-word from rep content, 3-word from genome atoms) with
+         that cluster's content — not just "somewhere in the paragraph".
+         Falls back to the whole paragraph only when the tag's sentence is
+         under _SENTENCE_MIN_WORDS_FOR_ISOLATION words (too short to carry
+         its own evidence). Catches wrong-cluster citation and hallucinated
+         prose with much less false-negative slack than a paragraph-wide
+         match.
+      3. Negation screen: when check 2 passes, the citing sentence is
+         re-scanned for a negator token (see _NEGATORS). If found, and no
+         negator appears near the matched phrase (±_NEGATION_WINDOW_WORDS)
+         in the source, flags "negation_mismatch" — the sentence's overlap
+         only proves it shares words with the source, not that it agrees
+         with it (e.g. "It is false that {quoted 4-gram}..." otherwise
+         passes as faithful).
 
     Also raises post-hoc flags for decoder pathology (these don't reject —
     they make the audit file useful for cross-run comparison):
-      3. orphan_think_tag: paragraph contains a literal </think> or <think>.
-      4. scratchpad_in_prose: paragraph matches the scratchpad marker regex.
-      5. truncated_mid_sentence: paragraph ends without terminal punctuation
+      4. orphan_think_tag: paragraph contains a literal </think> or <think>.
+      5. scratchpad_in_prose: paragraph matches the scratchpad marker regex.
+      6. truncated_mid_sentence: paragraph ends without terminal punctuation
          and is followed by a section break (double newline).
     """
     from agents.base import _SCRATCHPAD_RE
@@ -3783,11 +3985,14 @@ def _build_faithfulness_audit(
     _PROSE_SECTIONS = {"preamble", "exec_summary", "section_1", "section_2"}
 
     for i, para in enumerate(paragraphs):
-        cited_ids = _CITATION_RE.findall(para)
+        cited_matches = list(_CITATION_RE.finditer(para))
+        cited_ids = [m.group(1) for m in cited_matches]
         section_name = paragraph_sections[i]
         is_prose = section_name in _PROSE_SECTIONS
+        para_sentence_spans = _sentence_spans(para)
 
-        for cid in cited_ids:
+        for m in cited_matches:
+            cid = m.group(1)
             # Check 1: ID must exist in the signal store (fabrication check).
             if cid not in valid_signal_ids:
                 # Grab up to 200 chars of surrounding context.
@@ -3800,31 +4005,59 @@ def _build_faithfulness_audit(
                 })
                 continue
 
-            # Check 2: overlap check between paragraph and cited cluster content.
+            # Check 2: per-sentence overlap check between the SENTENCE
+            # containing this citation tag and the cited cluster content —
+            # not "anywhere in the paragraph" (too lenient: a paragraph with
+            # 4 sentences and one matching phrase used to pass all 4 tags).
             # Primary: 4-gram overlap against representative content.
             # Fallback (genome-enhanced): 3-gram overlap against any atom text.
             # An atom-text match is sufficient — atoms are precise propositions;
-            # if the paragraph correctly paraphrases an atom, no flag needed.
+            # if the sentence correctly paraphrases an atom, no flag needed.
             if cid not in cluster_content:
                 continue  # not a cluster rep — skip overlap check
-            para_lower = para.lower()
 
-            # Primary: 4-gram overlap against representative content
+            sentence = _sentence_at(para_sentence_spans, para, m.start())
+            # Sentences too short to carry their own evidence (e.g. a
+            # fragment the naive splitter isolated) fall back to the full
+            # paragraph, matching the old (lenient) behavior only in that
+            # narrow case.
+            if len(sentence.split()) < _SENTENCE_MIN_WORDS_FOR_ISOLATION:
+                search_text = para
+            else:
+                search_text = sentence
+            search_text_lower = search_text.lower()
+
+            # Primary: 4-gram overlap against representative content.
+            # Track the matched window in the SOURCE so the negation screen
+            # (check 3) can inspect the words around it.
+            found_overlap = False
+            match_source_words: Optional[list[str]] = None
+            match_source_idx: Optional[int] = None
+            match_ngram_len = 0
+
             cluster_words = cluster_content[cid].split()
-            found_overlap = (len(cluster_words) >= 4 and any(
-                " ".join(cluster_words[j: j + 4]) in para_lower
-                for j in range(len(cluster_words) - 3)
-            ))
+            if len(cluster_words) >= 4:
+                for j in range(len(cluster_words) - 3):
+                    if " ".join(cluster_words[j: j + 4]) in search_text_lower:
+                        found_overlap = True
+                        match_source_words = cluster_words
+                        match_source_idx = j
+                        match_ngram_len = 4
+                        break
 
             # Genome fallback: 3-gram overlap against any atom text
             if not found_overlap and cid in cluster_atom_texts:
                 for atom_text in cluster_atom_texts[cid]:
                     atom_words = atom_text.split()
-                    if len(atom_words) >= 3 and any(
-                        " ".join(atom_words[j: j + 3]) in para_lower
-                        for j in range(len(atom_words) - 2)
-                    ):
-                        found_overlap = True
+                    if len(atom_words) >= 3:
+                        for j in range(len(atom_words) - 2):
+                            if " ".join(atom_words[j: j + 3]) in search_text_lower:
+                                found_overlap = True
+                                match_source_words = atom_words
+                                match_source_idx = j
+                                match_ngram_len = 3
+                                break
+                    if found_overlap:
                         break
 
             if not found_overlap and len(cluster_words) >= 4:
@@ -3834,6 +4067,27 @@ def _build_faithfulness_audit(
                     "paragraph_excerpt": para[:300],
                     "cluster_content_excerpt": cluster_content[cid][:300],
                 })
+            elif found_overlap and match_source_words is not None:
+                # Check 3 (Task 2): negation screen. The overlap check only
+                # proves shared words, not agreement — a sentence that
+                # negates the matched phrase would otherwise pass silently.
+                sentence_words = _WORD_RE.findall(sentence.lower())
+                if any(w in _NEGATORS for w in sentence_words):
+                    lo = max(0, match_source_idx - _NEGATION_WINDOW_WORDS)
+                    hi = min(
+                        len(match_source_words),
+                        match_source_idx + match_ngram_len + _NEGATION_WINDOW_WORDS,
+                    )
+                    window_words = [
+                        w.strip(".,;:!?'\"") for w in match_source_words[lo:hi]
+                    ]
+                    if not any(w in _NEGATORS for w in window_words):
+                        flags.append({
+                            "issue": "negation_mismatch",
+                            "cited_id": cid,
+                            "paragraph_excerpt": sentence[:300],
+                            "cluster_content_excerpt": cluster_content[cid][:300],
+                        })
 
         # Check 3: orphan think tags in prose (post-hoc, no rejection).
         if "</think>" in para or "<think>" in para.lower():
@@ -3877,12 +4131,23 @@ def _build_faithfulness_audit(
     return flags
 
 
-def _write_faithfulness_audit(flags: list[dict], output_dir: Path) -> None:
+def _write_faithfulness_audit(
+    flags: list[dict], output_dir: Path, gated: bool = False,
+) -> None:
+    """Write renderer_audit.json.
+
+    `gated=True` means the hard faithfulness gate (_AUDIT_HARD_GATE) fired:
+    the composed Section 1 prose was discarded and replaced with the
+    deterministic extractive fallback before this audit ran, so `flags`
+    describes the text that actually shipped, not the discarded draft.
+    """
     audit = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "total_flags": len(flags),
         "flags": flags,
     }
+    if gated:
+        audit["gated"] = True
     try:
         (output_dir / "renderer_audit.json").write_text(
             json.dumps(audit, indent=2), encoding="utf-8"

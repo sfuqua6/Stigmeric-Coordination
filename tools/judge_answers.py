@@ -29,6 +29,25 @@ from pathlib import Path
 
 _DIMENSIONS = ("groundedness", "depth", "coherence", "coverage")
 
+# Per-answer character budget shown to the judge. The old flat `[:4000]`
+# head-truncation was biased, not just lossy: it kept the intro and cut the
+# ENDING, and thesis-led answers carry judged content at the end (the
+# "conditions under which this holds" close that the rubric rewards). Longer
+# answers lost more, non-randomly. Budget raised (a ~70B judge has 128K
+# context; two 12K-char answers ≈ 6K tokens total) and clipping preserves
+# head AND tail with an explicit marker so the judge knows the middle is
+# missing rather than the argument being incomplete.
+_JUDGE_ANSWER_MAX_CHARS = 12000
+_CLIP_MARKER = "\n[... middle truncated for judging — beginning and end preserved ...]\n"
+
+
+def _clip_for_judging(text: str, budget: int = _JUDGE_ANSWER_MAX_CHARS) -> str:
+    if len(text) <= budget:
+        return text
+    head = int(budget * 0.6)
+    tail = budget - head
+    return text[:head] + _CLIP_MARKER + text[-tail:]
+
 
 def _extract_json(raw: str) -> dict | None:
     """Best-effort: pull the first balanced {...} object out of an LLM reply."""
@@ -61,10 +80,15 @@ def _build_prompt(prompt: str, first: str, second: str) -> str:
     )
     return (
         "You are judging two answers to the same question. Decide which answer "
-        "better addresses the question, considering: " + dims + ".\n\n"
+        "better addresses the question, considering: " + dims + ".\n"
+        "Do NOT prefer an answer merely for being longer or more elaborate — "
+        "length is not quality; judge what each answer actually establishes. "
+        "(Overlong answers are clipped to the same budget with their beginning "
+        "and end preserved and a marker where the middle was removed; do not "
+        "penalize the marker.)\n\n"
         "QUESTION:\n" + prompt[:1500] + "\n\n"
-        "ANSWER 1:\n" + first[:4000] + "\n\n"
-        "ANSWER 2:\n" + second[:4000] + "\n\n"
+        "ANSWER 1:\n" + _clip_for_judging(first) + "\n\n"
+        "ANSWER 2:\n" + _clip_for_judging(second) + "\n\n"
         "Reply with ONLY a JSON object:\n" + schema
     )
 

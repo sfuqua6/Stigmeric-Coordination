@@ -165,14 +165,103 @@ DEFAULT_SET: list[Prompt] = [
 ]
 
 
-def mini(n: int = 8) -> list[Prompt]:
-    """First `n` prompts — the minimal first run (an hour, one model)."""
-    return DEFAULT_SET[:n]
+def mini(n: int = 8, source: list[Prompt] | None = None) -> list[Prompt]:
+    """First `n` prompts from `source` (default DEFAULT_SET) — the minimal
+    first run (an hour, one model)."""
+    return (source if source is not None else DEFAULT_SET)[:n]
 
 
-def by_id(pid: str) -> Prompt | None:
-    return next((p for p in DEFAULT_SET if p.pid == pid), None)
+def by_id(pid: str, source: list[Prompt] | None = None) -> Prompt | None:
+    return next((p for p in (source if source is not None else DEFAULT_SET)
+                 if p.pid == pid), None)
 
 
 def factual_prompts() -> list[Prompt]:
     return [p for p in DEFAULT_SET if p.factual]
+
+
+# ---------------------------------------------------------------------------
+# OVERCONTEXT_SET — the decisive A-vs-F over-context experiment
+# (docs/OVERCONTEXT_EVAL_PLAN.md). Parametric-answerable prompts (most of
+# DEFAULT_SET) can never show a compression-thesis win: a single call already
+# "knows" the answer from pretraining, so bigger evidence packs don't move
+# quality. These prompts instead depend on pack-specific detail — synthesis-
+# with-conflict ("where do the provided sources disagree") and needle-
+# against-prior ("what does the evidence say that contradicts assumption Z")
+# — so answer quality can actually track how much of a large evidence pack a
+# condition manages to use. Paired with `--pack-scale {1x,4x,16x}` in
+# eval/ab_harness.py, which builds/loads the SAME evidence pack for both
+# condition A (swarm, --corpus=pack:<path>) and condition F (single-call RAG,
+# naive pack-order fill). `must_include` here anchors judge-free scoring on
+# generic multi-perspective synthesis vocabulary — real per-pack ground truth
+# would need to be mined from the built pack contents (deferred; see plan doc
+# order-of-work step 3), so these are deliberately generic "did the answer
+# actually engage with disagreement/evidence" checks rather than pack-specific
+# facts.
+OVERCONTEXT_SET: list[Prompt] = [
+    Prompt("oc_innovation_drivers", "analysis",
+           "Based on the provided evidence, which factors most consistently "
+           "explain what drives innovation in societies, and where do the "
+           "sources disagree?",
+           factual=True,
+           must_include=[
+               ["disagree", "disagreement", "conflict", "contradict"],
+               ["evidence", "source", "study", "report"],
+               ["factor", "driver", "cause"],
+           ]),
+    Prompt("oc_inequality_conflict", "analysis",
+           "Across the provided reports, what does the evidence say about "
+           "the main drivers of rising wealth inequality, and which claims "
+           "contradict the common assumption that education alone explains "
+           "the trend?",
+           factual=True,
+           must_include=[
+               ["education"],
+               ["contradict", "disagree", "conflict", "counter"],
+               ["inequality"],
+               ["evidence", "source", "data"],
+           ]),
+    Prompt("oc_remote_work_conflict", "analysis",
+           "Based on the provided evidence, how has remote work changed "
+           "organizational productivity, and where do the sources disagree "
+           "about the size or direction of the effect?",
+           factual=True,
+           must_include=[
+               ["productivity"],
+               ["disagree", "disagreement", "conflict", "mixed"],
+               ["remote work", "remote-work", "work from home", "wfh"],
+           ]),
+    Prompt("oc_nuclear_debate", "debate",
+           "Based on the provided evidence, is nuclear power essential to "
+           "decarbonizing the grid? Identify which claims in the evidence "
+           "conflict with each other and explain how you weighed them.",
+           factual=True,
+           must_include=[
+               ["nuclear"],
+               ["conflict", "disagree", "contradict", "dispute"],
+               ["decarbon", "carbon", "emission"],
+               ["weigh", "trade-off", "tradeoff", "balance"],
+           ]),
+    Prompt("oc_antibiotic_resistance_conflict", "problem_solving",
+           "Based on the provided evidence, what does the evidence say "
+           "about how to slow the spread of antibiotic resistance, "
+           "including any recommendations in the evidence that contradict "
+           "each other?",
+           factual=True,
+           must_include=[
+               ["antibiotic", "antimicrobial"],
+               ["resistance"],
+               ["contradict", "conflict", "disagree"],
+               ["evidence", "source", "study"],
+           ]),
+    Prompt("oc_ubi_evidence", "debate",
+           "Based on the provided evidence, would a universal basic income "
+           "do more good than harm? Point to where the sources disagree "
+           "and what evidence would resolve the disagreement.",
+           factual=True,
+           must_include=[
+               ["universal basic income", "ubi"],
+               ["disagree", "disagreement", "conflict"],
+               ["evidence"],
+           ]),
+]

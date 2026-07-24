@@ -38,6 +38,8 @@ Decision rule (pre-registered here, before results):
   If P ~= U, no downstream stigmergic machinery can recover input diversity
   that never reached the outputs — the honest pivot is model-family
   diversity + retrieval + synthesis prompt, not the signal store.
+  If the partitioner was not 'semantic', the P condition tests contiguous
+  rank-slicing and the verdict must be withheld.
 
 Usage:
     # plumbing check only (MOCK outputs are SHA1-seeded noise — no signal):
@@ -69,19 +71,40 @@ import asyncio
 import json
 import math
 import os
+import re
 import statistics
 import sys
 import time
+import traceback
 from pathlib import Path
 
 # Allow `python eval/partition_probe.py` as well as `python -m eval.partition_probe`.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from core import intake as intake_mod  # noqa: E402 -- for LAST_PARTITIONER
 from core.intake import CorpusChunk, ScoutPartition, partition_for_scouts, \
     trivial_corpus_from_thesis  # noqa: E402
 from core.output_diversity import centroid_cosine_distance, self_bleu  # noqa: E402
 from eval import prompts as promptset  # noqa: E402
 from eval.ab_harness import Cost, DirectModel  # noqa: E402
+
+
+def _probe_embedder() -> str:
+    """Cheap one-shot probe: which embedding path will output_diversity /
+    intake partitioning actually use this run — 'sbert' or 'bow_fallback'.
+
+    Neither core.output_diversity nor core.intake exposes which path fired;
+    they just silently fall back. Load the shared embedder once up front so
+    every row can carry accurate provenance instead of guessing.
+    """
+    try:
+        from core.signal_store import _try_load_embedder
+        model = _try_load_embedder()
+        return "sbert" if model is not None else "bow_fallback"
+    except Exception as exc:
+        print(f"[probe] embedder probe failed ({type(exc).__name__}: {exc}); "
+              f"assuming bow_fallback")
+        return "bow_fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +158,12 @@ def _uniform_evidence(chunks: list, k: int) -> str:
     whole corpus, identical for every call. Same render format as P."""
     n = len(chunks)
     k = max(1, min(k, n))
-    if k == n:
+    if k <= 1 or n <= 1:
+        # Degenerate stride (k=1, or a 1-chunk corpus): nothing to space out,
+        # just take the top chunk. Guards a ZeroDivisionError at k-1==0 that
+        # killed a real run (median partition size 1 chunk).
+        idxs = [0]
+    elif k == n:
         idxs = list(range(n))
     else:
         idxs = sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
@@ -176,6 +204,86 @@ async def _gen_batch(dm: DirectModel, question: str, evidences: list[str],
 
 
 # ---------------------------------------------------------------------------
+# Condition V: verbalized sampling (literature-strongest cheap diversity
+# lever) as a comparison arm. Same identical evidence as U, same
+# temperature, but the prompt asks for 5 different candidate claims with
+# probabilities; we take the first listed candidate as the "output" so it
+# is scored on the same footing as P/U/H (one claim per call).
+# ---------------------------------------------------------------------------
+
+_V_TEMPLATE = (
+    "You are given evidence excerpts about a question. Read them, then generate "
+    "5 DIFFERENT candidate claims that could answer the question, each grounded "
+    "in the evidence you were shown. For each, estimate the probability (0-1) "
+    "that it is the single strongest, most defensible claim. Number them 1-5. "
+    "Do not explain your reasoning; do not restate the question.\n\n"
+    "QUESTION: {question}\n\n"
+    "EVIDENCE:\n{evidence}\n\n"
+    "Format exactly as:\n"
+    "1. [probability] <claim>\n"
+    "2. [probability] <claim>\n"
+    "3. [probability] <claim>\n"
+    "4. [probability] <claim>\n"
+    "5. [probability] <claim>\n\n"
+    "CANDIDATES:"
+)
+
+_FIRST_CANDIDATE_RE = re.compile(r"1\.\s*(.+?)(?=\n\s*2\.|\Z)", re.DOTALL)
+_LEADING_PROB_RE = re.compile(r"^\[?\s*\d*\.?\d+\s*\]?\s*[:\-]?\s*")
+
+
+def _extract_first_candidate(text: str) -> str:
+    """Pull candidate #1's claim text out of a verbalized-sampling response."""
+    if not text or not text.strip():
+        return ""
+    m = _FIRST_CANDIDATE_RE.search(text)
+    claim = m.group(1).strip() if m else text.strip()
+    claim = _LEADING_PROB_RE.sub("", claim).strip()
+    return claim
+
+
+async def _gen_batch_v(dm: DirectModel, question: str, evidences: list[str],
+                       max_tokens: int, temperature: float, cost: Cost) -> list[str]:
+    async def one(ev: str) -> str:
+        prompt = _V_TEMPLATE.format(question=question, evidence=ev)
+        try:
+            raw = await dm.generate(prompt, max_tokens=max_tokens * 3,
+                                    temperature=temperature, cost=cost)
+        except Exception as exc:
+            print(f"[probe] generate (V) failed: {type(exc).__name__}: {exc}")
+            return ""
+        return _extract_first_candidate(raw)
+    return list(await asyncio.gather(*[one(ev) for ev in evidences]))
+
+
+# ---------------------------------------------------------------------------
+# Degenerate-output filtering
+# ---------------------------------------------------------------------------
+
+_MIN_ALPHA_TOKENS = 30
+
+
+def _filter_degenerate(texts: list[str]) -> tuple[list[str], int]:
+    """Drop outputs with fewer than _MIN_ALPHA_TOKENS alphabetic tokens.
+
+    A degenerate output (e.g. a run of underscores, or near-empty text) can
+    score as maximally "diverse" against everything else by both metrics —
+    it poisons self_bleu (no shared n-grams) and centroid_cosine_distance
+    (embeds far from the centroid of real text) alike. Returns
+    (surviving_texts, n_dropped).
+    """
+    kept: list[str] = []
+    n_dropped = 0
+    for t in texts:
+        n_alpha = len(re.findall(r"[a-zA-Z]+", t))
+        if n_alpha < _MIN_ALPHA_TOKENS:
+            n_dropped += 1
+        else:
+            kept.append(t)
+    return kept, n_dropped
+
+
+# ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
 
@@ -198,6 +306,22 @@ def _fmt(x) -> str:
 # Main experiment
 # ---------------------------------------------------------------------------
 
+def _write_meta(out_dir: Path, ts: str, is_mock: bool, dm: DirectModel, args,
+                rows: list[dict], cost: Cost, embedder_used: str,
+                status: str) -> None:
+    (out_dir / "meta.json").write_text(json.dumps({
+        "timestamp": ts, "mock": is_mock, "model": dm.label,
+        "backend": args.backend, "corpus": args.corpus,
+        "n_agents": args.n_agents, "temperature": args.temperature,
+        "hot_temp": args.hot_temp if args.include_hot else None,
+        "include_hot": args.include_hot, "v_condition": args.v_condition,
+        "max_tokens": args.max_tokens, "n_prompts_run": len(rows),
+        "prompt_ids": [r["pid"] for r in rows],
+        "llm_calls": cost.llm_calls, "latency_s": round(cost.latency_s, 1),
+        "embedder": embedder_used, "status": status,
+    }, indent=2), encoding="utf-8")
+
+
 async def run_probe(args) -> Path:
     is_mock = os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False")
     if args.temperature <= 0:
@@ -210,119 +334,207 @@ async def run_probe(args) -> Path:
     out_dir = Path(__file__).parent / "results" / f"partition_probe_{ts}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    embedder_used = _probe_embedder()
+    print(f"[probe] embedder path: {embedder_used}")
+
     dm = DirectModel(args.model, force_local=args.backend == "local")
     cost = Cost()
-    conditions = ["P", "U"] + (["H"] if args.include_hot else [])
+    conditions = (["P", "U"] + (["H"] if args.include_hot else [])
+                 + (["V"] if args.v_condition else []))
 
     rows: list[dict] = []
     rows_path = out_dir / "rows.jsonl"
 
-    for p in plist:
-        chunks, corpus_mode = _build_corpus(p.text, args.corpus)
-        partitions = partition_for_scouts(chunks, args.n_agents)
-        nonempty = [pt for pt in partitions if pt.chunks]
-        n_eff = len(nonempty)
-        if n_eff < 3:
-            print(f"[probe] {p.pid}: only {n_eff} non-empty partitions "
-                  f"({len(chunks)} chunks) — skipped")
-            continue
+    # Write meta.json immediately so a crash on prompt 1 still leaves valid
+    # artifacts on disk (the run that motivated this: died on prompt 5,
+    # report.md/meta.json never touched, everything lost).
+    _write_meta(out_dir, ts, is_mock, dm, args, rows, cost, embedder_used,
+               status="running")
 
-        p_evidence = [pt.render(max_chars=_EVIDENCE_MAX_CHARS) for pt in nonempty]
-        med_size = int(statistics.median(len(pt.chunks) for pt in nonempty))
-        u_evidence = [_uniform_evidence(chunks, med_size)] * n_eff
+    completed = False
+    crash_info: str | None = None
+    try:
+        for p in plist:
+            chunks, corpus_mode = _build_corpus(p.text, args.corpus)
+            partitions = partition_for_scouts(chunks, args.n_agents)
+            partitioner = intake_mod.LAST_PARTITIONER
+            if partitioner != "semantic":
+                print(f"[probe] *** WARNING: partitioner={partitioner!r} for "
+                      f"{p.pid} — semantic gate needs len(chunks) >= "
+                      f"n_agents*2 ({len(chunks)} chunks, {args.n_agents} "
+                      f"agents); P condition is testing CONTIGUOUS "
+                      f"rank-slicing, not topical partitioning ***")
+            nonempty = [pt for pt in partitions if pt.chunks]
+            n_eff = len(nonempty)
+            if n_eff < 3:
+                print(f"[probe] {p.pid}: only {n_eff} non-empty partitions "
+                      f"({len(chunks)} chunks) — skipped")
+                continue
 
-        print(f"[probe] {p.pid}: {len(chunks)} chunks -> {n_eff} partitions "
-              f"(median {med_size} chunks) corpus={corpus_mode}")
+            p_evidence = [pt.render(max_chars=_EVIDENCE_MAX_CHARS) for pt in nonempty]
+            med_size = int(statistics.median(len(pt.chunks) for pt in nonempty))
+            u_evidence = [_uniform_evidence(chunks, med_size)] * n_eff
 
-        outs: dict[str, list[str]] = {}
-        outs["P"] = await _gen_batch(dm, p.text, p_evidence,
-                                     args.max_tokens, args.temperature, cost)
-        outs["U"] = await _gen_batch(dm, p.text, u_evidence,
-                                     args.max_tokens, args.temperature, cost)
-        if args.include_hot:
-            outs["H"] = await _gen_batch(dm, p.text, u_evidence,
-                                         args.max_tokens, args.hot_temp, cost)
+            print(f"[probe] {p.pid}: {len(chunks)} chunks -> {n_eff} partitions "
+                  f"(median {med_size} chunks) corpus={corpus_mode} "
+                  f"partitioner={partitioner}")
 
-        row: dict = {"pid": p.pid, "task": p.task, "prompt": p.text,
-                     "n_eff": n_eff, "n_chunks": len(chunks),
-                     "corpus_mode": corpus_mode, "outputs": {}}
-        ok = True
-        for c in conditions:
-            texts = [t for t in outs[c] if t.strip()]
-            if len(texts) < 3:
-                print(f"[probe] {p.pid}/{c}: only {len(texts)} non-empty "
-                      f"outputs — prompt skipped")
-                ok = False
-                break
-            row["outputs"][c] = texts
-            row[f"self_bleu_{c}"] = round(self_bleu(texts), 4)
-            row[f"centroid_dist_{c}"] = round(centroid_cosine_distance(texts), 4)
-        if not ok:
-            continue
-        rows.append(row)
-        with rows_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            outs: dict[str, list[str]] = {}
+            outs["P"] = await _gen_batch(dm, p.text, p_evidence,
+                                         args.max_tokens, args.temperature, cost)
+            outs["U"] = await _gen_batch(dm, p.text, u_evidence,
+                                         args.max_tokens, args.temperature, cost)
+            if args.include_hot:
+                outs["H"] = await _gen_batch(dm, p.text, u_evidence,
+                                             args.max_tokens, args.hot_temp, cost)
+            if args.v_condition:
+                outs["V"] = await _gen_batch_v(dm, p.text, u_evidence,
+                                               args.max_tokens, args.temperature, cost)
 
-    # ---- aggregate ---------------------------------------------------------
-    report = _render_report(rows, conditions, args, cost, is_mock)
-    (out_dir / "report.md").write_text(report, encoding="utf-8")
-    (out_dir / "meta.json").write_text(json.dumps({
-        "timestamp": ts, "mock": is_mock, "model": dm.label,
-        "backend": args.backend, "corpus": args.corpus,
-        "n_agents": args.n_agents, "temperature": args.temperature,
-        "hot_temp": args.hot_temp if args.include_hot else None,
-        "max_tokens": args.max_tokens, "n_prompts_run": len(rows),
-        "prompt_ids": [r["pid"] for r in rows],
-        "llm_calls": cost.llm_calls, "latency_s": round(cost.latency_s, 1),
-    }, indent=2), encoding="utf-8")
-    print("\n" + report)
-    print(f"[probe] artifacts: {out_dir}")
+            row: dict = {"pid": p.pid, "task": p.task, "prompt": p.text,
+                         "n_eff": n_eff, "n_chunks": len(chunks),
+                         "corpus_mode": corpus_mode, "partitioner": partitioner,
+                         "embedder": embedder_used, "outputs": {},
+                         "output_lens": {}}
+            for c in conditions:
+                raw_texts = [t for t in outs[c] if t.strip()]
+                row["output_lens"][c] = [len(t) for t in raw_texts]
+                texts, n_degen = _filter_degenerate(raw_texts)
+                row[f"n_degenerate_{c}"] = n_degen
+                if len(texts) < 2:
+                    print(f"[probe] {p.pid}/{c}: only {len(texts)} "
+                          f"non-degenerate outputs (of {len(raw_texts)} "
+                          f"non-empty, {n_degen} degenerate) — metrics set "
+                          f"to null for this condition")
+                    row["outputs"][c] = texts
+                    row[f"self_bleu_{c}"] = None
+                    row[f"centroid_dist_{c}"] = None
+                    continue
+                row["outputs"][c] = texts
+                row[f"self_bleu_{c}"] = round(self_bleu(texts), 4)
+                row[f"centroid_dist_{c}"] = round(centroid_cosine_distance(texts), 4)
+
+            rows.append(row)
+            with rows_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+            # Rewrite report.md/meta.json after EVERY prompt so a crash never
+            # loses completed work.
+            report = _render_report(rows, conditions, args, cost, is_mock,
+                                    partial=True)
+            (out_dir / "report.md").write_text(report, encoding="utf-8")
+            _write_meta(out_dir, ts, is_mock, dm, args, rows, cost,
+                       embedder_used, status="running")
+
+        completed = True
+    except BaseException as exc:
+        crash_info = f"{type(exc).__name__}: {exc}"
+        print(f"[probe] *** run interrupted: {crash_info} ***")
+        traceback.print_exc()
+        raise
+    finally:
+        report = _render_report(rows, conditions, args, cost, is_mock,
+                                partial=not completed, crash_info=crash_info)
+        (out_dir / "report.md").write_text(report, encoding="utf-8")
+        _write_meta(out_dir, ts, is_mock, dm, args, rows, cost, embedder_used,
+                   status="completed" if completed else "PARTIAL")
+        print("\n" + report)
+        print(f"[probe] artifacts: {out_dir}")
     return out_dir
 
 
+def _paired_rows(rows: list[dict], a: str, b: str) -> list[dict]:
+    """Rows where BOTH condition a and condition b have non-null metrics."""
+    return [r for r in rows
+           if r.get(f"self_bleu_{a}") is not None
+           and r.get(f"self_bleu_{b}") is not None
+           and r.get(f"centroid_dist_{a}") is not None
+           and r.get(f"centroid_dist_{b}") is not None]
+
+
 def _render_report(rows: list[dict], conditions: list[str], args,
-                   cost: Cost, is_mock: bool) -> str:
+                   cost: Cost, is_mock: bool, partial: bool = False,
+                   crash_info: str | None = None) -> str:
     lines: list[str] = []
     title = "# Partition -> output-diversity probe"
     if is_mock:
         title += "  (MOCK — plumbing check only; numbers carry NO behavioral signal)"
     lines.append(title)
+    if partial:
+        lines.append("")
+        note = "**PARTIAL — run did not complete.**"
+        if crash_info:
+            note += f" Interrupted by: `{crash_info}`."
+        note += (" Rows below reflect only the prompts that finished before "
+                "the run stopped; artifacts were written incrementally so "
+                "no completed work is lost.")
+        lines.append(note)
     lines.append("")
-    lines.append(f"Conditions: P=partitioned evidence, U=identical evidence"
-                 + (", H=identical evidence @ hot temperature" if "H" in conditions else "")
-                 + f". n_agents={args.n_agents}, temp={args.temperature}, "
-                   f"corpus={args.corpus}, model={args.model or 'local'}, "
-                   f"llm_calls={cost.llm_calls}.")
+    cond_desc = "P=partitioned evidence, U=identical evidence"
+    if "H" in conditions:
+        cond_desc += ", H=identical evidence @ hot temperature"
+    if "V" in conditions:
+        cond_desc += ", V=identical evidence + verbalized-sampling prompt (first of 5 candidates)"
+    lines.append(f"Conditions: {cond_desc}. n_agents={args.n_agents}, "
+                f"temp={args.temperature}, corpus={args.corpus}, "
+                f"model={args.model or 'local'}, llm_calls={cost.llm_calls}, "
+                f"embedder={rows[0]['embedder'] if rows else '?'}.")
     lines.append("")
     if not rows:
         lines.append("No prompts completed — nothing to report.")
         return "\n".join(lines)
 
-    hdr = "| pid | n | corpus |"
-    sep = "|---|---|---|"
+    partitioners = {r.get("partitioner", "") for r in rows}
+    non_semantic_rows = [r for r in rows if r.get("partitioner") != "semantic"]
+    if non_semantic_rows:
+        lines.append(f"**WARNING: {len(non_semantic_rows)}/{len(rows)} prompt(s) "
+                     f"used a non-semantic partitioner ({sorted(partitioners)}). "
+                     f"The semantic gate requires len(chunks) >= n_agents*2; "
+                     f"for these rows, condition P tested CONTIGUOUS "
+                     f"rank-slicing, not topical partitioning.**")
+        lines.append("")
+
+    hdr = "| pid | n | corpus | partitioner |"
+    sep = "|---|---|---|---|"
     for c in conditions:
         hdr += f" bleu_{c} |"
         sep += "---|"
     for c in conditions:
         hdr += f" cdist_{c} |"
         sep += "---|"
+    for c in conditions:
+        hdr += f" degen_{c} |"
+        sep += "---|"
     lines += [hdr, sep]
     for r in rows:
-        cells = [r["pid"], str(r["n_eff"]), r["corpus_mode"]]
+        cells = [r["pid"], str(r["n_eff"]), r["corpus_mode"],
+                 r.get("partitioner", "?")]
         cells += [_fmt(r.get(f"self_bleu_{c}")) for c in conditions]
         cells += [_fmt(r.get(f"centroid_dist_{c}")) for c in conditions]
+        cells += [str(r.get(f"n_degenerate_{c}", 0)) for c in conditions]
         lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
 
-    # Paired comparison P vs U (and P vs H when present).
+    # Paired comparison P vs U (and P vs H / P vs V when present). Only rows
+    # where BOTH conditions have non-null metrics (>=2 non-degenerate
+    # outputs survived) enter each comparison.
     for other in [c for c in conditions if c != "P"]:
-        db = [r[f"self_bleu_P"] - r[f"self_bleu_{other}"] for r in rows]
-        dc = [r[f"centroid_dist_P"] - r[f"centroid_dist_{other}"] for r in rows]
+        paired = _paired_rows(rows, "P", other)
+        n_skipped = len(rows) - len(paired)
+        lines.append(f"## P vs {other}  (n={len(paired)} prompts"
+                     + (f", {n_skipped} skipped for null metrics" if n_skipped else "")
+                     + ")")
+        lines.append("")
+        if len(paired) == 0:
+            lines.append("No comparable rows (every row had a null metric "
+                         "for one side).")
+            lines.append("")
+            continue
+        db = [r[f"self_bleu_P"] - r[f"self_bleu_{other}"] for r in paired]
+        dc = [r[f"centroid_dist_P"] - r[f"centroid_dist_{other}"] for r in paired]
         # P more diverse: lower self_bleu, higher centroid distance.
         bleu_w = sum(1 for d in db if d < 0); bleu_l = sum(1 for d in db if d > 0)
         cd_w = sum(1 for d in dc if d > 0); cd_l = sum(1 for d in dc if d < 0)
-        lines.append(f"## P vs {other}  (n={len(rows)} prompts)")
-        lines.append("")
         lines.append(f"- self_bleu:     mean delta {statistics.mean(db):+.4f} "
                      f"(negative = P more diverse); P wins {bleu_w}/{bleu_w+bleu_l}, "
                      f"sign-test p={_sign_test_p(bleu_w, bleu_l):.3f}")
@@ -332,30 +544,41 @@ def _render_report(rows: list[dict], conditions: list[str], args,
         lines.append("")
 
     # Pre-registered verdict (P vs U only).
-    db = [r["self_bleu_P"] - r["self_bleu_U"] for r in rows]
-    dc = [r["centroid_dist_P"] - r["centroid_dist_U"] for r in rows]
-    bleu_p = _sign_test_p(sum(1 for d in db if d < 0), sum(1 for d in db if d > 0))
-    cd_p = _sign_test_p(sum(1 for d in dc if d > 0), sum(1 for d in dc if d < 0))
-    passed = (bleu_p < 0.05 and cd_p < 0.05
-              and statistics.mean(db) < -0.03
-              and statistics.mean(dc) > 0)
     lines.append("## Verdict (pre-registered rule)")
     lines.append("")
+    paired_pu = _paired_rows(rows, "P", "U")
     if is_mock:
         lines.append("MOCK run — verdict withheld (plumbing only).")
-    elif len(rows) < 8:
-        lines.append(f"n={len(rows)} < 8 prompts — underpowered; verdict withheld. "
-                     f"(Directional numbers above only.)")
-    elif passed:
-        lines.append("PARTITIONING MOVES OUTPUT DIVERSITY on this corpus mode. "
-                     "This licenses fixing the default pipeline to actually use "
-                     "partitions — it does not by itself show a quality win.")
+    elif partial:
+        lines.append("Run did not complete — verdict withheld pending a full run.")
+    elif non_semantic_rows:
+        lines.append("Partitioner was not 'semantic' for one or more prompts "
+                     "(see WARNING above) — per the pre-registered rule "
+                     "extension, the verdict is WITHHELD. Condition P tested "
+                     "contiguous rank-slicing for those rows, not the "
+                     "semantic partitioning the pipeline actually uses.")
+    elif len(paired_pu) < 8:
+        lines.append(f"n={len(paired_pu)} < 8 comparable prompts — "
+                     f"underpowered; verdict withheld. (Directional numbers "
+                     f"above only.)")
     else:
-        lines.append("Partitioning did NOT separate outputs beyond sampling "
-                     "noise (per the pre-registered rule). Input partitioning "
-                     "cannot be the diversity engine for this model/corpus; "
-                     "downstream stigmergic machinery cannot recover diversity "
-                     "that never reached the outputs.")
+        db = [r["self_bleu_P"] - r["self_bleu_U"] for r in paired_pu]
+        dc = [r["centroid_dist_P"] - r["centroid_dist_U"] for r in paired_pu]
+        bleu_p = _sign_test_p(sum(1 for d in db if d < 0), sum(1 for d in db if d > 0))
+        cd_p = _sign_test_p(sum(1 for d in dc if d > 0), sum(1 for d in dc if d < 0))
+        passed = (bleu_p < 0.05 and cd_p < 0.05
+                  and statistics.mean(db) < -0.03
+                  and statistics.mean(dc) > 0)
+        if passed:
+            lines.append("PARTITIONING MOVES OUTPUT DIVERSITY on this corpus mode. "
+                         "This licenses fixing the default pipeline to actually use "
+                         "partitions — it does not by itself show a quality win.")
+        else:
+            lines.append("Partitioning did NOT separate outputs beyond sampling "
+                         "noise (per the pre-registered rule). Input partitioning "
+                         "cannot be the diversity engine for this model/corpus; "
+                         "downstream stigmergic machinery cannot recover diversity "
+                         "that never reached the outputs.")
     lines.append("")
     return "\n".join(lines)
 
@@ -386,6 +609,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="add condition H: identical evidence at --hot-temp, to "
                          "compare partitioning against a plain temperature knob")
     ap.add_argument("--hot-temp", type=float, default=1.0)
+    ap.add_argument("--v-condition", action="store_true",
+                    help="add condition V: same identical evidence as U, same "
+                         "temperature, but a verbalized-sampling prompt (ask "
+                         "for 5 different candidate claims with probabilities, "
+                         "take the first as the output) — the literature's "
+                         "strongest cheap diversity lever, as a comparison arm")
     return ap
 
 

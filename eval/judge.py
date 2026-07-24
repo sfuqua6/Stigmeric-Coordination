@@ -6,6 +6,9 @@ turns it into the deltas that decide the project:
   delta_amp      = A vs B   (does the swarm amplify at all?)
   delta_vs_simple= A vs C   (does it beat a cheap scaffold?)
   delta_vs_strong= A vs D   (small+swarm vs big-direct — the real goal)
+  delta_vs_rag   = A vs F   (does orchestration beat single-call RAG over
+                            the same retrieved evidence? the practitioner
+                            baseline — the decisive attribution rung)
   delta_vs_prompt= A vs E   (does orchestration beat its own synthesis
                              prompt handed to ONE call? the attribution
                              control — if E ties A, the value was the prompt)
@@ -506,7 +509,7 @@ def score_from_verdicts(exp_dir: Path, idx, verdicts_path: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 _COND_NAME = {"A": "swarm(M)", "B": "direct(M)", "C": "cheap-scaffold(M)",
-              "D": "direct(M+)", "E": "synth-prompt(M)"}
+              "D": "direct(M+)", "E": "synth-prompt(M)", "F": "rag(M)"}
 
 
 def write_report(exp_dir: Path, meta: dict, pair_results: dict,
@@ -519,6 +522,8 @@ def write_report(exp_dir: Path, meta: dict, pair_results: dict,
     lines.append(f"- model M (A/B/C): `{meta.get('model_M')}`")
     lines.append(f"- strong model M+ (D): `{meta.get('strong_model')}`")
     lines.append(f"- conditions: {', '.join(meta.get('conditions', []))}")
+    if meta.get("judge_model"):
+        lines.append(f"- judge: `{meta['judge_model']}`")
     lines.append(f"- prompts: {meta.get('n_prompts')} "
                  f"(pre-registered: {', '.join(meta.get('prompt_ids', []))})")
     lines.append(f"- scaffold (C): {meta.get('scaffold')}\n")
@@ -528,8 +533,9 @@ def write_report(exp_dir: Path, meta: dict, pair_results: dict,
     lines.append("|---|--:|--:|--:|--:|--:|---|:--:|--:|")
     label_map = {"A_vs_B": "Δ_amp (A vs B)", "A_vs_C": "Δ_vs_simple (A vs C)",
                  "A_vs_D": "Δ_vs_strong (A vs D)",
-                 "A_vs_E": "Δ_vs_prompt (A vs E)"}
-    for key in ("A_vs_B", "A_vs_C", "A_vs_D", "A_vs_E"):
+                 "A_vs_E": "Δ_vs_prompt (A vs E)",
+                 "A_vs_F": "Δ_vs_rag (A vs F)"}
+    for key in ("A_vs_B", "A_vs_C", "A_vs_D", "A_vs_E", "A_vs_F"):
         r = pair_results.get(key)
         if not r:
             continue
@@ -555,7 +561,7 @@ def write_report(exp_dir: Path, meta: dict, pair_results: dict,
         lines.append("")
 
     lines.append("## Per-prompt verdicts\n")
-    for key in ("A_vs_B", "A_vs_C", "A_vs_D", "A_vs_E"):
+    for key in ("A_vs_B", "A_vs_C", "A_vs_D", "A_vs_E", "A_vs_F"):
         r = pair_results.get(key)
         if not r:
             continue
@@ -563,7 +569,8 @@ def write_report(exp_dir: Path, meta: dict, pair_results: dict,
         lines.append("| prompt | winner | agreed orders? | rationale |")
         lines.append("|---|:--:|:--:|---|")
         win_name = {"A": "swarm", "B": "direct", "C": "scaffold",
-                    "D": "strong", "E": "synthprompt", "tie": "tie"}
+                    "D": "strong", "E": "synthprompt", "F": "rag",
+                    "tie": "tie"}
         for pp in r["per_prompt"]:
             w = pp["winner"]
             mapped = win_name.get(w, w)
@@ -575,7 +582,8 @@ def write_report(exp_dir: Path, meta: dict, pair_results: dict,
     report = exp_dir / "report.md"
     report.write_text("\n".join(lines), encoding="utf-8")
     (exp_dir / "scores.json").write_text(
-        json.dumps({"pairs": pair_results, "factual": facts}, indent=2),
+        json.dumps({"pairs": pair_results, "factual": facts,
+                    "judge_model": meta.get("judge_model")}, indent=2),
         encoding="utf-8")
     return report
 
@@ -609,7 +617,20 @@ def _make_judge(model: str | None):
     return eng, getattr(eng, "name", "local")
 
 
+_MODEL_FAMILIES = ("llama", "qwen", "mixtral", "mistral", "gemma", "deepseek",
+                   "gpt", "claude", "phi", "command")
+
+
+def _families(label: str) -> set[str]:
+    ll = label.lower()
+    return {f for f in _MODEL_FAMILIES if f in ll}
+
+
 def _check_judge_independence(meta: dict, judge_label: str, force: bool) -> bool:
+    """Exact-name overlap refuses outright; FAMILY overlap (e.g. a Llama-3.3
+    judge scoring Llama-3.1 conditions) warns loudly — same-family judges
+    show 10-25% self-preference in the 2026 judge-bias literature, and B/D
+    are typically Llama variants here."""
     jl = judge_label.lower()
     condition_models = {
         str(meta.get("model_M") or "").lower(),
@@ -624,6 +645,14 @@ def _check_judge_independence(meta: dict, judge_label: str, force: bool) -> bool
                 print("[judge] refusing; pass --force to override or pick a "
                       "different --judge-model.", file=sys.stderr)
                 return False
+    jf = _families(judge_label)
+    for m in condition_models:
+        shared = jf & _families(m)
+        if shared:
+            print(f"[judge] WARNING: judge {judge_label!r} shares model "
+                  f"family {sorted(shared)} with condition model {m!r} — "
+                  f"self-preference bias risk (prefer an off-family judge).",
+                  file=sys.stderr)
     return True
 
 
@@ -655,7 +684,7 @@ def main(argv: list[str]) -> int:
     rows = load_rows(exp_dir)
     idx = _index(rows)
 
-    pairs = [("A", "B"), ("A", "C"), ("A", "D"), ("A", "E")]
+    pairs = [("A", "B"), ("A", "C"), ("A", "D"), ("A", "E"), ("A", "F")]
     pairs = [(l, r) for (l, r) in pairs
              if any(l in c and r in c for c in idx.values())]
 
@@ -691,6 +720,9 @@ def main(argv: list[str]) -> int:
     if not _check_judge_independence(meta, judge_label, args.force):
         return 2
     print(f"[judge] judge = {judge_label}")
+    # Record judge identity in the artifacts — a result whose judge is
+    # unknown can't be audited for self-preference later.
+    meta["judge_model"] = judge_label
 
     pair_results = asyncio.run(judge_pairs(idx, pairs, judge_llm, meta))
     facts = factual_table(rows)

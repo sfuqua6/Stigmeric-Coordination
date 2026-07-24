@@ -225,11 +225,114 @@ _SYNTH_DIRECT = (
 )
 
 
+# Condition F: single-call RAG — ONE direct call to M given the SAME kind of
+# retrieved evidence the swarm consumes. This is the missing attribution rung
+# (critique loop 2026-07-06, iteration 3): A-vs-B confounds orchestration with
+# retrieval access (the swarm searches the web mid-run; B answers from
+# parametric memory), and E controls only for the synthesis prompt. F is the
+# baseline any practitioner would deploy — if A cannot beat F, the
+# orchestration adds nothing over plain RAG. The swarm's compression thesis
+# predicts A>F only once the evidence pack outgrows what F's single context
+# can use well; at small pack sizes A≈F is the expected (and acceptable) result.
+_RAG_DIRECT = (
+    "You are an expert analyst. Answer the question using the evidence "
+    "excerpts below where they are relevant, plus your own knowledge. Weigh "
+    "conflicting evidence rather than ignoring it; if the evidence is thin, "
+    "say so.\n\n"
+    "EVIDENCE:\n{evidence}\n\n"
+    "QUESTION:\n{q}\n\nANSWER:"
+)
+
+# Cap on the evidence block handed to condition F (chars). Roughly matches
+# the total evidence budget the swarm's scouts see across partitions.
+_RAG_EVIDENCE_MAX_CHARS = 12000
+
+
+def _retrieve_evidence(prompt_text: str,
+                       max_chars: int = _RAG_EVIDENCE_MAX_CHARS) -> str:
+    """Same retrieval stack the swarm uses (CompositeRetriever), rendered as
+    one bounded evidence block. Falls back to the engineered placeholder
+    corpus exactly like the swarm does — the comparison stays like-for-like."""
+    from core.retrieval import CachedRetriever, CompositeRetriever
+    try:
+        chunks = CachedRetriever(CompositeRetriever()).retrieve(prompt_text)
+    except Exception as exc:
+        print(f"[ab] F retrieval failed ({type(exc).__name__}: {exc}); "
+              f"empty evidence block")
+        return "(no evidence retrieved)"
+    if not chunks:
+        return "(no evidence retrieved)"
+    parts, used = [], 0
+    for i, ch in enumerate(chunks):
+        text = getattr(ch, "text", str(ch)).strip()
+        if not text:
+            continue
+        tag = getattr(ch, "source_tag", "") or f"chunk_{i}"
+        block = f"[{tag}]\n{text}"
+        if used + len(block) > max_chars:
+            block = block[: max(0, max_chars - used)]
+        parts.append(block)
+        used += len(block)
+        if used >= max_chars:
+            break
+    return "\n\n".join(parts) if parts else "(no evidence retrieved)"
+
+
+def _evidence_from_pack(pack_path: Path, max_chars: int) -> str:
+    """Naive-fill evidence block from a pre-built eval.packs pack: concatenate
+    chunk texts IN PACK ORDER up to max_chars. Deliberately dumb — condition F
+    is the honest "practitioner just stuffed the pack into context" baseline,
+    not a smart retriever over the pack (that's a separate future condition
+    F+; see docs/OVERCONTEXT_EVAL_PLAN.md). This is what makes A (swarm over
+    the same pack, via --corpus=pack:<path>) and F a fair over-context
+    comparison — same evidence, different consumption strategy."""
+    from eval.packs import load_pack
+    chunks = load_pack(pack_path)
+    if not chunks:
+        return "(no evidence retrieved)"
+    parts, used = [], 0
+    for i, ch in enumerate(chunks):
+        text = (ch.text or "").strip()
+        if not text:
+            continue
+        tag = ch.source_tag or f"chunk_{i}"
+        block = f"[{tag}]\n{text}"
+        if used + len(block) > max_chars:
+            block = block[: max(0, max_chars - used)]
+        parts.append(block)
+        used += len(block)
+        if used >= max_chars:
+            break
+    return "\n\n".join(parts) if parts else "(no evidence retrieved)"
+
+
 async def gen_direct(dm: DirectModel, text: str, max_tokens: int,
                      template: str = _STRONG_DIRECT) -> tuple[str, Cost]:
     """Condition B/D (strong direct) / E (synthesis-prompt): one call."""
     cost = Cost()
     ans = await dm.generate(template.format(q=text), max_tokens, 0.3, cost)
+    return ans, cost
+
+
+async def gen_direct_rag(dm: DirectModel, text: str, max_tokens: int,
+                         pack_path: "Path | None" = None,
+                         max_chars: int = _RAG_EVIDENCE_MAX_CHARS
+                         ) -> tuple[str, Cost]:
+    """Condition F: one call to M with retrieved evidence.
+
+    Default (pack_path=None): the swarm's live retrieval stack, unchanged
+    (`_retrieve_evidence`). When `pack_path` is given (the --pack-scale
+    over-context eval mode), evidence instead comes from that fixed pack —
+    the SAME pack condition A consumes via --corpus=pack:<path> — via a
+    naive pack-order fill (`_evidence_from_pack`).
+    """
+    cost = Cost()
+    if pack_path is not None:
+        evidence = await asyncio.to_thread(_evidence_from_pack, pack_path, max_chars)
+    else:
+        evidence = await asyncio.to_thread(_retrieve_evidence, text, max_chars)
+    ans = await dm.generate(
+        _RAG_DIRECT.format(q=text, evidence=evidence), max_tokens, 0.3, cost)
     return ans, cost
 
 
@@ -397,7 +500,9 @@ class Row:
 
 
 async def run_experiment(args) -> Path:
-    plist = (promptset.mini(args.mini) if args.mini else promptset.DEFAULT_SET)
+    base_set = (promptset.OVERCONTEXT_SET if args.prompt_set == "overcontext"
+                else promptset.DEFAULT_SET)
+    plist = (promptset.mini(args.mini, base_set) if args.mini else base_set)
     conds = set(args.conditions.upper())
     out_root = _REPO / "eval" / "results" / args.name
     out_root.mkdir(parents=True, exist_ok=True)
@@ -408,6 +513,22 @@ async def run_experiment(args) -> Path:
     rows: list[Row] = []
     stamp = time.strftime("%Y%m%d_%H%M%S")
 
+    # --pack-scale: build/reuse a fixed evidence pack per prompt, then route
+    # BOTH condition A (via --corpus=pack:<path>, appended to `extra` so it
+    # wins over any --corpus swarm-flag) and condition F (via pack_path=) at
+    # the SAME pack — the decisive over-context comparison (see module
+    # docstring / docs/OVERCONTEXT_EVAL_PLAN.md).
+    pack_paths: dict[str, Path] = {}
+    if args.pack_scale:
+        from eval.packs import build_pack
+        packs_dir = _REPO / "eval" / "packs"
+        for p in plist:
+            pack_paths[p.pid] = build_pack(
+                p.text, args.pack_scale, packs_dir, pid=p.pid,
+                target_chars=args.target_chars)
+            print(f"[ab] pack ready: {p.pid} @ {args.pack_scale} -> "
+                  f"{pack_paths[p.pid]}")
+
     # Direct clients (conditions B/C/D). On a single local GPU they must NOT be
     # resident while the swarm (A) runs: vLLM reserves most of VRAM, which would
     # starve the A subprocess and trip the parity guard. So in local mode we
@@ -417,7 +538,7 @@ async def run_experiment(args) -> Path:
     dm: dict = {"m": None, "strong": None}
 
     def build_direct() -> None:
-        if (conds & set("BCE")) and dm["m"] is None:
+        if (conds & set("BCEF")) and dm["m"] is None:
             dm["m"] = DirectModel(args.model, force_local=_local)
         if "D" in conds and dm["strong"] is None:
             dm["strong"] = DirectModel(args.strong_model, force_local=_local)
@@ -437,7 +558,12 @@ async def run_experiment(args) -> Path:
 
         def do_swarm(p) -> None:
             run_id = f"delta_{args.name}_{p.pid}_{stamp}"
-            ans, cost = gen_swarm(p.task, p.text, run_id, extra, args.model,
+            swarm_extra = list(extra)
+            if p.pid in pack_paths:
+                # Wins over any --corpus swarm-flag: run_swarm.py takes the
+                # LAST --corpus= flag, and this is appended after `extra`.
+                swarm_extra.append(f"--corpus=pack:{pack_paths[p.pid]}")
+            ans, cost = gen_swarm(p.task, p.text, run_id, swarm_extra, args.model,
                                   backend=args.backend)
             emit(Row(condition="A", label=f"swarm({args.model or 'M'})",
                      answer=ans, cost=asdict(cost), **_base(p)))
@@ -461,6 +587,15 @@ async def run_experiment(args) -> Path:
                                              template=_SYNTH_DIRECT)
                 emit(Row(condition="E", label=f"{dm['m'].label}+synthprompt",
                          answer=ans, cost=asdict(cost), **_base(p)))
+            if "F" in conds:
+                pack_path = pack_paths.get(p.pid)
+                ans, cost = await gen_direct_rag(
+                    dm["m"], p.text, args.max_tokens, pack_path=pack_path,
+                    max_chars=args.rag_evidence_max_chars)
+                label = f"{dm['m'].label}+rag" + (
+                    f"+pack{args.pack_scale}" if pack_path else "")
+                emit(Row(condition="F", label=label,
+                         answer=ans, cost=asdict(cost), **_base(p)))
 
         if _local:
             # Phase 1: all swarm(A) runs — each subprocess owns the GPU and frees
@@ -469,7 +604,7 @@ async def run_experiment(args) -> Path:
                 for p in plist:
                     print(f"\n[ab] ===== A swarm | prompt {p.pid} ({p.task}) =====")
                     do_swarm(p)
-            if conds & set("BCDE"):
+            if conds & set("BCDEF"):
                 build_direct()
                 for p in plist:
                     print(f"\n[ab] ===== direct | prompt {p.pid} ({p.task}) =====")
@@ -493,6 +628,11 @@ async def run_experiment(args) -> Path:
         "n_prompts": len(plist),
         "prompt_ids": [p.pid for p in plist],
         "swarm_flags": extra,
+        "prompt_set": args.prompt_set,
+        "pack_scale": args.pack_scale,
+        "target_chars": args.target_chars,
+        "rag_evidence_max_chars": args.rag_evidence_max_chars,
+        "pack_paths": {pid: str(p) for pid, p in pack_paths.items()},
         "warning": ("MOCK run — plumbing only, NOT empirical (P0.1)"
                     if _is_mock() else None),
     }
@@ -508,9 +648,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--name", default="delta",
                     help="experiment name (results dir under eval/results/)")
     ap.add_argument("--conditions", default="AB",
-                    help="subset of ABCDE to generate (default AB). E = the "
+                    help="subset of ABCDEF to generate (default AB). E = the "
                          "synthesis-prompt attribution control: one call to M "
-                         "given the swarm's own synthesis instruction.")
+                         "given the swarm's own synthesis instruction. F = the "
+                         "retrieval attribution control: one call to M given "
+                         "the same retrieved evidence stack the swarm uses "
+                         "(single-call RAG — the practitioner baseline).")
     ap.add_argument("--mini", type=int, default=0,
                     help="use only the first N pre-registered prompts (0 = full set)")
     ap.add_argument("--model", default=None,
@@ -532,6 +675,28 @@ def build_parser() -> argparse.ArgumentParser:
                     help="max output tokens for direct conditions")
     ap.add_argument("--swarm-flag", action="append", default=[],
                     help="extra flag forwarded to run_swarm.py (repeatable)")
+    ap.add_argument("--prompt-set", choices=("default", "overcontext"), default="default",
+                    help="prompt set to run: 'default' (DEFAULT_SET, unchanged "
+                         "behavior) or 'overcontext' (OVERCONTEXT_SET — synthesis-"
+                         "with-conflict prompts for the --pack-scale eval; see "
+                         "docs/OVERCONTEXT_EVAL_PLAN.md)")
+    ap.add_argument("--pack-scale", choices=("1x", "4x", "16x"), default=None,
+                    help="build/reuse a fixed evidence pack per prompt at this "
+                         "scale (eval.packs.build_pack) and route condition A "
+                         "(--corpus=pack:<path>) and condition F (naive pack-"
+                         "order fill) through the SAME pack. Default None = "
+                         "existing live-retrieval behavior, unchanged. This is "
+                         "the decisive A-vs-F over-context comparison.")
+    ap.add_argument("--target-chars", type=int, default=None,
+                    help="override the pack char budget for --pack-scale "
+                         "(default: 1x=24000 4x=96000 16x=384000, see "
+                         "eval/packs.py SCALE_CHARS)")
+    ap.add_argument("--rag-evidence-max-chars", type=int, default=_RAG_EVIDENCE_MAX_CHARS,
+                    help="max evidence chars fed to condition F (default matches "
+                         "the historical live-RAG cap; raise this for --pack-scale "
+                         "4x/16x runs so F isn't truncated far below what the pack "
+                         "actually contains — an unfair-to-F cap would bias the "
+                         "A-vs-F comparison toward A)")
     return ap
 
 

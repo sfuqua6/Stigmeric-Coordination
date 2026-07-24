@@ -922,7 +922,17 @@ def search(query: str, max_results: int = _DEFAULT_MAX_RESULTS,
     Records wall time + result counts into `_SEARCH_STATS` so summary.json can
     report retrieval's share of the run. MOCK runs are not timed (they short-
     circuit instantly and would pollute real-run comparisons).
+
+    `SWARM_DISABLE_LIVE_SEARCH=1` short-circuits to an empty result set before
+    any backend is touched. Used by the `--corpus=pack:<path>` over-context
+    eval mode (eval/packs.py, run_swarm.py assemble_partitions()) so the
+    pre-built evidence pack is the ONLY evidence a run sees — per-action live
+    web search would otherwise leak fresh evidence into the pack condition
+    and make condition A vs condition F (single-call RAG over the same pack)
+    an unfair comparison.
     """
+    if os.environ.get("SWARM_DISABLE_LIVE_SEARCH", "").strip() not in ("", "0", "false", "False"):
+        return []
     if os.environ.get("MOCK_LLM", "").strip() not in ("", "0", "false", "False"):
         return _search_impl(query, max_results, task_type)
     t0 = time.perf_counter()

@@ -467,6 +467,22 @@ USE_TRAIL_AMPLIFICATION: bool = True
 # Fraction of DELTA_AMPLIFY applied to cluster siblings when a SUPPORT lands.
 # Scaled by 1/cluster_size so large clusters don't compound unboundedly.
 DELTA_CLUSTER_TRAIL: float = 0.03
+# Signed trail: an OBJECTION dampens its target's cluster by the same total
+# magnitude a SUPPORT reinforces it (sign=-1 through the same code path).
+# This is the store's ONLY negative-evidence force — without it, dissent
+# never touches strength or sampling anywhere (positive-only dynamics;
+# critique loop 2026-07-06). Requires USE_TRAIL_AMPLIFICATION.
+USE_SIGNED_TRAIL: bool = True
+# Evaporation-style decay (ABLATION FLAG, default OFF): scale the logit decay
+# delta by strength/0.5 so strong signals decay proportionally faster (ACO's
+# τ ← (1-ρ)τ — stigmergy's load-bearing negative feedback; uniform additive
+# logit decay preserves rank exactly, so a trail-earned lead is never
+# re-contested). OFF by default because strength-proportional decay is
+# inherently order-DEPENDENT with amplification, and decay×amplify order-
+# invariance is a deliberately fixed bug of the logit refactor
+# (signal_store.py header, bug #3; tests/test_logit_dynamics.py enforces it).
+# Enable via SWARM_USE_EVAPORATION_DECAY=1 for the negative-feedback ablation.
+USE_EVAPORATION_DECAY: bool = False
 
 # Gap 3: local action bias — local cluster field state biases choose_action()
 # per-worker rather than relying solely on global share enforcement.
@@ -480,6 +496,14 @@ LOCAL_BIAS_CHAIN_DEEP_SUPPORT: float = 1.5      # cluster support_count >= 3
 # so workers can specialize into niches and cluster sampling is position-biased.
 USE_WORKER_POSITION: bool = True
 WORKER_POSITION_WINDOW: int = 8
+
+# Give the continuous worker pool (the default, non-legacy-rounds entry point)
+# disjoint corpus partitions too, instead of relying solely on live per-action
+# search. run_continuous_pipeline() calls assemble_partitions() (run_swarm.py)
+# once at startup and hands the result to run_pool(); each Worker is assigned
+# one partition round-robin. A retrieval failure here is caught and degrades
+# to no partitions (partitions=[]) — never crashes the run.
+USE_CORPUS_PARTITIONS: bool = True
 
 # ---------------------------------------------------------------------------
 # Survival-filter thresholds (consumed by core/projection.py)
@@ -517,8 +541,17 @@ SURVIVAL_TASK_PROFILES = {
     # weakly_supported gate in a 319-iteration run that produced zero output.
     "coding":          {"requires_verification": True,  "credibility_chain_depth": 999,
                         "support_diversity_min": 2},
-    "debate":          {"requires_verification": False, "credibility_chain_depth": 3},
-    "analysis":        {"requires_verification": False, "credibility_chain_depth": 3},
+    # debate/analysis run the Validator role, so their QUALITY HALT (not
+    # survival) additionally demands one verification signal above the
+    # abstain plateau on the qualifying cluster ("requires_grounding") —
+    # without it the flagship quality gate asks nothing about grounding and
+    # real runs halt "quality" at ~70s with verification ~0 (critique loop
+    # 2026-07-06, iteration 4). problem_solving/creative suppress the
+    # Validator role entirely, so grounding cannot be required there.
+    "debate":          {"requires_verification": False, "credibility_chain_depth": 3,
+                        "requires_grounding": True},
+    "analysis":        {"requires_verification": False, "credibility_chain_depth": 3,
+                        "requires_grounding": True},
     "problem_solving": {"requires_verification": False, "credibility_chain_depth": 3},
     "creative":        {"requires_verification": False, "credibility_chain_depth": 2},
     # stock: numeric claims are checkable against market data, so survival
@@ -610,8 +643,18 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 # Round / iteration knobs
 NUM_ROUNDS                    = _int_env("SWARM_NUM_ROUNDS",           NUM_ROUNDS)
+USE_SIGNED_TRAIL              = _bool_env("SWARM_USE_SIGNED_TRAIL", USE_SIGNED_TRAIL)
+USE_EVAPORATION_DECAY         = _bool_env("SWARM_USE_EVAPORATION_DECAY", USE_EVAPORATION_DECAY)
+USE_CORPUS_PARTITIONS         = _bool_env("SWARM_USE_CORPUS_PARTITIONS", USE_CORPUS_PARTITIONS)
 ITERATIONS_PER_ROUND          = _int_env("SWARM_ITERATIONS_PER_ROUND", ITERATIONS_PER_ROUND)
 
 # Agent population knobs

@@ -41,14 +41,19 @@ _WEIGHTS: dict[str, dict[str, float]] = {
     "coding": {
         "field_support": 0.10,
         "consensus": 0.05,
-        "verification": 0.25,
+        "verification": 0.31,
         "semantic_strength": 0.06,
-        "grounding": 0.18,
+        "grounding": 0.24,
         "topology": 0.06,
         "centroid_stability": 0.06,
         "novelty_density": 0.06,
         "trajectory": 0.06,
-        "entity_resolution": 0.12,
+        # entity_resolution is weighted 0 until _wikidata_resolution_fraction
+        # is implemented — the stub returns a constant 0.5, so any weight was
+        # deterministic dilution, not signal. Its former 0.12 went to
+        # verification (+0.06) and grounding (+0.06), the terms with real
+        # external signal for coding.
+        "entity_resolution": 0.00,
     },
     "analysis": {
         "field_support": 0.15,
@@ -219,7 +224,10 @@ def compute_composite_fitness(
     # atoms (Tier 2 — not fully independent, but better than 0).
     if "llm_judged" in genome.fitness_breakdown:
         llm_raw = float(genome.fitness_breakdown["llm_judged"])
-    elif genome.atoms:
+    elif genome.atoms and field is None:
+        # Verification-mean proxy — but only when the field path isn't
+        # supplying its own `verification` term, otherwise the same lineage
+        # scores enter the composite twice under two names.
         total_w = sum(a.weight for a in genome.atoms) or 1.0
         llm_raw = sum(a.verification_score * a.weight for a in genome.atoms) / total_w
     else:
@@ -247,7 +255,18 @@ def compute_composite_fitness(
         dp = max(0.0, float(field.get("dissent_pressure", 0.0)))
         vs = float(field.get("verification_score", 0.0))
         terms["field_support"] = min(1.0, sd / max(1, SURVIVAL_BROAD_SUPPORT))
-        terms["consensus"] = 1.0 / (1.0 + dp)          # dissent_pressure is log1p >= 0
+        # "consensus" rewards SURVIVED CONTESTATION, not dissent absence.
+        # The old 1/(1+dp) scored unchallenged clusters highest — anti-aligned
+        # with the survival gate (which counts dissent as credibility) and
+        # with the architecture's adversarial-pressure story. Now: a cluster
+        # nobody challenged is epistemically UNTESTED (neutral 0.5); a
+        # cluster that drew dissent and still stands scores above neutral,
+        # degrading as pressure approaches the rejection threshold
+        # (log1p-scale: 0.5 = contested band start, 1.5 = rejection).
+        if dp <= 0.0:
+            terms["consensus"] = 0.5
+        else:
+            terms["consensus"] = max(0.0, min(1.0, 1.25 - dp / 2.0))
         terms["verification"] = max(0.0, min(1.0, vs))  # honest [0,1] lineage mean
 
     # Weighted sum — skip terms with weight=0 to avoid useless computation

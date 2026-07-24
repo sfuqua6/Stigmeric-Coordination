@@ -1720,6 +1720,18 @@ def _aggregate_cluster(
     support_strengths = [s.strength for s in support_sigs]
     dissent_strengths = [s.strength for s in dissent_sigs]
 
+    def _dup_multiplier(sig) -> float:
+        """Dissent self-dedup fix: OBJECT targeting is argmax-vulnerability,
+        so repeated objections against the same cluster arrive as near-
+        identical text and are collapsed by the store's dedup into ONE
+        signal (dup_count counts the collapses). Support faces no such
+        collapse — it accrues through many distinct depositors. Counting
+        each collapsed objection restores symmetry; sqrt-damped so a
+        stuck hater looping the same sentence can't manufacture unbounded
+        pressure."""
+        dups = int(sig.metadata.get("dup_count", 0))
+        return 1.0 + math.sqrt(dups) if dups > 0 else 1.0
+
     current_iter = store.get_iteration() if hasattr(store, "get_iteration") else 0
     use_iteration_age = current_iter > 0 and any(
         s.iter_at_deposit > 0 for s in (support_sigs + dissent_sigs)
@@ -1744,7 +1756,9 @@ def _aggregate_cluster(
                 ) else 1.0
             return 0.5 ** (age / INTERACTION_AGE_HALFLIFE)
 
-        weighted_dissent = sum(s.strength * _iter_weight(s) for s in dissent_sigs)
+        weighted_dissent = sum(
+            s.strength * _iter_weight(s) * _dup_multiplier(s) for s in dissent_sigs
+        )
         weighted_support = sum(s.strength * _iter_weight(s) for s in support_sigs)
     else:
         # Wall-clock fallback (legacy path). Reference time = median support
@@ -1762,7 +1776,9 @@ def _aggregate_cluster(
             age = max(0.0, ref_ts - sig.timestamp)
             return 0.5 ** (age / _AGE_HALFLIFE_S)
 
-        weighted_dissent = sum(s.strength * _ts_weight(s) for s in dissent_sigs)
+        weighted_dissent = sum(
+            s.strength * _ts_weight(s) * _dup_multiplier(s) for s in dissent_sigs
+        )
         weighted_support = sum(s.strength * _ts_weight(s) for s in support_sigs)
 
     dissent_pressure = math.log1p(

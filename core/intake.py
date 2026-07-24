@@ -97,6 +97,12 @@ def chunk_corpus(text: str, source_tag: str = "corpus"):
     return chunks
 
 
+# Provenance of the most recent partition_for_scouts call ("semantic" |
+# "contiguous" | ""). Surfaced so runs can record which partitioner actually
+# fired — the semantic path degrades silently otherwise.
+LAST_PARTITIONER: str = ""
+
+
 def partition_for_scouts(chunks, num_scouts: int):
     """Assign chunks to scouts in non-overlapping SEMANTIC groups.
 
@@ -118,11 +124,19 @@ def partition_for_scouts(chunks, num_scouts: int):
 
     per_scout = max(1, min(CHUNKS_PER_SCOUT_MAX, (len(chunks) + num_scouts - 1) // num_scouts))
 
+    global LAST_PARTITIONER
     if len(chunks) >= num_scouts * 2:
         semantic = _partition_semantic(chunks, num_scouts, per_scout)
         if semantic is not None:
+            LAST_PARTITIONER = "semantic"
             return semantic
+        print(f"[intake] contiguous fallback: embedder unavailable "
+              f"({len(chunks)} chunks, {num_scouts} scouts)")
+    else:
+        print(f"[intake] contiguous fallback: corpus too small for semantic "
+              f"split ({len(chunks)} chunks < {num_scouts * 2})")
 
+    LAST_PARTITIONER = "contiguous"
     return _partition_contiguous(chunks, num_scouts, per_scout)
 
 

@@ -6,9 +6,13 @@ True. There are three halt paths, evaluated in order:
   1. Quality gate (preferred outcome): at least one cluster has
        - support_diversity >= 4
        - dissent_pressure < 0.5
-       - TWO independent validator deposits, each with score >= 0.7
-     Then run >= 30 more iterations to let dissent surface; if dissent
-     pressure rises in that window, un-flip and continue.
+       - factual profiles (coding/stock/None): TWO independent validator
+         deposits, each with score >= 0.7
+       - non-factual profiles: support_depth >= credibility_chain_depth;
+         debate/analysis (requires_grounding) additionally need ONE
+         verification signal >= QUALITY_GROUNDING_VER_MIN (0.55)
+     Then run >= QUALITY_HOLD_ITERATIONS more iterations to let dissent
+     surface; if dissent pressure rises in that window, un-flip and continue.
   2. Render-set stability: the top-RENDER_K cluster set the composer would
      read (chosen by build_plan) has identical membership AND evidence
      signatures for RENDER_STABLE_ITERS iterations. Robust to dust-cluster
@@ -72,6 +76,12 @@ QUALITY_SUPPORT_DIV = 4
 QUALITY_DISSENT_PRESSURE_MAX = 0.5
 QUALITY_VER_SCORE_MIN = 0.7
 QUALITY_DUAL_VALIDATORS = 2          # require this many independent VERIFICATIONs
+# Grounding floor for requires_grounding profiles (debate/analysis): ONE
+# verification signal above the validator abstain plateau (~0.5) on the
+# qualifying cluster. Deliberately softer than the factual dual-validator
+# gate — the goal is "the halt says something about grounding", not
+# "philosophical claims need proofs".
+QUALITY_GROUNDING_VER_MIN = _float_env("SWARM_QUALITY_GROUNDING_VER_MIN", 0.55)
 # Wait this many iters of held quality before the preferred "quality" halt fires.
 # Lowered 30 -> 20: real runs (see outputs/kb/run3.txt) hold quality_met=True but
 # the hold counter plateaus ~25 and never reaches 30 before the wall-clock cap, so
@@ -172,7 +182,11 @@ class ConvergenceDetector:
         # Iteration at which the expensive projection body last ran. The body
         # is gated on iteration PROGRESS (not poll-time modulo), so the hold
         # counters advance in true iteration units regardless of poll cadence.
-        self._last_body_iter = -tick_interval
+        # None = body has never run; the first body run advances counters by 0
+        # (the old `-tick_interval` seed handed every windowed counter ~10
+        # phantom iterations, so e.g. saturation fired at 50-55 real
+        # iterations against its nominal 60 window).
+        self._last_body_iter: Optional[int] = None
         self.state = DetectorState()
 
     # ------------------------------------------------------------------
@@ -197,9 +211,12 @@ class ConvergenceDetector:
         max_strength = self.store.stats().get("max_strength", 0.0) or 0.0
         self.state.strength_history.append(max_strength)
 
-        iters_advanced = iteration_counter - self._last_body_iter
-        if iters_advanced < self.tick_interval:
-            return
+        if self._last_body_iter is None:
+            iters_advanced = 0          # first body run: initialize, no credit
+        else:
+            iters_advanced = iteration_counter - self._last_body_iter
+            if iters_advanced < self.tick_interval:
+                return
         self._last_body_iter = iteration_counter
 
         proj = build_projection(self.store, has_validators=True,
@@ -211,13 +228,19 @@ class ConvergenceDetector:
 
         # Render-set stability: advance only while the signature is non-empty
         # and unchanged; any change (different clusters selected OR new
-        # evidence landing on a selected cluster) resets the counter.
+        # evidence landing on a selected cluster) resets the counter. A
+        # transient build_plan failure (sig=None) HOLDS the accumulated
+        # stability instead of erasing it — an exception is not evidence
+        # that the render set moved.
         sig = self._render_signature(proj)
-        if sig and sig == self.state.render_signature_last:
+        if sig is None:
+            pass
+        elif sig and sig == self.state.render_signature_last:
             self.state.iterations_render_stable += iters_advanced
+            self.state.render_signature_last = sig
         else:
             self.state.iterations_render_stable = 0
-        self.state.render_signature_last = sig
+            self.state.render_signature_last = sig
 
         # New surviving cluster?
         if n_surviving > self.state.n_surviving_last:
@@ -248,25 +271,42 @@ class ConvergenceDetector:
         signature carries the evidence-shape counts; a SUPPORT/OBJECT/
         VERIFICATION landing on a rendered cluster changes the signature and
         resets stability, so a run halts only when the part of the field that
-        reaches the page has genuinely stopped moving. Returns () on any
-        failure (never blocks other halt paths)."""
+        reaches the page has genuinely stopped moving.
+
+        Keys on the registry cluster_id where available (stable across
+        representative flips — strength jitter from dedup/trail amplification
+        can swap which member is strongest without changing anything the
+        reader sees), falling back to representative_id. Returns None on a
+        build_plan failure so the caller HOLDS accumulated stability rather
+        than resetting it (never blocks other halt paths)."""
         try:
             from .projection import build_plan
             plan = build_plan(proj, self.store)
         except Exception:
-            return ()
+            return None
         by_rep = {
             cp.representative_id: cp
             for cp in (proj.surviving + proj.contested + proj.unverified)
         }
+
+        def _stable_key(rep_id: str) -> str:
+            try:
+                cid = self.store._cluster_registry.get_cluster_id(rep_id)
+                if cid:
+                    return cid
+            except Exception:
+                pass
+            return rep_id
+
         sig = []
         for rid in plan.render_clusters:
             cp = by_rep.get(rid)
             if cp is None:
-                sig.append((rid, -1, -1, -1, -1))
+                sig.append((_stable_key(rid), -1, -1, -1, -1))
             else:
-                sig.append((rid, len(cp.member_ids), len(cp.support_set),
-                            len(cp.dissent_set), len(cp.verification_set)))
+                sig.append((_stable_key(rid), len(cp.member_ids),
+                            len(cp.support_set), len(cp.dissent_set),
+                            len(cp.verification_set)))
         return tuple(sorted(sig))
 
     def _evaluate_quality(self, proj) -> bool:
@@ -282,8 +322,14 @@ class ConvergenceDetector:
             External verification is honoured if present but not required —
             web sources can't corroborate philosophical or interpretive
             claims cleanly, so demanding it gates everything out.
+            Profiles with requires_grounding=True (debate/analysis — the task
+            types that actually run the Validator role) additionally need ONE
+            verification signal above the abstain plateau on the qualifying
+            cluster: without this, the flagship halt asks nothing about
+            grounding and fires ~10s after the MIN_TIME floor lifts.
         """
         requires_ver = self.task_profile.get("requires_verification", True)
+        requires_grounding = self.task_profile.get("requires_grounding", False)
         chain_floor = int(self.task_profile.get("credibility_chain_depth", 999))
         for cp in proj.surviving:
             if cp.support_diversity < QUALITY_SUPPORT_DIV:
@@ -293,7 +339,15 @@ class ConvergenceDetector:
             if not requires_ver:
                 # Internal-coherence gate: chain depth is the quality signal.
                 if cp.support_depth >= chain_floor:
-                    return True
+                    if not requires_grounding:
+                        return True
+                    grounded = any(
+                        v is not None and v.strength >= QUALITY_GROUNDING_VER_MIN
+                        for v in (self.store.get(vid)
+                                  for vid in cp.verification_set)
+                    )
+                    if grounded:
+                        return True
                 continue
             # Factual gate: count independent validator deposits with score
             # >= threshold. Independence = distinct depositor_agent_id.

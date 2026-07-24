@@ -346,6 +346,25 @@ def _sample_initial(store: SignalStore, recent: Counter,
     return s
 
 
+def _explore_weights(sigs: list, recent: Counter) -> list[float]:
+    """Strength weight + visit-based exploration bonus + recent-target penalty.
+
+    The four direct target samplers below used raw strength only, which made
+    them the one place where dedup/trail-earned strength leads compounded
+    into proportionally more exposure with no counter-pressure (the store's
+    own samplers already carry this bonus — see sample_weighted /
+    sample_from_clusters)."""
+    from .config import EXPLORATION_BONUS
+    max_v = max((s.visits for s in sigs), default=0) or 1
+    weights = []
+    for s in sigs:
+        w = max(0.05, s.strength) + EXPLORATION_BONUS * (1.0 - s.visits / max_v)
+        if recent.get(s.id, 0) > 0:
+            w *= _RECENT_TARGET_PENALTY
+        weights.append(w)
+    return weights
+
+
 def _sample_underserved_initial(store: SignalStore, recent: Counter,
                                  rng: random.Random,
                                  worker_centroid=None) -> Optional[Signal]:
@@ -358,12 +377,12 @@ def _sample_underserved_initial(store: SignalStore, recent: Counter,
         if results and results[0] in underserved:
             return results[0]
         # Fallback: pick the least-served from the underserved list
-        weights = [max(0.05, s.strength) for s in underserved]
+        weights = _explore_weights(underserved, recent)
         return rng.choices(underserved, weights=weights, k=1)[0]
     pool_list = store.by_type(INITIAL)
     if not pool_list:
         return None
-    weights = [max(0.05, s.strength) for s in pool_list]
+    weights = _explore_weights(pool_list, recent)
     return rng.choices(pool_list, weights=weights, k=1)[0]
 
 
@@ -372,12 +391,7 @@ def _sample_support(store: SignalStore, recent: Counter,
     supports = store.by_type(SUPPORT)
     if not supports:
         return None
-    weights = []
-    for s in supports:
-        w = max(0.05, s.strength)
-        if recent.get(s.id, 0) > 0:
-            w *= _RECENT_TARGET_PENALTY
-        weights.append(w)
+    weights = _explore_weights(supports, recent)
     return rng.choices(supports, weights=weights, k=1)[0]
 
 
@@ -397,12 +411,7 @@ def _sample_contested_initial(
             contested.append(sig)
     if not contested:
         return None
-    weights = []
-    for s in contested:
-        w = max(0.05, s.strength)
-        if recent.get(s.id, 0) > 0:
-            w *= _RECENT_TARGET_PENALTY
-        weights.append(w)
+    weights = _explore_weights(contested, recent)
     return rng.choices(contested, weights=weights, k=1)[0]
 
 
@@ -412,12 +421,7 @@ def _sample_well_supported_cluster_head(
     pool_list = store.signals_with_many_children_of_type(INITIAL, SUPPORT, 2)
     if not pool_list:
         return None
-    weights = []
-    for s in pool_list:
-        w = max(0.05, s.strength)
-        if recent.get(s.id, 0) > 0:
-            w *= _RECENT_TARGET_PENALTY
-        weights.append(w)
+    weights = _explore_weights(pool_list, recent)
     return rng.choices(pool_list, weights=weights, k=1)[0]
 
 
@@ -916,6 +920,11 @@ class Worker:
         # Bundle-disabled actions (cached). Roles set to None in the bundle's
         # ROLE_TO_ENGINE map cause their action to drop out of choose_action.
         self._disabled_actions: frozenset = self._compute_disabled_actions()
+        # Corpus partition assigned round-robin by run_pool() when
+        # config.USE_CORPUS_PARTITIONS is on (core.intake.ScoutPartition, or
+        # None when no corpus partitions were assembled for this run — the
+        # worker then relies solely on live per-action search, as before).
+        self.partition = None
 
     def _compute_disabled_actions(self) -> frozenset:
         if self.router is None:
@@ -1296,8 +1305,16 @@ class Worker:
             meta["scout_agent_id"] = self.agent_id
             # Each worker is its own partition in the continuous pool (independent
             # query histories). Required by the INITIAL partition_id assertion.
+            # When this worker was assigned a real corpus partition (Fix S wiring
+            # into the continuous pool), stamp its content-partition ID instead
+            # of the bare worker ID, so INITIAL deposits reflect which disjoint
+            # corpus slice the scout actually read — never fall through to an
+            # empty partition_id either way.
             if "partition_id" not in meta:
-                meta["partition_id"] = self.agent_id
+                if self.partition is not None and getattr(self.partition, "partition_id", ""):
+                    meta["partition_id"] = self.partition.partition_id
+                else:
+                    meta["partition_id"] = self.agent_id
 
         if action in (DEVELOP, CHAIN, REFINE):
             # Use the depositing worker's own agent_id as partition_id.
@@ -1451,6 +1468,22 @@ class Worker:
                     pool_state.served_queries[query] = max(prev, len(retrieved))
                 except Exception:
                     pass
+            # Fix S wiring into the continuous pool: when this worker was
+            # assigned a disjoint corpus partition (config.USE_CORPUS_PARTITIONS),
+            # prepend up to 3 of its own chunks so the scout also sees its
+            # assigned slice, not just whatever live search returned this tick.
+            # Same CorpusChunk shape as live search results (only .text /
+            # .source_tag / .chunk_id ever reach the prompt) — no-leak intact.
+            if self.partition is not None and getattr(self.partition, "chunks", None):
+                _seen_ids = {getattr(c, "chunk_id", None) for c in retrieved}
+                _seen_prefixes = {getattr(c, "text", "")[:80] for c in retrieved}
+                _partition_extra = [
+                    c for c in self.partition.chunks
+                    if getattr(c, "chunk_id", None) not in _seen_ids
+                    and getattr(c, "text", "")[:80] not in _seen_prefixes
+                ][:3]
+                if _partition_extra:
+                    retrieved = _partition_extra + retrieved
             return None, retrieved, query, None
 
         if action == DEVELOP:
@@ -2004,7 +2037,8 @@ async def run_pool(store: SignalStore, llm, task_prompt: str,
                    n_workers: int = 24,
                    task_type: Optional[str] = None,
                    router=None,
-                   genome_cache: Optional[dict] = None) -> PoolState:
+                   genome_cache: Optional[dict] = None,
+                   partitions: Optional[list] = None) -> PoolState:
     """Spin up `n_workers` and run until `stop_event` fires.
 
     Returns the PoolState (action log, iteration count, etc.) for the
@@ -2019,6 +2053,12 @@ async def run_pool(store: SignalStore, llm, task_prompt: str,
     externally by run_swarm.py after each build_projection() call. Workers
     share a reference to this dict — updates made between rounds are visible
     immediately. Falls back to empty (no genome-aware prompting) when None.
+
+    `partitions` (optional list of core.intake.ScoutPartition): disjoint
+    corpus partitions assembled once at pipeline startup (run_swarm.py
+    assemble_partitions()). Assigned round-robin across workers by index so
+    scouts see a real content partition, not just live per-action search.
+    None/empty leaves worker.partition unset (prior behavior, unchanged).
     """
     pool_state = PoolState()
     _gc = genome_cache if genome_cache is not None else {}
@@ -2027,6 +2067,9 @@ async def run_pool(store: SignalStore, llm, task_prompt: str,
                task_type=task_type, router=router)
         for i in range(n_workers)
     ]
+    if partitions:
+        for i, w in enumerate(workers):
+            w.partition = partitions[i % len(partitions)]
     for w in workers:
         w._genome_cache = _gc
     tasks = [

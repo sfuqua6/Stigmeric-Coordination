@@ -9,7 +9,11 @@ Usage:
 Flags:
     --mode={stigmergic,baseline}   Default: stigmergic. Use baseline to run an
                                    independent-agent comparison (no signal store).
-    --corpus={real,placeholder}    Default: real. Use placeholder to skip retrieval.
+    --corpus={real,placeholder,pack:<path>}
+                                   Default: real. placeholder skips retrieval;
+                                   pack:<path> loads a fixed evidence pack built by
+                                   eval/packs.py and disables live web search
+                                   (over-context eval, docs/OVERCONTEXT_EVAL_PLAN.md).
     --ignore-kb                    Disable knowledge base for this run.
     --reset-kb                     Quarantine existing KB entries before run.
     --small                        Use smaller 3B-class models. Selects the
@@ -93,6 +97,7 @@ from core.clean_answer import write_answer_files
 from core.intake import (
     chunk_corpus, partition_for_scouts, trivial_corpus_from_thesis, ScoutPartition,
 )
+from core import intake as _intake_mod  # LAST_PARTITIONER provenance for summary.json
 from core.sampling import (
     strategy_for_forager, strategy_for_critic, strategy_for_validator,
 )
@@ -343,6 +348,124 @@ def _reset_kb(kb_dir: Path) -> None:
         print(f"[pipeline] --reset-kb: no *.json files found in {kb_dir}")
 
 
+async def assemble_partitions(task_type: str, user_prompt: str, corpus_mode: str, llm) -> tuple:
+    """Corpus/partition assembly (Fix S): FacetPlanner + web partitions + corpus
+    retrieval over a CompositeRetriever, or the trivial placeholder corpus.
+
+    Factored out of run_pipeline() so run_continuous_pipeline() (the default,
+    non-legacy-rounds entry point) can give scouts disjoint corpus partitions
+    too, instead of relying solely on live per-action search. Behavior for the
+    legacy --legacy-rounds path is unchanged.
+
+    Returns (chunks, partitions).
+    """
+    if task_type == "coding":
+        # Coding scouts read from the task prompt directly; no corpus needed.
+        chunks = []
+        partitions = partition_for_scouts(chunks, NUM_SCOUTS)
+        return chunks, partitions
+    elif corpus_mode == "placeholder":
+        print(
+            "[retrieval] WARNING: falling back to engineered placeholder corpus "
+            "— partition diversity numbers from this run are not evidence"
+        )
+        corpus_text = trivial_corpus_from_thesis(user_prompt)
+        chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
+        partitions = partition_for_scouts(chunks, NUM_SCOUTS)
+        return chunks, partitions
+    elif corpus_mode.startswith("pack:"):
+        # Over-context eval mode (docs/OVERCONTEXT_EVAL_PLAN.md): load a
+        # pre-built, fixed evidence pack instead of live retrieval, so
+        # condition A (swarm) and eval.ab_harness condition F (single-call
+        # RAG) see the IDENTICAL evidence — the whole point of the A-vs-F
+        # comparison. main() sets SWARM_DISABLE_LIVE_SEARCH=1 for this mode
+        # so no per-action web search can leak extra evidence into the run.
+        from eval.packs import load_pack
+        pack_path = Path(corpus_mode.split(":", 1)[1])
+        chunks = load_pack(pack_path)
+        if not chunks:
+            print(f"[retrieval] WARNING: pack {pack_path} loaded 0 chunks; "
+                  f"falling back to placeholder corpus")
+            corpus_text = trivial_corpus_from_thesis(user_prompt)
+            chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
+        partitions = partition_for_scouts(chunks, NUM_SCOUTS)
+        print(f"[retrieval] pack corpus: {len(chunks)} chunks from {pack_path} "
+              f"-> {NUM_SCOUTS} scout partitions (live search disabled)")
+        return chunks, partitions
+
+    # Fix S — FacetPlanner + web partitions + corpus retrieval
+    from core.retrieval import CachedRetriever, CompositeRetriever
+    from core.facet_planner import FacetPlanner
+    from core.search_tool import search as _web_search_fn
+
+    # Generate N_FACETS query angles. In heterogeneous mode llm is None;
+    # FacetPlanner falls back to deterministic suffixes gracefully.
+    _facet_planner = FacetPlanner(llm=llm, task_type=task_type)
+    facets = await _facet_planner.generate(user_prompt, n=N_FACETS)
+
+    # Web partitions: first WEB_PARTITION_COUNT scouts get live web results,
+    # each stamped with partition_id="web_<slug>" via custom_partition_id.
+    _n_web = min(WEB_PARTITION_COUNT, NUM_SCOUTS, len(facets))
+    web_partitions: list = []
+    for _wi in range(_n_web):
+        _facet = facets[_wi]
+        _slug = FacetPlanner.facet_slug(_facet)
+        _pid = f"web_{_slug}"
+        _wchunks = _web_search_fn(_facet, task_type=task_type)
+        if not _wchunks:
+            print(
+                f"[RETRIEVAL] *** WARNING *** 0 web chunks for facet {_wi} "
+                f"{_facet!r} — scout {_wi} will see an empty web partition."
+            )
+        for _ch in _wchunks:
+            _ch.partition_id = _pid
+        web_partitions.append(ScoutPartition(
+            scout_index=_wi,
+            chunks=_wchunks,
+            custom_partition_id=_pid,
+        ))
+        print(f"[RETRIEVAL] web partition {_wi}: {len(_wchunks)} chunks "
+              f"pid={_pid!r}")
+
+    # Corpus partitions: remaining scouts use the composite retriever.
+    _n_corpus = NUM_SCOUTS - _n_web
+    if _n_corpus > 0:
+        retriever = CachedRetriever(CompositeRetriever())
+        retrieved_chunks = retriever.retrieve(user_prompt)
+        if retrieved_chunks:
+            combined_text = "\n\n".join(c.text for c in retrieved_chunks)
+            chunks = chunk_corpus(combined_text, source_tag="retrieved_corpus")
+            for orig in retrieved_chunks:
+                for ch in chunks:
+                    if ch.source_tag == "retrieved_corpus":
+                        ch.source_tag = orig.source_tag
+                        break
+        else:
+            print(
+                "[RETRIEVAL] *** ALL CORPUS BACKENDS FAILED *** — "
+                "falling back to placeholder corpus."
+            )
+            corpus_text = trivial_corpus_from_thesis(user_prompt)
+            chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
+        corpus_parts = partition_for_scouts(chunks, _n_corpus)
+        # Re-index so corpus scout_index values don't collide with web scouts.
+        for _j, _cp in enumerate(corpus_parts):
+            _cp.scout_index = _n_web + _j
+            _new_pid = _cp.partition_id  # "partition_{_n_web + _j}"
+            for _ch in _cp.chunks:
+                _ch.partition_id = _new_pid
+    else:
+        corpus_parts = []
+        chunks = []
+
+    partitions = web_partitions + corpus_parts
+    assert len(partitions) == NUM_SCOUTS, (
+        f"[FIX S] partition count {len(partitions)} != NUM_SCOUTS={NUM_SCOUTS} "
+        f"(web={len(web_partitions)}, corpus={len(corpus_parts)})"
+    )
+    return chunks, partitions
+
+
 async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
                        ignore_kb: bool = False,
                        reset_kb: bool = False,
@@ -393,89 +516,7 @@ async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
         print(f"[kb] loaded {n_priors} priors — set --no-kb to disable")
 
     # Corpus retrieval (§1): real retriever by default, placeholder opt-in via --corpus=placeholder
-    if task_type == "coding":
-        # Coding scouts read from the task prompt directly; no corpus needed.
-        chunks = []
-        partitions = partition_for_scouts(chunks, NUM_SCOUTS)
-    elif corpus_mode == "placeholder":
-        print(
-            "[retrieval] WARNING: falling back to engineered placeholder corpus "
-            "— partition diversity numbers from this run are not evidence"
-        )
-        corpus_text = trivial_corpus_from_thesis(user_prompt)
-        chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
-        partitions = partition_for_scouts(chunks, NUM_SCOUTS)
-    else:
-        # Fix S — FacetPlanner + web partitions + corpus retrieval
-        from core.retrieval import CachedRetriever, CompositeRetriever
-        from core.facet_planner import FacetPlanner
-        from core.search_tool import search as _web_search_fn
-
-        # Generate N_FACETS query angles. In heterogeneous mode llm is None;
-        # FacetPlanner falls back to deterministic suffixes gracefully.
-        _facet_planner = FacetPlanner(llm=llm, task_type=task_type)
-        facets = await _facet_planner.generate(user_prompt, n=N_FACETS)
-
-        # Web partitions: first WEB_PARTITION_COUNT scouts get live web results,
-        # each stamped with partition_id="web_<slug>" via custom_partition_id.
-        _n_web = min(WEB_PARTITION_COUNT, NUM_SCOUTS, len(facets))
-        web_partitions: list = []
-        for _wi in range(_n_web):
-            _facet = facets[_wi]
-            _slug = FacetPlanner.facet_slug(_facet)
-            _pid = f"web_{_slug}"
-            _wchunks = _web_search_fn(_facet, task_type=task_type)
-            if not _wchunks:
-                print(
-                    f"[RETRIEVAL] *** WARNING *** 0 web chunks for facet {_wi} "
-                    f"{_facet!r} — scout {_wi} will see an empty web partition."
-                )
-            for _ch in _wchunks:
-                _ch.partition_id = _pid
-            web_partitions.append(ScoutPartition(
-                scout_index=_wi,
-                chunks=_wchunks,
-                custom_partition_id=_pid,
-            ))
-            print(f"[RETRIEVAL] web partition {_wi}: {len(_wchunks)} chunks "
-                  f"pid={_pid!r}")
-
-        # Corpus partitions: remaining scouts use the composite retriever.
-        _n_corpus = NUM_SCOUTS - _n_web
-        if _n_corpus > 0:
-            retriever = CachedRetriever(CompositeRetriever())
-            retrieved_chunks = retriever.retrieve(user_prompt)
-            if retrieved_chunks:
-                combined_text = "\n\n".join(c.text for c in retrieved_chunks)
-                chunks = chunk_corpus(combined_text, source_tag="retrieved_corpus")
-                for orig in retrieved_chunks:
-                    for ch in chunks:
-                        if ch.source_tag == "retrieved_corpus":
-                            ch.source_tag = orig.source_tag
-                            break
-            else:
-                print(
-                    "[RETRIEVAL] *** ALL CORPUS BACKENDS FAILED *** — "
-                    "falling back to placeholder corpus."
-                )
-                corpus_text = trivial_corpus_from_thesis(user_prompt)
-                chunks = chunk_corpus(corpus_text, source_tag="placeholder_corpus")
-            corpus_parts = partition_for_scouts(chunks, _n_corpus)
-            # Re-index so corpus scout_index values don't collide with web scouts.
-            for _j, _cp in enumerate(corpus_parts):
-                _cp.scout_index = _n_web + _j
-                _new_pid = _cp.partition_id  # "partition_{_n_web + _j}"
-                for _ch in _cp.chunks:
-                    _ch.partition_id = _new_pid
-        else:
-            corpus_parts = []
-            chunks = []
-
-        partitions = web_partitions + corpus_parts
-        assert len(partitions) == NUM_SCOUTS, (
-            f"[FIX S] partition count {len(partitions)} != NUM_SCOUTS={NUM_SCOUTS} "
-            f"(web={len(web_partitions)}, corpus={len(corpus_parts)})"
-        )
+    chunks, partitions = await assemble_partitions(task_type, user_prompt, corpus_mode, llm)
 
     # Topology generation (bounds-first exploration): one LLM call before any
     # scout runs, producing an AnswerSpaceTopology whose cells are pre-assigned
@@ -970,6 +1011,7 @@ async def run_continuous_pipeline(
     cloud_provider: str = "none",
     bundle: Optional[str] = None,
     prune_kb_before: Optional[str] = None,
+    corpus_mode: str = "real",
 ) -> dict:
     """Continuous worker pool replacing the round/phase scheduler.
 
@@ -1080,6 +1122,28 @@ async def run_continuous_pipeline(
                 except Exception as exc:
                     print(f"[pipeline] warmup raised {type(exc).__name__}: {exc}")
 
+    # Corpus/partition assembly for the continuous pool (mirrors the legacy
+    # --legacy-rounds path in run_pipeline via the shared assemble_partitions()
+    # helper). Gated by USE_CORPUS_PARTITIONS — a retrieval failure here must
+    # never crash the run, so any exception degrades to no partitions (workers
+    # fall back to live per-action search only).
+    partitions: list = []
+    if config.USE_CORPUS_PARTITIONS:
+        try:
+            _chunks, partitions = await assemble_partitions(
+                task_type, user_prompt, corpus_mode, llm
+            )
+            print(
+                f"[pipeline] continuous partitions: "
+                f"sizes={[len(p.chunks) for p in partitions]} "
+                f"pids={[p.partition_id for p in partitions]}"
+            )
+        except Exception as exc:
+            print(f"[pipeline] WARNING: assemble_partitions failed "
+                  f"({type(exc).__name__}: {exc}) — continuing with no corpus "
+                  f"partitions (workers rely on live per-action search only).")
+            partitions = []
+
     store = SignalStore()
 
     # KB — default off, opt-in via --use-kb (handled in main()).
@@ -1144,6 +1208,7 @@ async def run_continuous_pipeline(
         task_type=task_type,
         router=router,
         genome_cache=_genome_cache,
+        partitions=partitions,
     ))
     decay_task = asyncio.create_task(decay_loop(store, stop_event, interval_s=30.0))
 
@@ -1522,6 +1587,12 @@ async def run_continuous_pipeline(
             "silent_roles": silent_roles,
             "degraded": degraded,
             "embedder": embedder,
+            # Which corpus partitioner actually fired ("semantic" |
+            # "contiguous" | "" when no partition_for_scouts call ran, e.g.
+            # coding). The semantic path degrades silently to contiguous
+            # rank-slicing otherwise, and the two are indistinguishable
+            # after the fact (critique loop 2026-07-06, iteration 2a).
+            "partitioner": _intake_mod.LAST_PARTITIONER,
             "clustering": clustering,
             "convergence_reason": detector.state.reason or "unknown",
             "scout_gate_skips": int(ps.scout_gate_skips) if ps else 0,
@@ -2115,11 +2186,20 @@ def main():
     corpus_flags = [a for a in args if a.startswith("--corpus=")]
     if corpus_flags:
         val = corpus_flags[-1].split("=", 1)[1]
-        if val not in ("real", "placeholder"):
-            print(f"[pipeline] unknown --corpus value {val!r}; use 'real' or 'placeholder'")
+        if val not in ("real", "placeholder") and not val.startswith("pack:"):
+            print(f"[pipeline] unknown --corpus value {val!r}; use 'real', "
+                  f"'placeholder', or 'pack:<path>' (over-context eval mode)")
             sys.exit(1)
         corpus_mode = val
     args = [a for a in args if not a.startswith("--corpus=")]
+    if corpus_mode.startswith("pack:"):
+        # The evidence pack must be the ONLY evidence this run sees, so it
+        # stays comparable to eval.ab_harness condition F over the same
+        # pack (docs/OVERCONTEXT_EVAL_PLAN.md). Disable per-action live web
+        # search for the whole process.
+        os.environ["SWARM_DISABLE_LIVE_SEARCH"] = "1"
+        print(f"[pipeline] --corpus=pack:...: live web search disabled "
+              f"(SWARM_DISABLE_LIVE_SEARCH=1) — the pack is the only evidence")
 
     # --mode={stigmergic,baseline}
     run_mode = "stigmergic"
@@ -2311,6 +2391,7 @@ def main():
             cloud_provider=cloud_provider,
             bundle=bundle,
             prune_kb_before=prune_kb_before,
+            corpus_mode=corpus_mode,
         ))
 
 

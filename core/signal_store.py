@@ -80,7 +80,7 @@ from .config import (
     PEER_PRUNE_MIN_MEMBERS,
     PEER_PRUNE_FACTOR,
 )
-from .signal_types import VERIFICATION, CONTRARIAN_TYPES
+from .signal_types import VERIFICATION, CONTRARIAN_TYPES, INITIAL, OBJECTION
 from .cluster_registry import ClusterRegistry
 
 
@@ -358,8 +358,20 @@ class SignalStore:
                 if quick_ratio > 0.95:
                     self._apply_dedup_amplify(existing, new_strength=strength)
                     existing.visits += 1
-                    # Near-identical text is redundant by definition.
-                    if signal_type in CLUSTERING_ENABLED_TYPES:
+                    # Record how many near-identical deposits collapsed into
+                    # this signal. Projection weights OBJECTION dissent by
+                    # this count: OBJECT targeting is argmax-vulnerability, so
+                    # repeated objections against the same cluster are near-
+                    # identical text — without this, N attempted objections
+                    # count as ONE signal's strength while support accrues
+                    # through many distinct depositors (dissent self-dedup).
+                    existing.metadata["dup_count"] = (
+                        int(existing.metadata.get("dup_count", 0)) + 1
+                    )
+                    # Near-identical text is redundant by definition. Novelty
+                    # tracks INITIALs only: SUPPORT/OBJECTION prose churn is
+                    # not "opening new idea-space".
+                    if signal_type == INITIAL:
                         self._deposit_outcomes.append(False)
                     return None
 
@@ -429,8 +441,13 @@ class SignalStore:
             if new_emb is not None and signal_type in CLUSTERING_ENABLED_TYPES:
                 cluster_id = self._cluster_registry.try_join(sid, new_emb, signal_type)
                 # Novelty trail: a join falls onto an existing region (redundant);
-                # a create opens a new region (novel).
-                self._deposit_outcomes.append(cluster_id is None)
+                # a create opens a new region (novel). INITIALs only — a
+                # developer writing fresh SUPPORT prose for an old claim (or a
+                # critic objecting) opens a new same-type cluster without
+                # opening new idea-space, and that churn alone could hold
+                # novelty_rate above the saturation floor forever.
+                if signal_type == INITIAL:
+                    self._deposit_outcomes.append(cluster_id is None)
                 if cluster_id is None:
                     cluster_id = self._cluster_registry.create(sid, new_emb, signal_type)
                 sig.cluster_id = cluster_id
@@ -444,6 +461,12 @@ class SignalStore:
             from .signal_types import SUPPORT as _SUPPORT
             if signal_type == _SUPPORT:
                 self._amplify_cluster_trail(sid, parent_id)
+            elif signal_type == OBJECTION and parent_id:
+                # Signed trail: dissent dampens the target cluster with the
+                # same total magnitude a SUPPORT reinforces it.
+                from .config import USE_SIGNED_TRAIL
+                if USE_SIGNED_TRAIL:
+                    self._amplify_cluster_trail(sid, parent_id, sign=-1.0)
 
             return sid
 
@@ -717,21 +740,24 @@ class SignalStore:
             if not live_clusters:
                 return self.sample_weighted(signal_type, n)
 
-            # Weight each cluster: base = sum of member strengths.
+            # Weight each cluster: base = MEAN member strength with a
+            # logarithmic size bonus. The old sum/log1p(size) weight was
+            # still monotone-increasing in cluster size (sum is linear, the
+            # penalty logarithmic): a 20-member cluster at mean 0.6 drew
+            # ~4.2× a fresh singleton, and with trail amplification that is
+            # a rich-get-richer loop (more draws -> more SUPPORT -> higher
+            # sum -> more draws). Mean × (1 + log1p(size)) keeps a mild
+            # popularity signal but caps the per-draw advantage ~2×.
             # If worker has a centroid, multiply by cosine sim to cluster centroid.
-            # Diversity penalty: divide by log(1 + size) so dominant clusters
-            # don't monopolise sampling as they grow — each new member adds
-            # diminishing marginal weight. Without this, trail amplification +
-            # cluster-aware sampling creates a winner-takes-all feedback loop.
             cluster_weights = []
             for cl, members in live_clusters:
-                base_w = sum(s.strength for s in members) + 0.1
+                mean_s = sum(s.strength for s in members) / len(members)
+                base_w = (mean_s + 0.1) * (1.0 + math.log1p(len(members)))
                 if worker_centroid is not None and cl.centroid:
                     sim = float(sum(a * b for a, b in zip(worker_centroid, cl.centroid)))
                     # sim in [-1, 1]; shift to [0.1, 1.1] so no cluster is zeroed out
                     base_w *= max(0.1, (sim + 1.0) / 2.0 + 0.1)
-                size_penalty = math.log1p(len(members))
-                cluster_weights.append(max(0.01, base_w / size_penalty))
+                cluster_weights.append(max(0.01, base_w))
 
             # Pick a cluster
             chosen_cl, chosen_members = random.choices(
@@ -950,6 +976,7 @@ class SignalStore:
         with self._lock:
             current_iter = self._current_iter
             if USE_LOGIT_DYNAMICS:
+                from .config import USE_EVAPORATION_DECAY
                 d_main = DELTA_DECAY * factor
                 d_contra = DELTA_DECAY_CONTRARIAN * factor
                 for s in self._signals.values():
@@ -963,10 +990,19 @@ class SignalStore:
                     if _MIN_INT > 0 and current_iter > 0:
                         if (current_iter - s.iter_at_deposit) < _MIN_INT:
                             continue
-                    if s.type in CONTRARIAN_TYPES:
-                        s._logit += d_contra
-                    else:
-                        s._logit += d_main
+                    d = d_contra if s.type in CONTRARIAN_TYPES else d_main
+                    if USE_EVAPORATION_DECAY:
+                        # ACO-style evaporation: decay proportional to
+                        # strength (τ ← (1-ρ)τ hits strong trails hardest).
+                        # Uniform additive logit decay preserves rank
+                        # exactly, so a trail/dedup-earned lead was never
+                        # re-contested — stigmergy's load-bearing negative
+                        # feedback was missing. Scaled so strength 0.5
+                        # decays exactly at the calibrated delta; stronger
+                        # signals decay proportionally faster, weaker
+                        # slower. Leads must be continuously re-earned.
+                        d = d * (s.strength / 0.5)
+                    s._logit += d
                     s.strength = _from_logit(s._logit)
                 return
             decay = DECAY_RATE * factor
@@ -1011,8 +1047,17 @@ class SignalStore:
             sig.strength = min(1.0, sig.strength * 1.05)
             sig._logit = _to_logit(sig.strength)
 
-    def _amplify_cluster_trail(self, deposited_id: str, parent_id: Optional[str]) -> None:
+    def _amplify_cluster_trail(self, deposited_id: str, parent_id: Optional[str],
+                               sign: float = 1.0) -> None:
         """Reinforce the cluster neighbourhood when a SUPPORT lands (Gap 2 fix).
+
+        With sign=-1.0 this is the SIGNED counterpart (gated separately by
+        USE_SIGNED_TRAIL): an OBJECTION dampens the target cluster by the
+        same total magnitude a SUPPORT reinforces it. Without a negative
+        channel the store's dynamics are positive-only — dissent never
+        touches strength or sampling anywhere, so "field pressure" is
+        bookkeeping, not a force (ACO's evaporation analogue; critique loop
+        2026-07-06, iteration 2b).
 
         Must be called INSIDE the store lock (called from deposit()).
         """
@@ -1036,7 +1081,7 @@ class SignalStore:
         if not live_members:
             return
 
-        delta = DELTA_CLUSTER_TRAIL / max(1, len(live_members))
+        delta = sign * DELTA_CLUSTER_TRAIL / max(1, len(live_members))
         for s in live_members:
             s._logit += delta
             s.strength = _from_logit(s._logit)

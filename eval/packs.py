@@ -248,6 +248,126 @@ def build_pack(prompt_text: str, scale: str, out_dir: Path,
     return path
 
 
+# ---------------------------------------------------------------------------
+# build_pack_from_world — Stage 1 synthetic-world packs (docs/future/
+# STAGE1_SYNTHETIC_EVAL_SPEC.md Sec 2). Same JSONL schema as build_pack()
+# above and read back by the exact same load_pack() — the whole point is
+# that run_swarm.py's --corpus=pack:<path> mode and _evidence_from_pack()
+# need zero changes; only the pack-PRODUCTION path is new.
+# ---------------------------------------------------------------------------
+
+def build_pack_from_world(world, docs: list, scale: str, out_dir: Path,
+                          pid: str, target_chars: Optional[int] = None) -> Path:
+    """Build (or reuse) an evidence pack from a synthetic world's rendered
+    documents, at the given scale.
+
+    Unlike build_pack(), there is no retrieval loop: chunks are emitted from
+    `docs` (eval.worlds.RenderedDoc list) in generation order until
+    `target_chars` is hit. When the world's real document set doesn't reach
+    the budget (routine at 4x/16x — real filings/news archives aren't that
+    long per-entity), additional FILLER documents are generated on the fly
+    from the SAME FactRegistry (fresh samples of already-registered facts +
+    filler_seed_material connective prose, never new ground truth) — this is
+    what keeps the checklist identical across scales (same facts, same
+    items) while the corpus genuinely grows, the property the 1x/4x/16x
+    over-context comparison needs.
+
+    `world` is an eval.worlds.FactRegistry; `docs` its eval.worlds.RenderedDoc
+    list (eval.worlds.load_rendered_docs(seed)).
+    """
+    if scale not in SCALE_CHARS:
+        raise ValueError(f"unknown scale {scale!r}; use one of {sorted(SCALE_CHARS)}")
+    budget = target_chars if target_chars is not None else SCALE_CHARS[scale]
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = pack_path_for(pid, scale, out_dir)
+
+    if path.exists():
+        print(f"[packs] reuse existing world pack: {path} (deterministic - "
+              f"not re-rendering)")
+        return path
+
+    from core.config import CHUNK_WORDS
+    from eval.worlds import _fill_doc as _render_filler_doc  # deferred import
+
+    chunk_lines: list[dict] = []
+    used_chars = 0
+    doc_i = 0
+    filler_i = 0
+    all_docs = list(docs)
+    while used_chars < budget:
+        if doc_i < len(all_docs):
+            doc = all_docs[doc_i]
+            doc_i += 1
+        else:
+            doc = _render_filler_doc(world, filler_i)
+            filler_i += 1
+            if filler_i > 500:
+                # Safety valve: a world with zero facts/filler material could
+                # otherwise spin forever without ever reaching budget.
+                print(f"[packs] WARNING: {pid}@{scale} could not reach "
+                     f"{budget} chars after {filler_i} filler docs - "
+                     f"stopping short (achieved {used_chars} chars)")
+                break
+        # Paragraph-boundary chunking, sized to CHUNK_WORDS (mirrors
+        # core.intake.chunk_corpus's granularity per spec Sec 2, without
+        # reusing chunk_corpus itself since it chunks on whitespace-joined
+        # words rather than respecting paragraph breaks).
+        for para_group in _group_paragraphs(doc.text, CHUNK_WORDS):
+            if not para_group.strip():
+                continue
+            chunk_lines.append({"text": para_group, "source_tag": doc.doc_id, "url": ""})
+            used_chars += len(para_group)
+            if used_chars >= budget:
+                break
+
+    with path.open("w", encoding="utf-8") as fh:
+        for c in chunk_lines:
+            fh.write(json.dumps(c, ensure_ascii=False) + "\n")
+
+    meta = {
+        "pid": pid, "scale": scale, "target_chars": budget,
+        "achieved_chars": used_chars,
+        "achieved_fraction": round(used_chars / budget, 4) if budget else None,
+        "n_chunks": len(chunk_lines),
+        "world_seed": world.world_seed,
+        "template_name": world.template_name,
+        "n_entities": len(world.entities),
+        "n_facts": len(world.quantities) + len(world.events) + len(world.relations),
+        "n_contradictions": len(world.contradictions),
+        "n_source_docs": len(all_docs),
+        "n_filler_docs": filler_i,
+    }
+    _meta_path_for(pid, scale, out_dir).write_text(
+        json.dumps(meta, indent=2), encoding="utf-8")
+    print(f"[packs] built world pack {path}: {len(chunk_lines)} chunks, "
+         f"{used_chars} chars (target {budget}, scale={scale}, "
+         f"{len(all_docs)} source docs + {filler_i} filler docs)")
+    return path
+
+
+def _group_paragraphs(text: str, max_words: int) -> list[str]:
+    """Split `text` at blank-line paragraph boundaries, then greedily group
+    consecutive paragraphs up to `max_words` words per chunk (never splits a
+    paragraph mid-sentence)."""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paras:
+        return [text] if text.strip() else []
+    groups: list[str] = []
+    cur: list[str] = []
+    cur_words = 0
+    for p in paras:
+        n = len(p.split())
+        if cur and cur_words + n > max_words:
+            groups.append("\n\n".join(cur))
+            cur, cur_words = [], 0
+        cur.append(p)
+        cur_words += n
+    if cur:
+        groups.append("\n\n".join(cur))
+    return groups
+
+
 def load_pack(path: Path) -> list[CorpusChunk]:
     """Read a pack JSONL file back into CorpusChunk objects (no partition_id
     stamped — partitioning happens downstream via partition_for_scouts())."""

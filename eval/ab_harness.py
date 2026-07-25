@@ -520,8 +520,17 @@ class Row:
 
 
 async def run_experiment(args) -> Path:
-    base_set = (promptset.OVERCONTEXT_SET if args.prompt_set == "overcontext"
-                else promptset.DEFAULT_SET)
+    world = None
+    if args.prompt_set == "synthetic":
+        # --world required, enforced in main(); load (or fail loudly if the
+        # world hasn't been built yet via `python -m eval.worlds --seed N`).
+        from eval import worlds as worldmod
+        world = worldmod.load_world(args.world)
+        base_set = worldmod.synthetic_prompts_for_world(world)
+    elif args.prompt_set == "overcontext":
+        base_set = promptset.OVERCONTEXT_SET
+    else:
+        base_set = promptset.DEFAULT_SET
     plist = (promptset.mini(args.mini, base_set) if args.mini else base_set)
     conds = set(args.conditions.upper())
     out_root = _REPO / "eval" / "results" / args.name
@@ -539,7 +548,24 @@ async def run_experiment(args) -> Path:
     # the SAME pack — the decisive over-context comparison (see module
     # docstring / docs/OVERCONTEXT_EVAL_PLAN.md).
     pack_paths: dict[str, Path] = {}
-    if args.pack_scale:
+    if args.pack_scale and args.prompt_set == "synthetic":
+        # Synthetic-world packs: same JSONL schema, built from the world's
+        # rendered documents instead of live retrieval (docs/future/
+        # STAGE1_SYNTHETIC_EVAL_SPEC.md Sec 2). One pack per prompt, but
+        # every prompt in a synthetic run shares the same world, so this is
+        # effectively one build reused across pids (build_pack_from_world's
+        # own reuse-if-exists still applies per pid+scale).
+        from eval import worlds as worldmod
+        from eval.packs import build_pack_from_world
+        packs_dir = _REPO / "eval" / "packs"
+        world_docs = worldmod.load_rendered_docs(args.world)
+        for p in plist:
+            pack_paths[p.pid] = build_pack_from_world(
+                world, world_docs, args.pack_scale, packs_dir, pid=p.pid,
+                target_chars=args.target_chars)
+            print(f"[ab] world pack ready: {p.pid} @ {args.pack_scale} -> "
+                  f"{pack_paths[p.pid]}")
+    elif args.pack_scale:
         from eval.packs import build_pack
         packs_dir = _REPO / "eval" / "packs"
         for p in plist:
@@ -649,6 +675,8 @@ async def run_experiment(args) -> Path:
         "prompt_ids": [p.pid for p in plist],
         "swarm_flags": extra,
         "prompt_set": args.prompt_set,
+        "world_seed": args.world if args.prompt_set == "synthetic" else None,
+        "world_template": world.template_name if world is not None else None,
         "pack_scale": args.pack_scale,
         "target_chars": args.target_chars,
         "rag_evidence_max_chars": args.rag_evidence_max_chars,
@@ -695,11 +723,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="max output tokens for direct conditions")
     ap.add_argument("--swarm-flag", action="append", default=[],
                     help="extra flag forwarded to run_swarm.py (repeatable)")
-    ap.add_argument("--prompt-set", choices=("default", "overcontext"), default="default",
+    ap.add_argument("--prompt-set", choices=("default", "overcontext", "synthetic"),
+                    default="default",
                     help="prompt set to run: 'default' (DEFAULT_SET, unchanged "
-                         "behavior) or 'overcontext' (OVERCONTEXT_SET — synthesis-"
+                         "behavior), 'overcontext' (OVERCONTEXT_SET — synthesis-"
                          "with-conflict prompts for the --pack-scale eval; see "
-                         "docs/OVERCONTEXT_EVAL_PLAN.md)")
+                         "docs/OVERCONTEXT_EVAL_PLAN.md), or 'synthetic' (Stage 1 "
+                         "invented-fact world; requires --world and --pack-scale; "
+                         "see docs/future/STAGE1_SYNTHETIC_EVAL_SPEC.md)")
+    ap.add_argument("--world", type=int, default=None,
+                    help="synthetic-world seed (required with "
+                         "--prompt-set synthetic; build/validate it first via "
+                         "`python -m eval.worlds --seed N --template T`)")
     ap.add_argument("--pack-scale", choices=("1x", "4x", "16x"), default=None,
                     help="build/reuse a fixed evidence pack per prompt at this "
                          "scale (eval.packs.build_pack) and route condition A "
@@ -722,6 +757,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.prompt_set == "synthetic":
+        if args.world is None:
+            raise ValueError("--prompt-set synthetic requires --world <seed> "
+                             "(build one first: python -m eval.worlds --seed N "
+                             "--template T)")
+        if not args.pack_scale:
+            # Per spec Sec 5.2: without a pack, condition A falls through to
+            # live retrieval/placeholder corpus for an invented world
+            # (nonsensical), and condition F's _retrieve_evidence hits a real
+            # search backend with a fictional name and gets zero/garbage
+            # results silently, corrupting the comparison without an error.
+            raise ValueError("--prompt-set synthetic requires --pack-scale "
+                             "{1x,4x,16x} — without a pack there is nothing "
+                             "sensible for condition A/F to retrieve against "
+                             "an invented world.")
     if "D" in args.conditions.upper() and not args.strong_model and not _is_mock():
         print("[ab] note: condition D requested without --strong-model; "
               "D will use the local/default engine.", file=sys.stderr)

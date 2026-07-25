@@ -151,7 +151,15 @@ class DirectModel:
         out = await self._engine.generate(
             prompt, role="synthesizer", max_tokens=max_tokens, temperature=temperature)
         cost.add(prompt, out or "", time.monotonic() - t0)
-        return (out or "").strip()
+        out = (out or "").strip()
+        if not out and not self._mock:
+            raise EmptyAnswerError(
+                f"{self.label} returned a blank answer for a direct-condition "
+                f"call ({_approx_tokens(prompt)} prompt tokens, "
+                f"max_tokens={max_tokens}) - treating this as a failed call, "
+                f"not a valid empty row. Check the engine's stderr output just "
+                f"above for the underlying API error.")
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +378,18 @@ def _is_mock() -> bool:
 class ModelParityError(RuntimeError):
     """Raised when condition A (swarm) did not actually run on the pinned model M
     — the delta_amp comparison would be invalid. A real test must refuse this."""
+
+
+class EmptyAnswerError(RuntimeError):
+    """Raised when a direct-condition (B/C/D/E/F) call produced a blank answer.
+
+    Before this guard, a permanently-failing API call (e.g. Groq 413 "request
+    too large" on an oversized RAG evidence prompt) fell through to an empty
+    string with no signal beyond a stderr print, and the harness happily wrote
+    it to conditions.jsonl as an ordinary completed row — six such rows shipped
+    to the judge as "the model produced no answer" (eval/results/overctx_16x,
+    2026-07-24) rather than as the API failure they actually were. A blank
+    answer is never a valid experimental result; surface it loudly instead."""
 
 
 def _norm_model(s: str) -> str:
@@ -715,6 +735,9 @@ def main(argv: list[str]) -> int:
     except ModelParityError as exc:
         print(f"\n[ab] ABORT (model parity): {exc}", file=sys.stderr)
         return 2
+    except EmptyAnswerError as exc:
+        print(f"\n[ab] ABORT (empty answer): {exc}", file=sys.stderr)
+        return 3
     return 0
 
 

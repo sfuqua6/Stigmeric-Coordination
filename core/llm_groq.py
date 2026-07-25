@@ -123,6 +123,64 @@ _FALLBACK_MODEL = "llama-3.1-8b-instant"
 # once per model, not once per call).
 _DECOMMISSIONED: set = set()
 
+# ---------------------------------------------------------------------------
+# Per-request token budget (distinct from RPM above).
+# ---------------------------------------------------------------------------
+# Groq enforces a TOKENS PER MINUTE cap that a single oversized request can
+# blow through on its own (observed directly, 2026-07-24, on-demand tier,
+# llama-3.1-8b-instant: server-reported "Limit 6000" — well below both this
+# module's stale RPM-comment figure of 20000 and the model's real 131072-token
+# context window). A request whose prompt+max_tokens exceeds this comes back
+# as HTTP 413 "Request too large ... tokens per minute (TPM)" — a permanent,
+# non-retryable failure for THIS request (retrying changes nothing; the ask is
+# structurally too big). Before this guard, that 413 fell through to the
+# generic "give up" path in _call_with_retry and returned "" silently, so
+# eval/ab_harness.py recorded an empty answer as if the call had succeeded
+# (see eval/results/overctx_16x/conditions.jsonl F rows, 2026-07-24).
+# Conservative default with headroom below the observed 6000 limit; override
+# via GROQ_SAFE_REQUEST_TOKENS if a higher-tier key raises the real ceiling.
+_SAFE_REQUEST_TOKENS = int(os.environ.get("GROQ_SAFE_REQUEST_TOKENS", "5500"))
+# Floor below which we won't shrink max_tokens further (a completion that
+# short stops being useful) — beyond this we truncate the PROMPT instead.
+_MIN_COMPLETION_TOKENS = 256
+
+
+def _approx_tokens(text: str) -> int:
+    """Cheap 4-chars/token estimate — conservative (slightly overestimates
+    Groq's real tokenizer density on the evidence seen so far), which is the
+    direction we want: it truncates a bit early rather than a bit late."""
+    return max(1, len(text or "") // 4)
+
+
+def _fit_request(prompt: str, max_tokens: int) -> tuple[str, int]:
+    """Shrink (max_tokens, then prompt) so prompt+max_tokens fits under
+    _SAFE_REQUEST_TOKENS. Truncates the prompt from the FRONT, keeping the
+    tail intact — every prompt template in this codebase (direct/RAG/synth
+    conditions in eval/ab_harness.py, role prompts in agents/) puts the
+    question/instruction at the END and bulk context/evidence earlier, so
+    keeping the suffix keeps the actual ask intact."""
+    budget = _SAFE_REQUEST_TOKENS
+    p_tokens = _approx_tokens(prompt)
+    if p_tokens + max_tokens <= budget:
+        return prompt, max_tokens
+    # First, try shrinking max_tokens down to the floor.
+    shrunk_max = max(_MIN_COMPLETION_TOKENS, budget - p_tokens)
+    if p_tokens + shrunk_max <= budget:
+        return prompt, shrunk_max
+    # Still too big even at the completion floor — truncate the prompt,
+    # keeping the last `allowed_chars` characters.
+    allowed_tokens = max(0, budget - _MIN_COMPLETION_TOKENS)
+    allowed_chars = allowed_tokens * 4
+    truncated = prompt[-allowed_chars:] if allowed_chars else ""
+    print(f"[groq] WARNING: prompt too large for this account's per-request "
+          f"token budget ({p_tokens} + {max_tokens} > {budget}) - truncated "
+          f"prompt from {len(prompt)} to {len(truncated)} chars (kept tail, "
+          f"dropped {len(prompt) - len(truncated)} leading chars) so the "
+          f"call can go through instead of 413-ing. Set "
+          f"GROQ_SAFE_REQUEST_TOKENS to raise this if the account tier "
+          f"supports more.")
+    return truncated, _MIN_COMPLETION_TOKENS
+
 
 def _get_groq_client(api_key: str):
     """Return an async client for the Groq API (OpenAI-compatible endpoint)."""
@@ -199,7 +257,13 @@ class GroqBackend:
           2. Semaphore acquire — caps concurrent open connections per model.
           3. HTTP call with exponential-backoff retry on 429 / transient errors.
           4. Auto-heal on decommissioned-400: swap model to fallback, retry.
+
+        Before any of that, the request is clamped to this account's observed
+        per-request token budget (_fit_request) — otherwise an oversized
+        single call (e.g. a large RAG evidence block) gets a permanent 413
+        from Groq no retry can fix.
         """
+        prompt, max_tokens = _fit_request(prompt, max_tokens)
         await self._rl.acquire()
         async with self._sem:
             return await self._call_with_retry(prompt, max_tokens, temperature)
@@ -399,7 +463,7 @@ class GroqRouter:
 
         print(f"[groq] GroqRouter initialised ({len(self._backends)} distinct models):")
         for role, model in sorted(self._role_models.items()):
-            print(f"[groq]   {role:12s} → {model}")
+            print(f"[groq]   {role:12s} -> {model}")
         # Groq throughput is ~2.5s/iter vs ~1.3s/iter for vLLM. The default
         # 900s cap kills runs that are still productive. Recommend extending:
         cur_cap = os.environ.get("SWARM_MAX_TIME_S", "900")

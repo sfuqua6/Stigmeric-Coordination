@@ -1,0 +1,42 @@
+{
+  "name": "overctx_16x",
+  "timestamp": "20260724_182449",
+  "mock": false,
+  "conditions": [
+    "A",
+    "B",
+    "E",
+    "F"
+  ],
+  "model_M": "llama-3.1-8b-instant",
+  "strong_model": null,
+  "scaffold": "revise",
+  "best_of": 5,
+  "n_prompts": 6,
+  "prompt_ids": [
+    "oc_innovation_drivers",
+    "oc_inequality_conflict",
+    "oc_remote_work_conflict",
+    "oc_nuclear_debate",
+    "oc_antibiotic_resistance_conflict",
+    "oc_ubi_evidence"
+  ],
+  "swarm_flags": [],
+  "prompt_set": "overcontext",
+  "pack_scale": "16x",
+  "target_chars": null,
+  "rag_evidence_max_chars": 384000,
+  "pack_paths": {
+    "oc_innovation_drivers": "C:\\Users\\agsse\\Downloads\\ai_swarm_mechanics-main (4)\\ai_swarm_mechanics-main\\eval\\packs\\oc_innovation_drivers_16x.jsonl",
+    "oc_inequality_conflict": "C:\\Users\\agsse\\Downloads\\ai_swarm_mechanics-main (4)\\ai_swarm_mechanics-main\\eval\\packs\\oc_inequality_conflict_16x.jsonl",
+    "oc_remote_work_conflict": "C:\\Users\\agsse\\Downloads\\ai_swarm_mechanics-main (4)\\ai_swarm_mechanics-main\\eval\\packs\\oc_remote_work_conflict_16x.jsonl",
+    "oc_nuclear_debate": "C:\\Users\\agsse\\Downloads\\ai_swarm_mechanics-main (4)\\ai_swarm_mechanics-main\\eval\\packs\\oc_nuclear_debate_16x.jsonl",
+    "oc_antibiotic_resistance_conflict": "C:\\Users\\agsse\\Downloads\\ai_swarm_mechanics-main (4)\\ai_swarm_mechanics-main\\eval\\packs\\oc_antibiotic_resistance_conflict_16x.jsonl",
+    "oc_ubi_evidence": "C:\\Users\\agsse\\Downloads\\ai_swarm_mechanics-main (4)\\ai_swarm_mechanics-main\\eval\\packs\\oc_ubi_evidence_16x.jsonl"
+  },
+  "warning": null,
+  "judge_model": "groq:openai/gpt-oss-120b",
+  "judged_pairs": ["A_vs_B", "A_vs_E"],
+  "f_status": "BLOCKED — structural Groq account limits, not a bug. See eval/results/overctx_16x/F_BLOCKED.md.",
+  "judge_note": "Re-judged 2026-07-24 with judge=groq:openai/gpt-oss-120b (previous judge was local GGUF DeepSeek-R1-Distill-Qwen-7B). Also fixed a pre-existing eval/judge.py bug: judge_pairs() stored judge_pair()'s GENERIC position-label winner ('A'/'B' = first/second argument) directly as the per-prompt winner instead of remapping to the real condition code. This is a no-op for A-vs-B (right happens to literally be 'B') but silently mis-tallied every A-vs-{C,D,E,F} run: a real right-side win (raw label 'B') never matched the real right code ('E' etc.) in _summarize_pair's `winner == right` check, so it fell into the 'tie' bucket instead of 'loss'. Confirmed on this run's raw pre-fix data: A_vs_E per-prompt winners were literally 'B' 4/6 times (E won) but the old tally reported 6/6 ties. Fixed in eval/judge.py judge_pairs(); score_from_verdicts() (the --pack/hand-judging path) was already correct and unaffected."
+}

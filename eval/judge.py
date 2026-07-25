@@ -249,8 +249,28 @@ async def judge_pairs(idx, pairs, judge_llm, meta) -> dict:
             cr = _cost_ratio(la, ra)
             if cr is not None:
                 cost_ratios.append(cr)
+            # judge_pair's "winner" is a GENERIC position label over its own
+            # (answer_a, answer_b) arguments -- "A" means "the first argument
+            # we passed" (= conds[left]'s answer), "B" means "the second
+            # argument" (= conds[right]'s answer). It is NOT the condition
+            # letter. Remapping to the real condition code is required for
+            # every pair whose `right` isn't literally "B" (i.e. every A-vs-
+            # {C,D,E,F} comparison) -- otherwise _summarize_pair's tally
+            # (`winner == right`) never matches a real right-side win (the
+            # literal string "B" != "E"/"C"/"D"/"F") and that win silently
+            # falls into the "tie" bucket instead of "loss". Verified against
+            # eval/results/overctx_16x: A_vs_E per-prompt winners were
+            # recorded as raw "B" 4/6 times (E actually won) yet the pair
+            # summary reported those as ties.
+            raw_winner = verdict["winner"]  # "A" | "B" | "tie"
+            if raw_winner == "A":
+                winner = left
+            elif raw_winner == "B":
+                winner = right
+            else:
+                winner = "tie"
             per_prompt.append({
-                "pid": pid, "winner": verdict["winner"],  # "A"/"B"/"tie"
+                "pid": pid, "winner": winner,
                 "agreement": verdict["agreement"],
                 "rationale": verdict["rationale"],
             })

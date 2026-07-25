@@ -1,0 +1,117 @@
+{
+  "pairs": {
+    "A_vs_B": {
+      "left": "A",
+      "right": "B",
+      "n": 6,
+      "wins": 0,
+      "ties": 0,
+      "losses": 6,
+      "win_rate": 0.0,
+      "wilson95": [
+        0.0,
+        0.3903
+      ],
+      "real_win": false,
+      "median_cost_multiple": 129.0,
+      "per_prompt": [
+        {
+          "pid": "oc_innovation_drivers",
+          "winner": "B",
+          "agreement": true,
+          "rationale": "Answer 2 directly lists the most consistent innovation drivers, details contested factors, and explains sources of disagreement, while Answer 1 remains vague and incomplete."
+        },
+        {
+          "pid": "oc_inequality_conflict",
+          "winner": "B",
+          "agreement": true,
+          "rationale": "Answer 2 presents a clear, well\u2011structured synthesis of the evidence, identifies multiple drivers (union decline, tax policy, globalization/automation) and explicitly shows why education alone cannot explain rising inequality, whereas Answer 1 is fragmented, incoherent, and lacks a cohesive argument."
+        },
+        {
+          "pid": "oc_remote_work_conflict",
+          "winner": "B",
+          "agreement": true,
+          "rationale": "Answer 2 directly summarizes the evidence on productivity changes and clearly outlines where sources disagree, while Answer 1 is fragmented, less coherent, and provides only vague citations."
+        },
+        {
+          "pid": "oc_nuclear_debate",
+          "winner": "B",
+          "agreement": true,
+          "rationale": "Answer\u202f2 directly addresses the question, clearly identifies conflicting claims, and explains how it weighed them, offering a more coherent and in\u2011depth analysis."
+        },
+        {
+          "pid": "oc_antibiotic_resistance_conflict",
+          "winner": "B",
+          "agreement": true,
+          "rationale": "Answer 2 directly cites the specific evidence sources, details concrete recommendations, and explicitly outlines contradictory points, fully addressing the question."
+        },
+        {
+          "pid": "oc_ubi_evidence",
+          "winner": "B",
+          "agreement": true,
+          "rationale": "Answer 2 provides a clear, well\u2011structured synthesis of pros and cons, identifies concrete points of disagreement, and specifies the evidence needed to resolve them, whereas Answer 1 is fragmented, poorly referenced, and lacks coherent argumentation."
+        }
+      ]
+    },
+    "A_vs_E": {
+      "left": "A",
+      "right": "E",
+      "n": 6,
+      "wins": 1,
+      "ties": 0,
+      "losses": 5,
+      "win_rate": 0.1667,
+      "wilson95": [
+        0.0301,
+        0.5635
+      ],
+      "real_win": false,
+      "median_cost_multiple": 129.0,
+      "per_prompt": [
+        {
+          "pid": "oc_innovation_drivers",
+          "winner": "E",
+          "agreement": true,
+          "rationale": "Answer 2 directly identifies education/research as the most consistent driver, cites evidence, and clearly outlines where sources disagree, while Answer 1 remains vague and lacks concrete grounding."
+        },
+        {
+          "pid": "oc_inequality_conflict",
+          "winner": "E",
+          "agreement": true,
+          "rationale": "Answer\u202f2 provides a clear, coherent synthesis of the evidence, identifies the key drivers, and explicitly notes the claims that contradict the education\u2011only assumption, whereas Answer\u202f1 is fragmented and hard to follow."
+        },
+        {
+          "pid": "oc_remote_work_conflict",
+          "winner": "E",
+          "agreement": true,
+          "rationale": "Answer 2 presents a clear, well\u2011structured synthesis of the evidence, explicitly noting both positive and negative findings and where sources diverge, whereas Answer 1 is fragmented and hard to follow despite mentioning similar points."
+        },
+        {
+          "pid": "oc_nuclear_debate",
+          "winner": "E",
+          "agreement": true,
+          "rationale": "Answer\u202f2 directly states a conditional conclusion, clearly identifies conflicting claims, and explains how it weighed them by context, while Answer\u202f1 is vague, repeats citations, and lacks a clear weighing of the conflicts."
+        },
+        {
+          "pid": "oc_antibiotic_resistance_conflict",
+          "winner": "E",
+          "agreement": true,
+          "rationale": "Answer 2 cites specific study evidence, details contradictions, and offers nuanced, well\u2011structured recommendations, whereas Answer 1 remains generic and less evidence\u2011based."
+        },
+        {
+          "pid": "oc_ubi_evidence",
+          "winner": "A",
+          "agreement": true,
+          "rationale": "Answer\u202f1 directly attempts to identify specific source disagreements and the evidence needed to resolve them, fulfilling the core request despite its lower overall polish."
+        }
+      ]
+    }
+  },
+  "factual": {
+    "A": 0.8056,
+    "B": 1.0,
+    "E": 0.7917,
+    "F": 0.0
+  },
+  "judge_model": "groq:openai/gpt-oss-120b"
+}

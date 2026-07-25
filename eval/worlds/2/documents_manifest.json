@@ -1,0 +1,123 @@
+[
+  {
+    "doc_id": "invented_country_statistical_yearbook_000",
+    "doc_type": "statistical_yearbook",
+    "extracted_from": [
+      "q_0000",
+      "q_0010",
+      "q_0020",
+      "q_0030",
+      "e_0000"
+    ],
+    "renderer": "template"
+  },
+  {
+    "doc_id": "invented_country_news_archive_001",
+    "doc_type": "news_archive",
+    "extracted_from": [
+      "q_0001",
+      "q_0011",
+      "q_0021",
+      "q_0031",
+      "e_0001",
+      "q_0041"
+    ],
+    "renderer": "template"
+  },
+  {
+    "doc_id": "invented_country_news_archive_002",
+    "doc_type": "news_archive",
+    "extracted_from": [
+      "q_0002",
+      "q_0012",
+      "q_0022",
+      "q_0032",
+      "e_0002",
+      "q_0042"
+    ],
+    "renderer": "template"
+  },
+  {
+    "doc_id": "invented_country_news_archive_003",
+    "doc_type": "news_archive",
+    "extracted_from": [
+      "q_0003",
+      "q_0013",
+      "q_0023",
+      "q_0033",
+      "e_0003"
+    ],
+    "renderer": "template"
+  },
+  {
+    "doc_id": "invented_country_news_archive_004",
+    "doc_type": "news_archive",
+    "extracted_from": [
+      "q_0004",
+      "q_0014",
+      "q_0024",
+      "q_0034",
+      "e_0004",
+      "q_0040"
+    ],
+    "renderer": "template"
+  },
+  {
+    "doc_id": "invented_country_news_archive_005",
+    "doc_type": "news_archive",
+    "extracted_from": [
+      "q_0005",
+      "q_0015",
+      "q_0025",
+      "q_0035",
+      "r_0000"
+    ],
+    "renderer": "template"
+  },
+  {
+    "doc_id": "invented_country_white_paper_006",
+    "doc_type": "white_paper",
+    "extracted_from": [
+      "q_0006",
+      "q_0016",
+      "q_0026",
+      "q_0036",
+      "r_0001"
+    ],
+    "renderer": "template"
+  },
+  {
+    "doc_id": "invented_country_white_paper_007",
+    "doc_type": "white_paper",
+    "extracted_from": [
+      "q_0007",
+      "q_0017",
+      "q_0027",
+      "q_0037",
+      "r_0002"
+    ],
+    "renderer": "template"
+  },
+  {
+    "doc_id": "invented_country_opposition_rebuttal_008",
+    "doc_type": "opposition_rebuttal",
+    "extracted_from": [
+      "q_0008",
+      "q_0018",
+      "q_0028",
+      "q_0038"
+    ],
+    "renderer": "llm"
+  },
+  {
+    "doc_id": "invented_country_opposition_rebuttal_009",
+    "doc_type": "opposition_rebuttal",
+    "extracted_from": [
+      "q_0009",
+      "q_0019",
+      "q_0029",
+      "q_0039"
+    ],
+    "renderer": "llm"
+  }
+]

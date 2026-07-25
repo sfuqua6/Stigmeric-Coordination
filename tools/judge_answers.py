@@ -98,7 +98,12 @@ async def _judge_once(prompt: str, first: str, second: str, llm) -> dict | None:
     try:
         raw = await llm.generate(
             _build_prompt(prompt, first, second),
-            role="synthesizer", max_tokens=300, temperature=0.0,
+            # 900, not 300: reasoning-model judges (e.g. Groq openai/gpt-oss-120b,
+            # chosen 2026-07-24 as an off-Llama-family judge) spend a chunk of
+            # max_tokens on hidden reasoning before the JSON verdict; 300 left
+            # zero room for content and produced empty completions (verified:
+            # max_tokens=20 -> content='', 26 reasoning tokens alone exceeded it).
+            role="synthesizer", max_tokens=900, temperature=0.0,
         )
     except Exception:
         return None

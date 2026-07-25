@@ -1,0 +1,1073 @@
+{
+  "world_seed": 1,
+  "template_name": "invented_company",
+  "entities": [
+    {
+      "entity_id": "ent_0000",
+      "kind": "company",
+      "name": "Vantage Instruments",
+      "aliases": [
+        "Instruments",
+        "VI",
+        "Vantage",
+        "Vantage Instruments",
+        "VantageInstruments"
+      ]
+    },
+    {
+      "entity_id": "ent_0001",
+      "kind": "product",
+      "name": "Dynamics Edge",
+      "aliases": [
+        "DE",
+        "Dynamics",
+        "Dynamics Edge",
+        "Edge"
+      ]
+    },
+    {
+      "entity_id": "ent_0002",
+      "kind": "product",
+      "name": "Dynamics Core",
+      "aliases": [
+        "Core",
+        "DC",
+        "Dynamics",
+        "Dynamics Core"
+      ]
+    },
+    {
+      "entity_id": "ent_0003",
+      "kind": "product",
+      "name": "Robotics Core",
+      "aliases": [
+        "Core",
+        "RC",
+        "Robotics",
+        "Robotics Core"
+      ]
+    },
+    {
+      "entity_id": "ent_0004",
+      "kind": "person",
+      "name": "Otto Belanger",
+      "aliases": [
+        "Belanger",
+        "OB",
+        "Otto",
+        "Otto Belanger"
+      ]
+    },
+    {
+      "entity_id": "ent_0005",
+      "kind": "person",
+      "name": "Tomas Okafor",
+      "aliases": [
+        "Okafor",
+        "TO",
+        "Tomas",
+        "Tomas Okafor"
+      ]
+    },
+    {
+      "entity_id": "ent_0006",
+      "kind": "person",
+      "name": "Declan Voss",
+      "aliases": [
+        "DV",
+        "Declan",
+        "Declan Voss",
+        "Voss"
+      ]
+    },
+    {
+      "entity_id": "ent_0007",
+      "kind": "agency",
+      "name": "Office of Logistics",
+      "aliases": [
+        "Logistics",
+        "OOL",
+        "Office",
+        "Office of Logistics"
+      ]
+    },
+    {
+      "entity_id": "ent_0008",
+      "kind": "agency",
+      "name": "Division of Analytics",
+      "aliases": [
+        "Analytics",
+        "DOA",
+        "Division",
+        "Division of Analytics"
+      ]
+    }
+  ],
+  "quantities": [
+    {
+      "fact_id": "q_0000",
+      "subject_id": "ent_0000",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 548.4,
+      "unit": "USD million",
+      "as_of": "FY2021Q1",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$548.4 million",
+        "$548.4M",
+        "548.4 million"
+      ]
+    },
+    {
+      "fact_id": "q_0001",
+      "subject_id": "ent_0001",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 127.9,
+      "unit": "USD million",
+      "as_of": "FY2021Q2",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$127.9 million",
+        "$127.9M",
+        "127.9 million"
+      ]
+    },
+    {
+      "fact_id": "q_0002",
+      "subject_id": "ent_0002",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 313.0,
+      "unit": "USD million",
+      "as_of": "FY2021Q3",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$313.0 million",
+        "$313.0M",
+        "313.0 million"
+      ]
+    },
+    {
+      "fact_id": "q_0003",
+      "subject_id": "ent_0003",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 59.2,
+      "unit": "USD million",
+      "as_of": "FY2021Q4",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$59.2 million",
+        "$59.2M",
+        "59.2 million"
+      ]
+    },
+    {
+      "fact_id": "q_0004",
+      "subject_id": "ent_0000",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 598.6,
+      "unit": "USD million",
+      "as_of": "FY2022Q1",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$598.6 million",
+        "$598.6M",
+        "598.6 million"
+      ]
+    },
+    {
+      "fact_id": "q_0005",
+      "subject_id": "ent_0001",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 47.9,
+      "unit": "USD million",
+      "as_of": "FY2022Q2",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$47.9 million",
+        "$47.9M",
+        "47.9 million"
+      ]
+    },
+    {
+      "fact_id": "q_0006",
+      "subject_id": "ent_0002",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 797.9,
+      "unit": "USD million",
+      "as_of": "FY2022Q3",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$797.9 million",
+        "$797.9M",
+        "797.9 million"
+      ]
+    },
+    {
+      "fact_id": "q_0007",
+      "subject_id": "ent_0003",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 630.4,
+      "unit": "USD million",
+      "as_of": "FY2022Q4",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$630.4 million",
+        "$630.4M",
+        "630.4 million"
+      ]
+    },
+    {
+      "fact_id": "q_0008",
+      "subject_id": "ent_0000",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 873.4,
+      "unit": "USD million",
+      "as_of": "FY2023Q1",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$873.4 million",
+        "$873.4M",
+        "873.4 million"
+      ]
+    },
+    {
+      "fact_id": "q_0009",
+      "subject_id": "ent_0001",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 664.2,
+      "unit": "USD million",
+      "as_of": "FY2023Q2",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$664.2 million",
+        "$664.2M",
+        "664.2 million"
+      ]
+    },
+    {
+      "fact_id": "q_0010",
+      "subject_id": "ent_0002",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 493.8,
+      "unit": "USD million",
+      "as_of": "FY2023Q3",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$493.8 million",
+        "$493.8M",
+        "493.8 million"
+      ]
+    },
+    {
+      "fact_id": "q_0011",
+      "subject_id": "ent_0003",
+      "metric": "quarterly_revenue_usd_m",
+      "value": 696.8,
+      "unit": "USD million",
+      "as_of": "FY2023Q4",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "$696.8 million",
+        "$696.8M",
+        "696.8 million"
+      ]
+    },
+    {
+      "fact_id": "q_0012",
+      "subject_id": "ent_0000",
+      "metric": "headcount",
+      "value": 11282.2,
+      "unit": "employees",
+      "as_of": "FY2021Q1",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "11282.2",
+        "11282.2 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0013",
+      "subject_id": "ent_0001",
+      "metric": "headcount",
+      "value": 6723.7,
+      "unit": "employees",
+      "as_of": "FY2021Q2",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "6723.7",
+        "6723.7 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0014",
+      "subject_id": "ent_0002",
+      "metric": "headcount",
+      "value": 4279.3,
+      "unit": "employees",
+      "as_of": "FY2021Q3",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "4279.3",
+        "4279.3 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0015",
+      "subject_id": "ent_0003",
+      "metric": "headcount",
+      "value": 8186.8,
+      "unit": "employees",
+      "as_of": "FY2021Q4",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "8186.8",
+        "8186.8 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0016",
+      "subject_id": "ent_0000",
+      "metric": "headcount",
+      "value": 9179.2,
+      "unit": "employees",
+      "as_of": "FY2022Q1",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "9179.2",
+        "9179.2 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0017",
+      "subject_id": "ent_0001",
+      "metric": "headcount",
+      "value": 11436.5,
+      "unit": "employees",
+      "as_of": "FY2022Q2",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "11436.5",
+        "11436.5 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0018",
+      "subject_id": "ent_0002",
+      "metric": "headcount",
+      "value": 11132.8,
+      "unit": "employees",
+      "as_of": "FY2022Q3",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "11132.8",
+        "11132.8 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0019",
+      "subject_id": "ent_0003",
+      "metric": "headcount",
+      "value": 5110.9,
+      "unit": "employees",
+      "as_of": "FY2022Q4",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "5110.9",
+        "5110.9 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0020",
+      "subject_id": "ent_0000",
+      "metric": "headcount",
+      "value": 11012.0,
+      "unit": "employees",
+      "as_of": "FY2023Q1",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "11012.0",
+        "11012.0 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0021",
+      "subject_id": "ent_0001",
+      "metric": "headcount",
+      "value": 11081.8,
+      "unit": "employees",
+      "as_of": "FY2023Q2",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "11081.8",
+        "11081.8 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0022",
+      "subject_id": "ent_0002",
+      "metric": "headcount",
+      "value": 1380.0,
+      "unit": "employees",
+      "as_of": "FY2023Q3",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "1380.0",
+        "1380.0 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0023",
+      "subject_id": "ent_0003",
+      "metric": "headcount",
+      "value": 7626.4,
+      "unit": "employees",
+      "as_of": "FY2023Q4",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "7626.4",
+        "7626.4 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0024",
+      "subject_id": "ent_0000",
+      "metric": "gross_margin_pct",
+      "value": 49.8,
+      "unit": "percent",
+      "as_of": "FY2021Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "49.8 percent",
+        "49.8%"
+      ]
+    },
+    {
+      "fact_id": "q_0025",
+      "subject_id": "ent_0001",
+      "metric": "gross_margin_pct",
+      "value": 31.0,
+      "unit": "percent",
+      "as_of": "FY2021Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "31.0 percent",
+        "31.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0026",
+      "subject_id": "ent_0002",
+      "metric": "gross_margin_pct",
+      "value": 50.7,
+      "unit": "percent",
+      "as_of": "FY2021Q3",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "50.7 percent",
+        "50.7%"
+      ]
+    },
+    {
+      "fact_id": "q_0027",
+      "subject_id": "ent_0003",
+      "metric": "gross_margin_pct",
+      "value": 57.4,
+      "unit": "percent",
+      "as_of": "FY2021Q4",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "57.4 percent",
+        "57.4%"
+      ]
+    },
+    {
+      "fact_id": "q_0028",
+      "subject_id": "ent_0000",
+      "metric": "gross_margin_pct",
+      "value": 60.8,
+      "unit": "percent",
+      "as_of": "FY2022Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "60.8 percent",
+        "60.8%"
+      ]
+    },
+    {
+      "fact_id": "q_0029",
+      "subject_id": "ent_0001",
+      "metric": "gross_margin_pct",
+      "value": 40.0,
+      "unit": "percent",
+      "as_of": "FY2022Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "40.0 percent",
+        "40.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0030",
+      "subject_id": "ent_0002",
+      "metric": "gross_margin_pct",
+      "value": 60.6,
+      "unit": "percent",
+      "as_of": "FY2022Q3",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "60.6 percent",
+        "60.6%"
+      ]
+    },
+    {
+      "fact_id": "q_0031",
+      "subject_id": "ent_0003",
+      "metric": "gross_margin_pct",
+      "value": 40.3,
+      "unit": "percent",
+      "as_of": "FY2022Q4",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "40.3 percent",
+        "40.3%"
+      ]
+    },
+    {
+      "fact_id": "q_0032",
+      "subject_id": "ent_0000",
+      "metric": "gross_margin_pct",
+      "value": 58.0,
+      "unit": "percent",
+      "as_of": "FY2023Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "58.0 percent",
+        "58.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0033",
+      "subject_id": "ent_0001",
+      "metric": "gross_margin_pct",
+      "value": 26.4,
+      "unit": "percent",
+      "as_of": "FY2023Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "26.4 percent",
+        "26.4%"
+      ]
+    },
+    {
+      "fact_id": "q_0034",
+      "subject_id": "ent_0002",
+      "metric": "gross_margin_pct",
+      "value": 30.5,
+      "unit": "percent",
+      "as_of": "FY2023Q3",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "30.5 percent",
+        "30.5%"
+      ]
+    },
+    {
+      "fact_id": "q_0035",
+      "subject_id": "ent_0003",
+      "metric": "gross_margin_pct",
+      "value": 60.8,
+      "unit": "percent",
+      "as_of": "FY2023Q4",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "60.8 percent",
+        "60.8%"
+      ]
+    },
+    {
+      "fact_id": "q_0036",
+      "subject_id": "ent_0000",
+      "metric": "market_share_pct",
+      "value": 18.5,
+      "unit": "percent",
+      "as_of": "FY2021Q1",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "18.5 percent",
+        "18.5%"
+      ]
+    },
+    {
+      "fact_id": "q_0037",
+      "subject_id": "ent_0001",
+      "metric": "market_share_pct",
+      "value": 33.1,
+      "unit": "percent",
+      "as_of": "FY2021Q2",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "33.1 percent",
+        "33.1%"
+      ]
+    },
+    {
+      "fact_id": "q_0038",
+      "subject_id": "ent_0002",
+      "metric": "market_share_pct",
+      "value": 15.0,
+      "unit": "percent",
+      "as_of": "FY2021Q3",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "15.0 percent",
+        "15.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0039",
+      "subject_id": "ent_0003",
+      "metric": "market_share_pct",
+      "value": 30.2,
+      "unit": "percent",
+      "as_of": "FY2021Q4",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "30.2 percent",
+        "30.2%"
+      ]
+    },
+    {
+      "fact_id": "q_0040",
+      "subject_id": "ent_0000",
+      "metric": "market_share_pct",
+      "value": 17.8,
+      "unit": "percent",
+      "as_of": "FY2022Q1",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "17.8 percent",
+        "17.8%"
+      ]
+    },
+    {
+      "fact_id": "q_0041",
+      "subject_id": "ent_0001",
+      "metric": "market_share_pct",
+      "value": 26.5,
+      "unit": "percent",
+      "as_of": "FY2022Q2",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "26.5 percent",
+        "26.5%"
+      ]
+    },
+    {
+      "fact_id": "q_0042",
+      "subject_id": "ent_0002",
+      "metric": "market_share_pct",
+      "value": 15.3,
+      "unit": "percent",
+      "as_of": "FY2022Q3",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "15.3 percent",
+        "15.3%"
+      ]
+    },
+    {
+      "fact_id": "q_0043",
+      "subject_id": "ent_0003",
+      "metric": "market_share_pct",
+      "value": 23.9,
+      "unit": "percent",
+      "as_of": "FY2022Q4",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "23.9 percent",
+        "23.9%"
+      ]
+    },
+    {
+      "fact_id": "q_0044",
+      "subject_id": "ent_0000",
+      "metric": "market_share_pct",
+      "value": 14.1,
+      "unit": "percent",
+      "as_of": "FY2023Q1",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "14.1 percent",
+        "14.1%"
+      ]
+    },
+    {
+      "fact_id": "q_0045",
+      "subject_id": "ent_0001",
+      "metric": "market_share_pct",
+      "value": 31.1,
+      "unit": "percent",
+      "as_of": "FY2023Q2",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "31.1 percent",
+        "31.1%"
+      ]
+    },
+    {
+      "fact_id": "q_0046",
+      "subject_id": "ent_0002",
+      "metric": "market_share_pct",
+      "value": 27.6,
+      "unit": "percent",
+      "as_of": "FY2023Q3",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "27.6 percent",
+        "27.6%"
+      ]
+    },
+    {
+      "fact_id": "q_0047",
+      "subject_id": "ent_0003",
+      "metric": "market_share_pct",
+      "value": 26.4,
+      "unit": "percent",
+      "as_of": "FY2023Q4",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "26.4 percent",
+        "26.4%"
+      ]
+    },
+    {
+      "fact_id": "q_0048",
+      "subject_id": "ent_0000",
+      "metric": "market_share_pct",
+      "value": 15.7,
+      "unit": "percent",
+      "as_of": "FY2021Q1_revised",
+      "tolerance_pct": 5.0,
+      "surface_forms": [
+        "15.7 percent",
+        "15.7%"
+      ]
+    },
+    {
+      "fact_id": "q_0049",
+      "subject_id": "ent_0002",
+      "metric": "headcount",
+      "value": 1242.0,
+      "unit": "employees",
+      "as_of": "FY2023Q3_revised",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "1242.0",
+        "1242.0 employees"
+      ]
+    },
+    {
+      "fact_id": "q_0050",
+      "subject_id": "ent_0001",
+      "metric": "gross_margin_pct",
+      "value": 44.0,
+      "unit": "percent",
+      "as_of": "FY2022Q2_revised",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "44.0 percent",
+        "44.0%"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "fact_id": "r_0000",
+      "cause_id": "e_0000",
+      "effect_id": "q_0000",
+      "mechanism": "the disruption described in \"Office of Logistics announced a supply disruption at Division of Analytics\" is cited as the direct driver behind the quarterly revenue usd m figure for FY2021Q1"
+    },
+    {
+      "fact_id": "r_0001",
+      "cause_id": "e_0001",
+      "effect_id": "q_0003",
+      "mechanism": "the disruption described in \"Division of Analytics opened a new facility near Declan Voss\" is cited as the direct driver behind the quarterly revenue usd m figure for FY2021Q4"
+    },
+    {
+      "fact_id": "r_0002",
+      "cause_id": "e_0002",
+      "effect_id": "q_0006",
+      "mechanism": "the disruption described in \"Office of Logistics announced a supply disruption at Vantage Instruments\" is cited as the direct driver behind the quarterly revenue usd m figure for FY2022Q3"
+    }
+  ],
+  "events": [
+    {
+      "fact_id": "e_0000",
+      "description": "Office of Logistics announced a supply disruption at Division of Analytics",
+      "date": "2021-02-25",
+      "entity_ids": [
+        "ent_0007",
+        "ent_0008"
+      ]
+    },
+    {
+      "fact_id": "e_0001",
+      "description": "Division of Analytics opened a new facility near Declan Voss",
+      "date": "2022-06-16",
+      "entity_ids": [
+        "ent_0008",
+        "ent_0006"
+      ]
+    },
+    {
+      "fact_id": "e_0002",
+      "description": "Office of Logistics announced a supply disruption at Vantage Instruments",
+      "date": "2023-05-23",
+      "entity_ids": [
+        "ent_0007",
+        "ent_0000"
+      ]
+    },
+    {
+      "fact_id": "e_0003",
+      "description": "Declan Voss disclosed a leadership change at Dynamics Core",
+      "date": "2024-03-17",
+      "entity_ids": [
+        "ent_0006",
+        "ent_0002"
+      ]
+    },
+    {
+      "fact_id": "e_0004",
+      "description": "Vantage Instruments opened a new facility near Robotics Core",
+      "date": "2021-09-28",
+      "entity_ids": [
+        "ent_0000",
+        "ent_0003"
+      ]
+    },
+    {
+      "fact_id": "e_0005",
+      "description": "Robotics Core disclosed a leadership change at Declan Voss",
+      "date": "2022-09-12",
+      "entity_ids": [
+        "ent_0003",
+        "ent_0006"
+      ]
+    }
+  ],
+  "contradictions": [
+    {
+      "contradiction_id": "c_0000",
+      "fact_id_a": "q_0036",
+      "fact_id_b": "q_0048",
+      "doc_id_a": "invented_company_10k_filing_000",
+      "doc_id_b": "invented_company_trade_press_005",
+      "ground_truth": "q_0036"
+    },
+    {
+      "contradiction_id": "c_0001",
+      "fact_id_a": "q_0022",
+      "fact_id_b": "q_0049",
+      "doc_id_a": "invented_company_analyst_note_010",
+      "doc_id_b": "invented_company_trade_press_009",
+      "ground_truth": "q_0022"
+    },
+    {
+      "contradiction_id": "c_0002",
+      "fact_id_a": "q_0029",
+      "fact_id_b": "q_0050",
+      "doc_id_a": "invented_company_trade_press_005",
+      "doc_id_b": "invented_company_10k_filing_000",
+      "ground_truth": "genuinely_ambiguous"
+    }
+  ],
+  "filler_seed_material": [
+    "The following section provides additional background for context.",
+    "Analysts note that broader sector conditions remained mixed during the period.",
+    "Management reiterated its long-term strategy on the accompanying call.",
+    "The disclosures below are presented in the order filed.",
+    "Further detail is available in the appendix to this report."
+  ],
+  "documents": [
+    {
+      "doc_id": "invented_company_10k_filing_000",
+      "doc_type": "10k_filing",
+      "entity_ids": [
+        "ent_0000",
+        "ent_0007",
+        "ent_0008"
+      ],
+      "fact_ids": [
+        "q_0000",
+        "q_0012",
+        "q_0024",
+        "q_0036",
+        "e_0000",
+        "q_0050"
+      ]
+    },
+    {
+      "doc_id": "invented_company_earnings_call_001",
+      "doc_type": "earnings_call",
+      "entity_ids": [
+        "ent_0001",
+        "ent_0008",
+        "ent_0006"
+      ],
+      "fact_ids": [
+        "q_0001",
+        "q_0013",
+        "q_0025",
+        "q_0037",
+        "e_0001"
+      ]
+    },
+    {
+      "doc_id": "invented_company_earnings_call_002",
+      "doc_type": "earnings_call",
+      "entity_ids": [
+        "ent_0002",
+        "ent_0007",
+        "ent_0000"
+      ],
+      "fact_ids": [
+        "q_0002",
+        "q_0014",
+        "q_0026",
+        "q_0038",
+        "e_0002"
+      ]
+    },
+    {
+      "doc_id": "invented_company_earnings_call_003",
+      "doc_type": "earnings_call",
+      "entity_ids": [
+        "ent_0003",
+        "ent_0006",
+        "ent_0002"
+      ],
+      "fact_ids": [
+        "q_0003",
+        "q_0015",
+        "q_0027",
+        "q_0039",
+        "e_0003"
+      ]
+    },
+    {
+      "doc_id": "invented_company_trade_press_004",
+      "doc_type": "trade_press",
+      "entity_ids": [
+        "ent_0000",
+        "ent_0003"
+      ],
+      "fact_ids": [
+        "q_0004",
+        "q_0016",
+        "q_0028",
+        "q_0040",
+        "e_0004"
+      ]
+    },
+    {
+      "doc_id": "invented_company_trade_press_005",
+      "doc_type": "trade_press",
+      "entity_ids": [
+        "ent_0001",
+        "ent_0003",
+        "ent_0006"
+      ],
+      "fact_ids": [
+        "q_0005",
+        "q_0017",
+        "q_0029",
+        "q_0041",
+        "e_0005",
+        "q_0048"
+      ]
+    },
+    {
+      "doc_id": "invented_company_trade_press_006",
+      "doc_type": "trade_press",
+      "entity_ids": [
+        "ent_0002"
+      ],
+      "fact_ids": [
+        "q_0006",
+        "q_0018",
+        "q_0030",
+        "q_0042",
+        "r_0000"
+      ]
+    },
+    {
+      "doc_id": "invented_company_trade_press_007",
+      "doc_type": "trade_press",
+      "entity_ids": [
+        "ent_0003"
+      ],
+      "fact_ids": [
+        "q_0007",
+        "q_0019",
+        "q_0031",
+        "q_0043",
+        "r_0001"
+      ]
+    },
+    {
+      "doc_id": "invented_company_trade_press_008",
+      "doc_type": "trade_press",
+      "entity_ids": [
+        "ent_0000"
+      ],
+      "fact_ids": [
+        "q_0008",
+        "q_0020",
+        "q_0032",
+        "q_0044",
+        "r_0002"
+      ]
+    },
+    {
+      "doc_id": "invented_company_trade_press_009",
+      "doc_type": "trade_press",
+      "entity_ids": [
+        "ent_0001"
+      ],
+      "fact_ids": [
+        "q_0009",
+        "q_0021",
+        "q_0033",
+        "q_0045",
+        "q_0049"
+      ]
+    },
+    {
+      "doc_id": "invented_company_analyst_note_010",
+      "doc_type": "analyst_note",
+      "entity_ids": [
+        "ent_0002"
+      ],
+      "fact_ids": [
+        "q_0010",
+        "q_0022",
+        "q_0034",
+        "q_0046"
+      ]
+    },
+    {
+      "doc_id": "invented_company_analyst_note_011",
+      "doc_type": "analyst_note",
+      "entity_ids": [
+        "ent_0003"
+      ],
+      "fact_ids": [
+        "q_0011",
+        "q_0023",
+        "q_0035",
+        "q_0047"
+      ]
+    }
+  ]
+}

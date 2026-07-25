@@ -1,0 +1,15 @@
+{
+  "pid": "synth_1_task_1",
+  "scale": "1x",
+  "target_chars": 24000,
+  "achieved_chars": 24412,
+  "achieved_fraction": 1.0172,
+  "n_chunks": 44,
+  "world_seed": 1,
+  "template_name": "invented_company",
+  "n_entities": 9,
+  "n_facts": 60,
+  "n_contradictions": 3,
+  "n_source_docs": 12,
+  "n_filler_docs": 32
+}

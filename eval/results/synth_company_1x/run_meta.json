@@ -1,0 +1,24 @@
+{
+  "name": "synth_company_1x",
+  "mock": false,
+  "conditions": [
+    "A",
+    "B",
+    "E",
+    "F"
+  ],
+  "model_M": "llama-3.1-8b-instant",
+  "strong_model": null,
+  "n_prompts": 2,
+  "prompt_ids": [
+    "synth_1_task_1",
+    "synth_1_task_2"
+  ],
+  "prompt_set": "synthetic",
+  "world_seed": 1,
+  "world_template": "invented_company",
+  "pack_scale": "1x",
+  "rag_evidence_max_chars": "12000 (task_1), 6000 (task_2, reduced retry after TPD wall)",
+  "warning": null,
+  "note": "Assembled from a partial ab_harness run (TPD 429 aborted F) plus manual per-condition recovery scripts to avoid re-burning A's ~900s swarm cost; see synth_company_1x_run.log / synth_company_1x_task2.log."
+}

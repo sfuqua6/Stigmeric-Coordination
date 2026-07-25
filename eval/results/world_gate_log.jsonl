@@ -1,0 +1,3 @@
+{"seed": 1, "template": "invented_company", "b_score": 0.0351, "accepted": true, "ceiling": 0.2, "reason": "ok", "ts": "2026-07-24T22:54:23"}
+{"seed": 777, "template": "case_file", "b_score": 0.0, "accepted": true, "ceiling": 0.2, "reason": "ok", "ts": "2026-07-24T22:57:39"}
+{"seed": 2, "template": "invented_country", "b_score": 0.0938, "accepted": true, "ceiling": 0.2, "reason": "ok", "ts": "2026-07-24T23:04:16"}

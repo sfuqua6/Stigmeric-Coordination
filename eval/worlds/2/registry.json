@@ -1,0 +1,907 @@
+{
+  "world_seed": 2,
+  "template_name": "invented_country",
+  "entities": [
+    {
+      "entity_id": "ent_0000",
+      "kind": "location",
+      "name": "Kestrel Republic",
+      "aliases": [
+        "KR",
+        "Kestrel",
+        "Kestrel Republic",
+        "Republic"
+      ]
+    },
+    {
+      "entity_id": "ent_0001",
+      "kind": "agency",
+      "name": "Bureau of Materials",
+      "aliases": [
+        "BOM",
+        "Bureau",
+        "Bureau of Materials",
+        "Materials"
+      ]
+    },
+    {
+      "entity_id": "ent_0002",
+      "kind": "agency",
+      "name": "Bureau of Works",
+      "aliases": [
+        "BOW",
+        "Bureau",
+        "Bureau of Works",
+        "Works"
+      ]
+    },
+    {
+      "entity_id": "ent_0003",
+      "kind": "person",
+      "name": "Otto Marchetti",
+      "aliases": [
+        "Marchetti",
+        "OM",
+        "Otto",
+        "Otto Marchetti"
+      ]
+    },
+    {
+      "entity_id": "ent_0004",
+      "kind": "person",
+      "name": "Ingrid Petrescu",
+      "aliases": [
+        "IP",
+        "Ingrid",
+        "Ingrid Petrescu",
+        "Petrescu"
+      ]
+    },
+    {
+      "entity_id": "ent_0005",
+      "kind": "person",
+      "name": "Tomas Petrescu",
+      "aliases": [
+        "Petrescu",
+        "TP",
+        "Tomas",
+        "Tomas Petrescu"
+      ]
+    },
+    {
+      "entity_id": "ent_0006",
+      "kind": "location",
+      "name": "Kestrel Dominion",
+      "aliases": [
+        "Dominion",
+        "KD",
+        "Kestrel",
+        "Kestrel Dominion"
+      ]
+    },
+    {
+      "entity_id": "ent_0007",
+      "kind": "location",
+      "name": "Veridian Commonwealth",
+      "aliases": [
+        "Commonwealth",
+        "VC",
+        "Veridian",
+        "Veridian Commonwealth"
+      ]
+    }
+  ],
+  "quantities": [
+    {
+      "fact_id": "q_0000",
+      "subject_id": "ent_0000",
+      "metric": "population_2024",
+      "value": 20530831.1,
+      "unit": "people",
+      "as_of": "FY2021Q1",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "20,530,831",
+        "20,530,831 people"
+      ]
+    },
+    {
+      "fact_id": "q_0001",
+      "subject_id": "ent_0006",
+      "metric": "population_2024",
+      "value": 36137224.9,
+      "unit": "people",
+      "as_of": "FY2021Q2",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "36,137,225",
+        "36,137,225 people"
+      ]
+    },
+    {
+      "fact_id": "q_0002",
+      "subject_id": "ent_0007",
+      "metric": "population_2024",
+      "value": 34957389.1,
+      "unit": "people",
+      "as_of": "FY2021Q3",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "34,957,389",
+        "34,957,389 people"
+      ]
+    },
+    {
+      "fact_id": "q_0003",
+      "subject_id": "ent_0000",
+      "metric": "population_2024",
+      "value": 15132964.1,
+      "unit": "people",
+      "as_of": "FY2021Q4",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "15,132,964",
+        "15,132,964 people"
+      ]
+    },
+    {
+      "fact_id": "q_0004",
+      "subject_id": "ent_0006",
+      "metric": "population_2024",
+      "value": 37335200.3,
+      "unit": "people",
+      "as_of": "FY2022Q1",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "37,335,200",
+        "37,335,200 people"
+      ]
+    },
+    {
+      "fact_id": "q_0005",
+      "subject_id": "ent_0007",
+      "metric": "population_2024",
+      "value": 36393029.3,
+      "unit": "people",
+      "as_of": "FY2022Q2",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "36,393,029",
+        "36,393,029 people"
+      ]
+    },
+    {
+      "fact_id": "q_0006",
+      "subject_id": "ent_0000",
+      "metric": "population_2024",
+      "value": 17463188.9,
+      "unit": "people",
+      "as_of": "FY2022Q3",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "17,463,189",
+        "17,463,189 people"
+      ]
+    },
+    {
+      "fact_id": "q_0007",
+      "subject_id": "ent_0006",
+      "metric": "population_2024",
+      "value": 35466924.6,
+      "unit": "people",
+      "as_of": "FY2022Q4",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "35,466,925",
+        "35,466,925 people"
+      ]
+    },
+    {
+      "fact_id": "q_0008",
+      "subject_id": "ent_0007",
+      "metric": "population_2024",
+      "value": 7331497.4,
+      "unit": "people",
+      "as_of": "FY2023Q1",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "7,331,497",
+        "7,331,497 people"
+      ]
+    },
+    {
+      "fact_id": "q_0009",
+      "subject_id": "ent_0000",
+      "metric": "population_2024",
+      "value": 7837764.6,
+      "unit": "people",
+      "as_of": "FY2023Q2",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "7,837,765",
+        "7,837,765 people"
+      ]
+    },
+    {
+      "fact_id": "q_0010",
+      "subject_id": "ent_0000",
+      "metric": "gdp_growth_pct",
+      "value": -0.2,
+      "unit": "percent",
+      "as_of": "FY2021Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "-0.2 percent",
+        "-0.2%"
+      ]
+    },
+    {
+      "fact_id": "q_0011",
+      "subject_id": "ent_0006",
+      "metric": "gdp_growth_pct",
+      "value": -0.9,
+      "unit": "percent",
+      "as_of": "FY2021Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "-0.9 percent",
+        "-0.9%"
+      ]
+    },
+    {
+      "fact_id": "q_0012",
+      "subject_id": "ent_0007",
+      "metric": "gdp_growth_pct",
+      "value": -0.9,
+      "unit": "percent",
+      "as_of": "FY2021Q3",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "-0.9 percent",
+        "-0.9%"
+      ]
+    },
+    {
+      "fact_id": "q_0013",
+      "subject_id": "ent_0000",
+      "metric": "gdp_growth_pct",
+      "value": 3.1,
+      "unit": "percent",
+      "as_of": "FY2021Q4",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "3.1 percent",
+        "3.1%"
+      ]
+    },
+    {
+      "fact_id": "q_0014",
+      "subject_id": "ent_0006",
+      "metric": "gdp_growth_pct",
+      "value": 1.3,
+      "unit": "percent",
+      "as_of": "FY2022Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "1.3 percent",
+        "1.3%"
+      ]
+    },
+    {
+      "fact_id": "q_0015",
+      "subject_id": "ent_0007",
+      "metric": "gdp_growth_pct",
+      "value": 3.2,
+      "unit": "percent",
+      "as_of": "FY2022Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "3.2 percent",
+        "3.2%"
+      ]
+    },
+    {
+      "fact_id": "q_0016",
+      "subject_id": "ent_0000",
+      "metric": "gdp_growth_pct",
+      "value": 3.7,
+      "unit": "percent",
+      "as_of": "FY2022Q3",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "3.7 percent",
+        "3.7%"
+      ]
+    },
+    {
+      "fact_id": "q_0017",
+      "subject_id": "ent_0006",
+      "metric": "gdp_growth_pct",
+      "value": 8.9,
+      "unit": "percent",
+      "as_of": "FY2022Q4",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "8.9 percent",
+        "8.9%"
+      ]
+    },
+    {
+      "fact_id": "q_0018",
+      "subject_id": "ent_0007",
+      "metric": "gdp_growth_pct",
+      "value": 2.3,
+      "unit": "percent",
+      "as_of": "FY2023Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "2.3 percent",
+        "2.3%"
+      ]
+    },
+    {
+      "fact_id": "q_0019",
+      "subject_id": "ent_0000",
+      "metric": "gdp_growth_pct",
+      "value": 2.0,
+      "unit": "percent",
+      "as_of": "FY2023Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "2.0 percent",
+        "2.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0020",
+      "subject_id": "ent_0000",
+      "metric": "election_result_pct",
+      "value": 43.6,
+      "unit": "percent",
+      "as_of": "FY2021Q1",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "43.6 percent",
+        "43.6%"
+      ]
+    },
+    {
+      "fact_id": "q_0021",
+      "subject_id": "ent_0006",
+      "metric": "election_result_pct",
+      "value": 60.9,
+      "unit": "percent",
+      "as_of": "FY2021Q2",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "60.9 percent",
+        "60.9%"
+      ]
+    },
+    {
+      "fact_id": "q_0022",
+      "subject_id": "ent_0007",
+      "metric": "election_result_pct",
+      "value": 36.4,
+      "unit": "percent",
+      "as_of": "FY2021Q3",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "36.4 percent",
+        "36.4%"
+      ]
+    },
+    {
+      "fact_id": "q_0023",
+      "subject_id": "ent_0000",
+      "metric": "election_result_pct",
+      "value": 46.7,
+      "unit": "percent",
+      "as_of": "FY2021Q4",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "46.7 percent",
+        "46.7%"
+      ]
+    },
+    {
+      "fact_id": "q_0024",
+      "subject_id": "ent_0006",
+      "metric": "election_result_pct",
+      "value": 36.3,
+      "unit": "percent",
+      "as_of": "FY2022Q1",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "36.3 percent",
+        "36.3%"
+      ]
+    },
+    {
+      "fact_id": "q_0025",
+      "subject_id": "ent_0007",
+      "metric": "election_result_pct",
+      "value": 58.7,
+      "unit": "percent",
+      "as_of": "FY2022Q2",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "58.7 percent",
+        "58.7%"
+      ]
+    },
+    {
+      "fact_id": "q_0026",
+      "subject_id": "ent_0000",
+      "metric": "election_result_pct",
+      "value": 40.1,
+      "unit": "percent",
+      "as_of": "FY2022Q3",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "40.1 percent",
+        "40.1%"
+      ]
+    },
+    {
+      "fact_id": "q_0027",
+      "subject_id": "ent_0006",
+      "metric": "election_result_pct",
+      "value": 63.0,
+      "unit": "percent",
+      "as_of": "FY2022Q4",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "63.0 percent",
+        "63.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0028",
+      "subject_id": "ent_0007",
+      "metric": "election_result_pct",
+      "value": 38.0,
+      "unit": "percent",
+      "as_of": "FY2023Q1",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "38.0 percent",
+        "38.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0029",
+      "subject_id": "ent_0000",
+      "metric": "election_result_pct",
+      "value": 53.2,
+      "unit": "percent",
+      "as_of": "FY2023Q2",
+      "tolerance_pct": 2.0,
+      "surface_forms": [
+        "53.2 percent",
+        "53.2%"
+      ]
+    },
+    {
+      "fact_id": "q_0030",
+      "subject_id": "ent_0000",
+      "metric": "unemployment_pct",
+      "value": 15.1,
+      "unit": "percent",
+      "as_of": "FY2021Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "15.1 percent",
+        "15.1%"
+      ]
+    },
+    {
+      "fact_id": "q_0031",
+      "subject_id": "ent_0006",
+      "metric": "unemployment_pct",
+      "value": 7.0,
+      "unit": "percent",
+      "as_of": "FY2021Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "7.0 percent",
+        "7.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0032",
+      "subject_id": "ent_0007",
+      "metric": "unemployment_pct",
+      "value": 7.6,
+      "unit": "percent",
+      "as_of": "FY2021Q3",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "7.6 percent",
+        "7.6%"
+      ]
+    },
+    {
+      "fact_id": "q_0033",
+      "subject_id": "ent_0000",
+      "metric": "unemployment_pct",
+      "value": 12.0,
+      "unit": "percent",
+      "as_of": "FY2021Q4",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "12.0 percent",
+        "12.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0034",
+      "subject_id": "ent_0006",
+      "metric": "unemployment_pct",
+      "value": 12.3,
+      "unit": "percent",
+      "as_of": "FY2022Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "12.3 percent",
+        "12.3%"
+      ]
+    },
+    {
+      "fact_id": "q_0035",
+      "subject_id": "ent_0007",
+      "metric": "unemployment_pct",
+      "value": 17.9,
+      "unit": "percent",
+      "as_of": "FY2022Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "17.9 percent",
+        "17.9%"
+      ]
+    },
+    {
+      "fact_id": "q_0036",
+      "subject_id": "ent_0000",
+      "metric": "unemployment_pct",
+      "value": 15.2,
+      "unit": "percent",
+      "as_of": "FY2022Q3",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "15.2 percent",
+        "15.2%"
+      ]
+    },
+    {
+      "fact_id": "q_0037",
+      "subject_id": "ent_0006",
+      "metric": "unemployment_pct",
+      "value": 11.1,
+      "unit": "percent",
+      "as_of": "FY2022Q4",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "11.1 percent",
+        "11.1%"
+      ]
+    },
+    {
+      "fact_id": "q_0038",
+      "subject_id": "ent_0007",
+      "metric": "unemployment_pct",
+      "value": 20.1,
+      "unit": "percent",
+      "as_of": "FY2023Q1",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "20.1 percent",
+        "20.1%"
+      ]
+    },
+    {
+      "fact_id": "q_0039",
+      "subject_id": "ent_0000",
+      "metric": "unemployment_pct",
+      "value": 9.0,
+      "unit": "percent",
+      "as_of": "FY2023Q2",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "9.0 percent",
+        "9.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0040",
+      "subject_id": "ent_0000",
+      "metric": "population_2024",
+      "value": 13619667.7,
+      "unit": "people",
+      "as_of": "FY2021Q4_revised",
+      "tolerance_pct": 1.0,
+      "surface_forms": [
+        "13,619,668",
+        "13,619,668 people"
+      ]
+    },
+    {
+      "fact_id": "q_0041",
+      "subject_id": "ent_0006",
+      "metric": "gdp_growth_pct",
+      "value": 8.0,
+      "unit": "percent",
+      "as_of": "FY2022Q4_revised",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "8.0 percent",
+        "8.0%"
+      ]
+    },
+    {
+      "fact_id": "q_0042",
+      "subject_id": "ent_0006",
+      "metric": "unemployment_pct",
+      "value": 10.0,
+      "unit": "percent",
+      "as_of": "FY2022Q4_revised",
+      "tolerance_pct": 3.0,
+      "surface_forms": [
+        "10.0 percent",
+        "10.0%"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "fact_id": "r_0000",
+      "cause_id": "e_0000",
+      "effect_id": "q_0000",
+      "mechanism": "the disruption described in \"Veridian Commonwealth issued a white paper concerning Veridian Commonwealth\" is cited as the direct driver behind the population 2024 figure for FY2021Q1"
+    },
+    {
+      "fact_id": "r_0001",
+      "cause_id": "e_0001",
+      "effect_id": "q_0003",
+      "mechanism": "the disruption described in \"Bureau of Works faced a currency shock centered on Ingrid Petrescu\" is cited as the direct driver behind the population 2024 figure for FY2021Q4"
+    },
+    {
+      "fact_id": "r_0002",
+      "cause_id": "e_0002",
+      "effect_id": "q_0006",
+      "mechanism": "the disruption described in \"Kestrel Dominion faced a currency shock centered on Ingrid Petrescu\" is cited as the direct driver behind the population 2024 figure for FY2022Q3"
+    }
+  ],
+  "events": [
+    {
+      "fact_id": "e_0000",
+      "description": "Veridian Commonwealth issued a white paper concerning Veridian Commonwealth",
+      "date": "2021-11-08",
+      "entity_ids": [
+        "ent_0007",
+        "ent_0007"
+      ]
+    },
+    {
+      "fact_id": "e_0001",
+      "description": "Bureau of Works faced a currency shock centered on Ingrid Petrescu",
+      "date": "2022-08-10",
+      "entity_ids": [
+        "ent_0002",
+        "ent_0004"
+      ]
+    },
+    {
+      "fact_id": "e_0002",
+      "description": "Kestrel Dominion faced a currency shock centered on Ingrid Petrescu",
+      "date": "2023-12-07",
+      "entity_ids": [
+        "ent_0006",
+        "ent_0004"
+      ]
+    },
+    {
+      "fact_id": "e_0003",
+      "description": "Tomas Petrescu opened a new port near Bureau of Materials",
+      "date": "2024-06-24",
+      "entity_ids": [
+        "ent_0005",
+        "ent_0001"
+      ]
+    },
+    {
+      "fact_id": "e_0004",
+      "description": "Otto Marchetti held a contested election in Bureau of Materials",
+      "date": "2021-01-19",
+      "entity_ids": [
+        "ent_0003",
+        "ent_0001"
+      ]
+    }
+  ],
+  "contradictions": [
+    {
+      "contradiction_id": "c_0000",
+      "fact_id_a": "q_0003",
+      "fact_id_b": "q_0040",
+      "doc_id_a": "invented_country_news_archive_003",
+      "doc_id_b": "invented_country_news_archive_004",
+      "ground_truth": "q_0003"
+    },
+    {
+      "contradiction_id": "c_0001",
+      "fact_id_a": "q_0017",
+      "fact_id_b": "q_0041",
+      "doc_id_a": "invented_country_white_paper_007",
+      "doc_id_b": "invented_country_news_archive_001",
+      "ground_truth": "q_0017"
+    },
+    {
+      "contradiction_id": "c_0002",
+      "fact_id_a": "q_0037",
+      "fact_id_b": "q_0042",
+      "doc_id_a": "invented_country_white_paper_007",
+      "doc_id_b": "invented_country_news_archive_002",
+      "ground_truth": "genuinely_ambiguous"
+    }
+  ],
+  "filler_seed_material": [
+    "The yearbook presents figures as compiled by the national statistics office.",
+    "Independent observers offered mixed assessments of the process.",
+    "The rebuttal was issued through the usual opposition channels.",
+    "Further tables are reproduced in the appendix.",
+    "Coverage of the period was extensive across the domestic press."
+  ],
+  "documents": [
+    {
+      "doc_id": "invented_country_statistical_yearbook_000",
+      "doc_type": "statistical_yearbook",
+      "entity_ids": [
+        "ent_0000",
+        "ent_0007"
+      ],
+      "fact_ids": [
+        "q_0000",
+        "q_0010",
+        "q_0020",
+        "q_0030",
+        "e_0000"
+      ]
+    },
+    {
+      "doc_id": "invented_country_news_archive_001",
+      "doc_type": "news_archive",
+      "entity_ids": [
+        "ent_0006",
+        "ent_0002",
+        "ent_0004"
+      ],
+      "fact_ids": [
+        "q_0001",
+        "q_0011",
+        "q_0021",
+        "q_0031",
+        "e_0001",
+        "q_0041"
+      ]
+    },
+    {
+      "doc_id": "invented_country_news_archive_002",
+      "doc_type": "news_archive",
+      "entity_ids": [
+        "ent_0007",
+        "ent_0006",
+        "ent_0004"
+      ],
+      "fact_ids": [
+        "q_0002",
+        "q_0012",
+        "q_0022",
+        "q_0032",
+        "e_0002",
+        "q_0042"
+      ]
+    },
+    {
+      "doc_id": "invented_country_news_archive_003",
+      "doc_type": "news_archive",
+      "entity_ids": [
+        "ent_0000",
+        "ent_0005",
+        "ent_0001"
+      ],
+      "fact_ids": [
+        "q_0003",
+        "q_0013",
+        "q_0023",
+        "q_0033",
+        "e_0003"
+      ]
+    },
+    {
+      "doc_id": "invented_country_news_archive_004",
+      "doc_type": "news_archive",
+      "entity_ids": [
+        "ent_0006",
+        "ent_0003",
+        "ent_0001"
+      ],
+      "fact_ids": [
+        "q_0004",
+        "q_0014",
+        "q_0024",
+        "q_0034",
+        "e_0004",
+        "q_0040"
+      ]
+    },
+    {
+      "doc_id": "invented_country_news_archive_005",
+      "doc_type": "news_archive",
+      "entity_ids": [
+        "ent_0007"
+      ],
+      "fact_ids": [
+        "q_0005",
+        "q_0015",
+        "q_0025",
+        "q_0035",
+        "r_0000"
+      ]
+    },
+    {
+      "doc_id": "invented_country_white_paper_006",
+      "doc_type": "white_paper",
+      "entity_ids": [
+        "ent_0000"
+      ],
+      "fact_ids": [
+        "q_0006",
+        "q_0016",
+        "q_0026",
+        "q_0036",
+        "r_0001"
+      ]
+    },
+    {
+      "doc_id": "invented_country_white_paper_007",
+      "doc_type": "white_paper",
+      "entity_ids": [
+        "ent_0006"
+      ],
+      "fact_ids": [
+        "q_0007",
+        "q_0017",
+        "q_0027",
+        "q_0037",
+        "r_0002"
+      ]
+    },
+    {
+      "doc_id": "invented_country_opposition_rebuttal_008",
+      "doc_type": "opposition_rebuttal",
+      "entity_ids": [
+        "ent_0007"
+      ],
+      "fact_ids": [
+        "q_0008",
+        "q_0018",
+        "q_0028",
+        "q_0038"
+      ]
+    },
+    {
+      "doc_id": "invented_country_opposition_rebuttal_009",
+      "doc_type": "opposition_rebuttal",
+      "entity_ids": [
+        "ent_0000"
+      ],
+      "fact_ids": [
+        "q_0009",
+        "q_0019",
+        "q_0029",
+        "q_0039"
+      ]
+    }
+  ]
+}

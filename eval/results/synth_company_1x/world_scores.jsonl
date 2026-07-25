@@ -1,0 +1,496 @@
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0000", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0001", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0002", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0003", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0004", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0005", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0006", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0007", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "atomic_ent_0008", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0000", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0001", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0002", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0003", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0004", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0005", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0006", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0007", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0008", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0009", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0010", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0011", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0012", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0013", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0014", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0015", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0016", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0017", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0018", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0019", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0020", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0021", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0022", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0023", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0024", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0025", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0026", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0027", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0028", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0029", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0030", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0031", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0032", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0033", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0034", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0035", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0036", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0037", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0038", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0039", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0040", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0041", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0042", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0043", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0044", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0045", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0046", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "quantity_q_0047", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "contradiction_c_0000", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "contradiction_resolved_c_0000", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "contradiction_c_0001", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "contradiction_resolved_c_0001", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_1", "condition": "A", "item_id": "contradiction_c_0002", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0000", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0001", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0002", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0003", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0004", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0005", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0006", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0007", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "atomic_ent_0008", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0000", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0001", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0002", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0003", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0004", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0005", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0006", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0007", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0008", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0009", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0010", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0011", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0012", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0013", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0014", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0015", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0016", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0017", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0018", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0019", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0020", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0021", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0022", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0023", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0024", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0025", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0026", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0027", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0028", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0029", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0030", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0031", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0032", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0033", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0034", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 3.0% of 30.5"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0035", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0036", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0037", "item_type": "quantity_correct", "hit": true, "detail": "found 32 (parsed 32.0) within 5.0% of 33.1"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0038", "item_type": "quantity_correct", "hit": true, "detail": "found 15 (parsed 15.0) within 5.0% of 15.0"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0039", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 5.0% of 30.2"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0040", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0041", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0042", "item_type": "quantity_correct", "hit": true, "detail": "found 15 (parsed 15.0) within 5.0% of 15.3"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0043", "item_type": "quantity_correct", "hit": true, "detail": "found 25 (parsed 25.0) within 5.0% of 23.9"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0044", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0045", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 5.0% of 31.1"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0046", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "quantity_q_0047", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "contradiction_c_0000", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "contradiction_resolved_c_0000", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "contradiction_c_0001", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "contradiction_resolved_c_0001", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_1", "condition": "B", "item_id": "contradiction_c_0002", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0000", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0001", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0002", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0003", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0004", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0005", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0006", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0007", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "atomic_ent_0008", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0000", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0001", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0002", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0003", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0004", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0005", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0006", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0007", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0008", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0009", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0010", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0011", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0012", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0013", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0014", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0015", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0016", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0017", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0018", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0019", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0020", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0021", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0022", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0023", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0024", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0025", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0026", "item_type": "quantity_correct", "hit": true, "detail": "found 50 (parsed 50.0) within 3.0% of 50.7"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0027", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0028", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0029", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0030", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0031", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0032", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0033", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0034", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 3.0% of 30.5"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0035", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0036", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0037", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0038", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0039", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 5.0% of 30.2"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0040", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0041", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0042", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0043", "item_type": "quantity_correct", "hit": true, "detail": "found 25 (parsed 25.0) within 5.0% of 23.9"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0044", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0045", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 5.0% of 31.1"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0046", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "quantity_q_0047", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "contradiction_c_0000", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "contradiction_resolved_c_0000", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "contradiction_c_0001", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "contradiction_resolved_c_0001", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_1", "condition": "E", "item_id": "contradiction_c_0002", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0000", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0001", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0002", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0003", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0004", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0005", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0006", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0007", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "atomic_ent_0008", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0000", "item_type": "quantity_correct", "hit": true, "detail": "surface form '$548.4 million' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0001", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0002", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0003", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0004", "item_type": "quantity_correct", "hit": true, "detail": "surface form '$598.6 million' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0005", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0006", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0007", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0008", "item_type": "quantity_correct", "hit": true, "detail": "surface form '$873.4 million' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0009", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0010", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0011", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0012", "item_type": "quantity_correct", "hit": true, "detail": "found 11,282.2 (parsed 11282.2) within 1.0% of 11282.2"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0013", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0014", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0015", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0016", "item_type": "quantity_correct", "hit": true, "detail": "found 9,179.2 (parsed 9179.2) within 1.0% of 9179.2"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0017", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0018", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0019", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0020", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0021", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0022", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0023", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0024", "item_type": "quantity_correct", "hit": true, "detail": "surface form '49.8%' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0025", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0026", "item_type": "quantity_correct", "hit": true, "detail": "found 49.8 (parsed 49.8) within 3.0% of 50.7"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0027", "item_type": "quantity_correct", "hit": true, "detail": "found 58.0 (parsed 58.0) within 3.0% of 57.4"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0028", "item_type": "quantity_correct", "hit": true, "detail": "surface form '60.8%' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0029", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0030", "item_type": "quantity_correct", "hit": true, "detail": "found 60.8 (parsed 60.8) within 3.0% of 60.6"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0031", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0032", "item_type": "quantity_correct", "hit": true, "detail": "surface form '58.0%' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0033", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0034", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0035", "item_type": "quantity_correct", "hit": true, "detail": "surface form '60.8%' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0036", "item_type": "quantity_correct", "hit": true, "detail": "surface form '18.5%' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0037", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0038", "item_type": "quantity_correct", "hit": true, "detail": "found 15.7 (parsed 15.7) within 5.0% of 15.0"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0039", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0040", "item_type": "quantity_correct", "hit": true, "detail": "surface form '17.8%' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0041", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0042", "item_type": "quantity_correct", "hit": true, "detail": "found 15.7 (parsed 15.7) within 5.0% of 15.3"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0043", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0044", "item_type": "quantity_correct", "hit": true, "detail": "surface form '14.1%' present"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0045", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0046", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "quantity_q_0047", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "contradiction_c_0000", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "contradiction_resolved_c_0000", "item_type": "contradiction_resolved", "hit": true, "detail": "matched ground truth"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "contradiction_c_0001", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "contradiction_resolved_c_0001", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_1", "condition": "F", "item_id": "contradiction_c_0002", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0000", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0001", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0002", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0003", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0004", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0005", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0006", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0007", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "atomic_ent_0008", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0000", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0001", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0002", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0003", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0004", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0005", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0006", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0007", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0008", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0009", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0010", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0011", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0012", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0013", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0014", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0015", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0016", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0017", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0018", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0019", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0020", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0021", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0022", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0023", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0024", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0025", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0026", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0027", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0028", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0029", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0030", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0031", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0032", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0033", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0034", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0035", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0036", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0037", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0038", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0039", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0040", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0041", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0042", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0043", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0044", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0045", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0046", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "quantity_q_0047", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "contradiction_c_0000", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "contradiction_resolved_c_0000", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "contradiction_c_0001", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "contradiction_resolved_c_0001", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_2", "condition": "A", "item_id": "contradiction_c_0002", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0000", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0001", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0002", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0003", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0004", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0005", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0006", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0007", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "atomic_ent_0008", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0000", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0001", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0002", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0003", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0004", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0005", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0006", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0007", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0008", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0009", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0010", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0011", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0012", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0013", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0014", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0015", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0016", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0017", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0018", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0019", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0020", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0021", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0022", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0023", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0024", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0025", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0026", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0027", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0028", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0029", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0030", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0031", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0032", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0033", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0034", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0035", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0036", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0037", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0038", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0039", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0040", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0041", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0042", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0043", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0044", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0045", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0046", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "quantity_q_0047", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "contradiction_c_0000", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "contradiction_resolved_c_0000", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "contradiction_c_0001", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "contradiction_resolved_c_0001", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_2", "condition": "B", "item_id": "contradiction_c_0002", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0000", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0001", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0002", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0003", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0004", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0005", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0006", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0007", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "atomic_ent_0008", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0000", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0001", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0002", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0003", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0004", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0005", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0006", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0007", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0008", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0009", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0010", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0011", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0012", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0013", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0014", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0015", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0016", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0017", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0018", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0019", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0020", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0021", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0022", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0023", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0024", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0025", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0026", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0027", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0028", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0029", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0030", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0031", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0032", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0033", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0034", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 3.0% of 30.5"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0035", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0036", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0037", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0038", "item_type": "quantity_correct", "hit": true, "detail": "found 15 (parsed 15.0) within 5.0% of 15.0"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0039", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 5.0% of 30.2"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0040", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0041", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0042", "item_type": "quantity_correct", "hit": true, "detail": "found 15 (parsed 15.0) within 5.0% of 15.3"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0043", "item_type": "quantity_correct", "hit": true, "detail": "found 25 (parsed 25.0) within 5.0% of 23.9"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0044", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0045", "item_type": "quantity_correct", "hit": true, "detail": "found 30 (parsed 30.0) within 5.0% of 31.1"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0046", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "quantity_q_0047", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "contradiction_c_0000", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "contradiction_resolved_c_0000", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "contradiction_c_0001", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "contradiction_resolved_c_0001", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_2", "condition": "E", "item_id": "contradiction_c_0002", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0000", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0001", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0002", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0003", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0004", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0005", "item_type": "atomic_fact_present", "hit": true, "detail": "present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0006", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0007", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "atomic_ent_0008", "item_type": "atomic_fact_present", "hit": false, "detail": "missing"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0000", "item_type": "quantity_correct", "hit": true, "detail": "surface form '$548.4 million' present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0001", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0002", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0003", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0004", "item_type": "quantity_correct", "hit": true, "detail": "surface form '$598.6 million' present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0005", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0006", "item_type": "quantity_correct", "hit": true, "detail": "surface form '$797.9 million' present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0007", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0008", "item_type": "quantity_correct", "hit": true, "detail": "surface form '$873.4 million' present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0009", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0010", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0011", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0012", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0013", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0014", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0015", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0016", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0017", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0018", "item_type": "quantity_correct", "hit": true, "detail": "surface form '11132.8' present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0019", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0020", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0021", "item_type": "quantity_correct", "hit": true, "detail": "found 11132.8 (parsed 11132.8) within 1.0% of 11081.8"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0022", "item_type": "quantity_correct", "hit": true, "detail": "surface form '1380.0' present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0023", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0024", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0025", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0026", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0027", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0028", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0029", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0030", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0031", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0032", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0033", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0034", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0035", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0036", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0037", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0038", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0039", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0040", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0041", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0042", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0043", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0044", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0045", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0046", "item_type": "quantity_correct", "hit": true, "detail": "found 28, (parsed 28.0) within 5.0% of 27.6"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "quantity_q_0047", "item_type": "quantity_correct", "hit": false, "detail": "not found / out of tolerance"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "contradiction_c_0000", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "contradiction_resolved_c_0000", "item_type": "contradiction_resolved", "hit": false, "detail": "did not match ground truth"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "contradiction_c_0001", "item_type": "contradiction_surfaced", "hit": true, "detail": "dual anchor + cue present"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "contradiction_resolved_c_0001", "item_type": "contradiction_resolved", "hit": true, "detail": "matched ground truth"}
+{"pid": "synth_1_task_2", "condition": "F", "item_id": "contradiction_c_0002", "item_type": "contradiction_surfaced", "hit": false, "detail": "missing anchor or cue"}

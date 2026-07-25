@@ -20,6 +20,16 @@ Flags:
                                    'small'/'small_coding' bundle (continuous pool),
                                    configs/heterogeneous_small.json (--heterogeneous),
                                    or Qwen2.5-3B-Instruct (--legacy-rounds).
+    --ledger                       Stage 2 claims-ledger pipeline (see
+                                   docs/future/STAGE2_CLAIMS_LEDGER_SPEC.md)
+                                   instead of the signal-store pool: EXTRACT/
+                                   VERIFY workers over core/claims_ledger.py,
+                                   deterministic compose + one gated polish
+                                   call. Incompatible with --mode=baseline /
+                                   --legacy-rounds / --heterogeneous / bundles.
+    --ledger-workers=N             Ledger pool size (default 8).
+    --ledger-max-time=SECONDS      Wall-clock safety valve for the ledger
+                                   pool (default 600; SWARM_LEDGER_MAX_TIME_S).
 
 Set MOCK_LLM=1 to run without loading the model.
 
@@ -464,6 +474,141 @@ async def assemble_partitions(task_type: str, user_prompt: str, corpus_mode: str
         f"(web={len(web_partitions)}, corpus={len(corpus_parts)})"
     )
     return chunks, partitions
+
+
+async def run_ledger_pipeline(task_type: str, user_prompt: str, output_dir: Path,
+                              corpus_mode: str = "real",
+                              n_workers: int = 8,
+                              max_time_s: Optional[float] = None) -> dict:
+    """Stage 2 entry point (--ledger flag): EXTRACT/VERIFY worker pool over
+    core/claims_ledger.py, deterministic compose + one gated polish call.
+
+    See docs/future/STAGE2_CLAIMS_LEDGER_SPEC.md sec2.2/sec6: reuses
+    `assemble_partitions()` UNCHANGED — same `--corpus=pack:<path>` mode as
+    the signal-store path, so a future ablation run gives both pipelines the
+    IDENTICAL (chunks, partitions) tuple (spec sec6 rule 1). This function
+    does not touch SignalStore, ConvergenceDetector, or the Synthesizer at
+    all — the ledger path is a parallel pipeline, not a mode flag on the
+    existing one (spec sec5 keep/adapt/retire table: those modules are
+    "ablation-baseline only" for the ledger path).
+    """
+    from core.claims_ledger import ClaimsLedger, coverage_ratio
+    from core.compose import compose_draft, gate_polish
+    from core.ledger_pool import (
+        run_ledger_pool, halting_loop, LedgerPoolState,
+        LEDGER_MAX_TIME_S, LEDGER_COVERAGE_FLOOR, MAX_VERIFY_ATTEMPTS,
+    )
+
+    pipeline_start = time.time()
+    from core.search_tool import reset_search_stats as _reset_search_stats
+    _reset_search_stats()
+    task_prompt = build_task_prompt(task_type, user_prompt)
+
+    router = None
+    _groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    _backend = os.environ.get("SWARM_BACKEND", "").strip().lower()
+    _use_groq = bool(_groq_key) and not config.USE_MOCK_LLM and _backend != "local"
+    if _use_groq:
+        from core.llm_groq import GroqRouter
+        router = GroqRouter(api_key=_groq_key)
+        await router.preflight()
+        llm = router.engine_for("scout")
+        print(f"[ledger] Groq router active (extractor/checker model-family "
+              f"split): {router.manifest()}")
+    else:
+        llm = make_llm()
+        if hasattr(llm, "warmup"):
+            try:
+                await llm.warmup(n=5)
+            except Exception as exc:
+                print(f"[ledger] warmup raised {type(exc).__name__}: {exc}")
+
+    chunks, partitions = await assemble_partitions(task_type, user_prompt, corpus_mode, llm)
+    total_chunk_ids = [c.chunk_id for c in chunks]
+    print(f"[ledger] partitions: sizes={[len(p.chunks) for p in partitions]} "
+          f"pids={[p.partition_id for p in partitions]} total_chunks={len(total_chunk_ids)}")
+
+    ledger = ClaimsLedger()
+    stop_event = asyncio.Event()
+    max_time = max_time_s if max_time_s is not None else LEDGER_MAX_TIME_S
+    pool_state = LedgerPoolState()
+
+    pool_coro = run_ledger_pool(ledger, chunks, partitions, llm, task_prompt,
+                                stop_event, n_workers=n_workers, router=router,
+                                pool_state=pool_state)
+    halt_coro = halting_loop(ledger, pool_state, total_chunk_ids, stop_event,
+                             max_time_s=max_time)
+    _, halt_reason = await asyncio.gather(pool_coro, halt_coro)
+
+    cov = coverage_ratio(pool_state.covered_chunk_ids, total_chunk_ids)
+
+    draft = compose_draft(ledger)
+    polished = None
+    polish_cost = {"tokens": 0}
+    try:
+        polish_prompt = (
+            "Polish the following claim-ledger draft for prose flow only. "
+            "Do NOT add, remove, or renumber any [CLAIM_id] tag, and do NOT "
+            "introduce any number not already present in the draft. Keep "
+            "every claim's substance unchanged.\n\n---DRAFT---\n"
+            f"{draft}\n---END DRAFT---\n\nPOLISHED:"
+        )
+        polished = await llm.generate(polish_prompt, role="synth", max_tokens=1200,
+                                      temperature=0.3)
+        polish_cost["tokens"] = len(polish_prompt.split()) + len((polished or "").split())
+    except Exception as exc:
+        print(f"[ledger] polish call failed ({type(exc).__name__}: {exc}); "
+              f"shipping deterministic draft")
+        polished = None
+
+    gated = gate_polish(draft, polished, ledger)
+    final_answer = gated["answer"]
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    write_answer_files(output_dir, final_answer)
+    ledger.to_json(output_dir / "ledger.json")
+
+    elapsed = time.time() - pipeline_start
+    claims_all = ledger.all_claims()
+    by_status = {
+        s: len(ledger.claims_by_status(s))
+        for s in ("verified", "contested", "refuted", "unverified")
+    }
+    summary = {
+        "pipeline": "ledger",
+        "task_type": task_type,
+        "user_prompt": user_prompt,
+        "corpus_mode": corpus_mode,
+        "elapsed_s": elapsed,
+        "halt_reason": halt_reason,
+        "coverage_ratio": cov,
+        "n_workers": n_workers,
+        "iterations": pool_state.iterations,
+        "extract_count": pool_state.extract_count,
+        "extract_rejected": pool_state.extract_rejected,
+        "verify_count": pool_state.verify_count,
+        "n_claims": len(claims_all),
+        "claims_by_status": by_status,
+        "polish_gated": gated["gated"],
+        "polish_audits": {
+            k: (v if not isinstance(v, dict) else {
+                kk: (list(vv) if isinstance(vv, set) else vv) for kk, vv in v.items()
+            })
+            for k, v in (gated.get("audits") or {}).items()
+        } if gated.get("audits") else None,
+        "cost_accounting": {
+            "note": "THEFUTURE.md sec5 rule 4 — token counts are best-effort "
+                    "(word-count proxy for the one uncounted polish call; "
+                    "extract/verify calls go through llm.generate() without "
+                    "a shared token meter in this round).",
+            "polish_call_word_proxy": polish_cost["tokens"],
+        },
+    }
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print("\n[ledger] summary.json:")
+    print(json.dumps(summary, indent=2))
+    print(f"\n[ledger] outputs: {output_dir}")
+    return summary
 
 
 async def run_pipeline(task_type: str, user_prompt: str, output_dir: Path,
@@ -2100,6 +2245,32 @@ def main():
     # --legacy-rounds for A/B comparison or to repro old artifacts.
     legacy_rounds = "--legacy-rounds" in args
     small = "--small" in args
+    # --ledger: Stage 2 claims-ledger pipeline (docs/future/STAGE2_CLAIMS_LEDGER_SPEC.md)
+    # instead of the signal-store continuous pool.
+    use_ledger = "--ledger" in args
+    ledger_workers = 8
+    ledger_workers_flags = [a for a in args if a.startswith("--ledger-workers=")]
+    if ledger_workers_flags:
+        try:
+            ledger_workers = int(ledger_workers_flags[-1].split("=", 1)[1])
+        except ValueError:
+            print(f"[pipeline] --ledger-workers expects an integer; got "
+                  f"{ledger_workers_flags[-1]!r}")
+            sys.exit(1)
+    ledger_max_time: Optional[float] = None
+    ledger_max_time_flags = [a for a in args if a.startswith("--ledger-max-time=")]
+    if ledger_max_time_flags:
+        try:
+            ledger_max_time = float(ledger_max_time_flags[-1].split("=", 1)[1])
+        except ValueError:
+            print(f"[pipeline] --ledger-max-time expects a number; got "
+                  f"{ledger_max_time_flags[-1]!r}")
+            sys.exit(1)
+    args = [a for a in args if not (
+        a == "--ledger"
+        or a.startswith("--ledger-workers=")
+        or a.startswith("--ledger-max-time=")
+    )]
     # --synth-verbose: restore the old combined answer.txt (Section 1 + all field
     # telemetry). Default is the clean reader answer + a separate diagnostics.md.
     # Sets the env var the write helper (core/clean_answer.py) reads, so it works
@@ -2368,7 +2539,19 @@ def main():
         ))
         return
 
-    if run_mode == "baseline":
+    if use_ledger:
+        if run_mode == "baseline" or legacy_rounds:
+            print("[pipeline] --ledger is incompatible with --mode=baseline "
+                  "and --legacy-rounds (see docs/future/STAGE2_CLAIMS_LEDGER_SPEC.md "
+                  "sec5 keep/adapt/retire table — those are ablation-baseline paths).")
+            sys.exit(1)
+        asyncio.run(run_ledger_pipeline(
+            task_type, user_prompt, output_dir,
+            corpus_mode=corpus_mode,
+            n_workers=ledger_workers,
+            max_time_s=ledger_max_time,
+        ))
+    elif run_mode == "baseline":
         _run_baseline(task_type, user_prompt, output_dir, corpus_mode=corpus_mode)
     elif legacy_rounds:
         print("[pipeline] --legacy-rounds: using round/phase scheduler "

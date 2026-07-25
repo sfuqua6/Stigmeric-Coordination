@@ -1,0 +1,53 @@
+{
+  "pipeline": "ledger",
+  "task_type": "analysis",
+  "user_prompt": "Based on the provided evidence, summarize Vantage Instruments's reported financial and operational performance, including specific figures where given, and identify any places where different sources disagree.",
+  "corpus_mode": "pack:eval/packs/synth_1_task_1_1x.jsonl",
+  "elapsed_s": 654.4951283931732,
+  "halt_reason": "max_time_s (400s)",
+  "coverage_ratio": 0.7272727272727273,
+  "n_workers": 4,
+  "iterations": 22,
+  "extract_count": 6,
+  "extract_rejected": 2,
+  "verify_count": 17,
+  "n_claims": 6,
+  "claims_by_status": {
+    "verified": 2,
+    "contested": 2,
+    "refuted": 0,
+    "unverified": 2
+  },
+  "polish_gated": false,
+  "polish_audits": {
+    "coverage": {
+      "passed": true,
+      "required": [
+        "CLAIM_00005",
+        "CLAIM_00002",
+        "CLAIM_00004",
+        "CLAIM_00001"
+      ],
+      "present": [
+        "CLAIM_00005",
+        "CLAIM_00002",
+        "CLAIM_00004",
+        "CLAIM_00001"
+      ],
+      "missing": []
+    },
+    "no_new_numbers": {
+      "passed": true,
+      "ungrounded_numbers": []
+    },
+    "faithfulness": {
+      "passed": true,
+      "flags": []
+    },
+    "passed": true
+  },
+  "cost_accounting": {
+    "note": "THEFUTURE.md sec5 rule 4 \u2014 token counts are best-effort (word-count proxy for the one uncounted polish call; extract/verify calls go through llm.generate() without a shared token meter in this round).",
+    "polish_call_word_proxy": 161
+  }
+}

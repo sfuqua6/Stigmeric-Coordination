@@ -1,0 +1,11 @@
+## VERIFIED CLAIMS
+### pack_00003
+Robotics Core's quarterly revenue was $59.2 million as of FY2021Q4. [CLAIM_00004] (source: pack_00003)
+
+### pack_00038
+Vantage Instruments's quarterly revenue was $548.4 million as of FY2021Q1. [CLAIM_00005] (source: pack_00038)
+
+## CONTESTED CLAIMS
+Vantage Instruments's market share percentage as of FY2021Q1 was 18.5 percent. [CLAIM_00001] (source: pack_00019)
+
+Dynamics Core's headcount as of FY2023Q3 was 1380.0. [CLAIM_00002] (source: pack_00010)

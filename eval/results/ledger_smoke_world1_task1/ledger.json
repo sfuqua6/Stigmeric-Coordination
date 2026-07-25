@@ -1,0 +1,255 @@
+{
+  "claims": [
+    {
+      "claim_id": "CLAIM_00001",
+      "text": "Vantage Instruments's market share pct as of FY2021Q1 was 18.5 percent.",
+      "kind": "quantity",
+      "source_span": "Vantage Instruments's market share pct as of FY2021Q1 was 18.5 percent.",
+      "corpus_doc_id": "pack_00019",
+      "partition_id": "partition_1",
+      "extractor_agent_id": "ledger_worker_001",
+      "extractor_model": "groq:llama-3.1-8b-instant",
+      "confidence": 1.0,
+      "depends_on": [],
+      "timestamp": 1784954544.1667848
+    },
+    {
+      "claim_id": "CLAIM_00002",
+      "text": "Dynamics Core's headcount as of FY2023Q3 was 1380.0.",
+      "kind": "quantity",
+      "source_span": "Dynamics Core's headcount as of FY2023Q3 was 1380.0.",
+      "corpus_doc_id": "pack_00010",
+      "partition_id": "partition_1",
+      "extractor_agent_id": "ledger_worker_001",
+      "extractor_model": "groq:llama-3.1-8b-instant",
+      "confidence": 1.0,
+      "depends_on": [],
+      "timestamp": 1784954544.1667848
+    },
+    {
+      "claim_id": "CLAIM_00003",
+      "text": "Analysts note that broader sector conditions remained mixed during the period.",
+      "kind": "fact",
+      "source_span": "Analysts note that broader sector conditions remained mixed during the period.",
+      "corpus_doc_id": "pack_00010",
+      "partition_id": "partition_1",
+      "extractor_agent_id": "ledger_worker_001",
+      "extractor_model": "groq:llama-3.1-8b-instant",
+      "confidence": 1.0,
+      "depends_on": [],
+      "timestamp": 1784954544.1667848
+    },
+    {
+      "claim_id": "CLAIM_00004",
+      "text": "Robotics Core's quarterly revenue was $59.2 million as of FY2021Q4.",
+      "kind": "quantity",
+      "source_span": "Robotics Core's quarterly revenue usd m as of FY2021Q4 was $59.2 million.",
+      "corpus_doc_id": "pack_00003",
+      "partition_id": "partition_2",
+      "extractor_agent_id": "ledger_worker_002",
+      "extractor_model": "groq:llama-3.1-8b-instant",
+      "confidence": 1.0,
+      "depends_on": [],
+      "timestamp": 1784954544.1859086
+    },
+    {
+      "claim_id": "CLAIM_00005",
+      "text": "Vantage Instruments's quarterly revenue was $548.4 million as of FY2021Q1.",
+      "kind": "quantity",
+      "source_span": "Vantage Instruments's quarterly revenue usd m as of FY2021Q1 was $548.4 million.",
+      "corpus_doc_id": "pack_00038",
+      "partition_id": "partition_2",
+      "extractor_agent_id": "ledger_worker_002",
+      "extractor_model": "groq:llama-3.1-8b-instant",
+      "confidence": 1.0,
+      "depends_on": [],
+      "timestamp": 1784954544.1870067
+    },
+    {
+      "claim_id": "CLAIM_00006",
+      "text": "Vantage Instruments's gross margin pct as of FY2021Q1 was 49.8 percent.",
+      "kind": "quantity",
+      "source_span": "Vantage Instruments's gross margin pct as of FY2021Q1 was 49.8 percent.",
+      "corpus_doc_id": "pack_00000",
+      "partition_id": "partition_0",
+      "extractor_agent_id": "ledger_worker_000",
+      "extractor_model": "groq:llama-3.1-8b-instant",
+      "confidence": 1.0,
+      "depends_on": [],
+      "timestamp": 1784954544.320262
+    }
+  ],
+  "verifications": [
+    {
+      "checker_agent_id": "ledger_worker_002",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "pass",
+      "detail": "number reappeared in independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954546.9419925,
+      "claim_id": "CLAIM_00001"
+    },
+    {
+      "checker_agent_id": "ledger_worker_000",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "span_entailment",
+      "outcome": "fail",
+      "detail": "CONTRADICTED\n\nThe passage presents two different market share percentages for Vantage Instruments as of FY2021Q1: 18.5 percent and 15.7 percent.",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954549.899211,
+      "claim_id": "CLAIM_00001"
+    },
+    {
+      "checker_agent_id": "ledger_worker_003",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "pass",
+      "detail": "number reappeared in independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954613.874794,
+      "claim_id": "CLAIM_00001"
+    },
+    {
+      "checker_agent_id": "ledger_worker_000",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "span_entailment",
+      "outcome": "pass",
+      "detail": "ENTAILED\nThe passage directly states the claim about Dynamics Core's headcount as of FY2023Q3.",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954551.9834552,
+      "claim_id": "CLAIM_00002"
+    },
+    {
+      "checker_agent_id": "ledger_worker_000",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "pass",
+      "detail": "number reappeared in independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954574.9498463,
+      "claim_id": "CLAIM_00002"
+    },
+    {
+      "checker_agent_id": "ledger_worker_002",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "fail",
+      "detail": "original number absent from independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954685.8394744,
+      "claim_id": "CLAIM_00002"
+    },
+    {
+      "checker_agent_id": "ledger_worker_003",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "cross_partition",
+      "outcome": "inconclusive",
+      "detail": "no contradiction signal",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954650.245835,
+      "claim_id": "CLAIM_00003"
+    },
+    {
+      "checker_agent_id": "ledger_worker_000",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "span_entailment",
+      "outcome": "inconclusive",
+      "detail": "NOT_ADDRESSED\n\nThe passage does not provide any information about broader sector conditions, making it impossible to determine if the claim is supported or not.",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954719.4429355,
+      "claim_id": "CLAIM_00003"
+    },
+    {
+      "checker_agent_id": "ledger_worker_003",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "span_entailment",
+      "outcome": "inconclusive",
+      "detail": "NOT_ADDRESSED\n\nThe passage does not mention broader sector conditions at all, so it does not support or contradict the claim.",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954796.4927301,
+      "claim_id": "CLAIM_00003"
+    },
+    {
+      "checker_agent_id": "ledger_worker_001",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "pass",
+      "detail": "number reappeared in independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954762.417664,
+      "claim_id": "CLAIM_00004"
+    },
+    {
+      "checker_agent_id": "ledger_worker_001",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "pass",
+      "detail": "number reappeared in independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954879.1829183,
+      "claim_id": "CLAIM_00004"
+    },
+    {
+      "checker_agent_id": "ledger_worker_000",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "span_entailment",
+      "outcome": "pass",
+      "detail": "ENTAILED\nThe passage directly states Robotics Core's quarterly revenue as $59.2 million as of FY2021Q4, supporting the claim.",
+      "contradicting_claim_id": null,
+      "timestamp": 1784955125.3709643,
+      "claim_id": "CLAIM_00004"
+    },
+    {
+      "checker_agent_id": "ledger_worker_003",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "pass",
+      "detail": "number reappeared in independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954927.6955736,
+      "claim_id": "CLAIM_00005"
+    },
+    {
+      "checker_agent_id": "ledger_worker_003",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "pass",
+      "detail": "number reappeared in independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954974.2182188,
+      "claim_id": "CLAIM_00005"
+    },
+    {
+      "checker_agent_id": "ledger_worker_001",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "span_entailment",
+      "outcome": "pass",
+      "detail": "ENTAILED\n\nThe passage directly states the claim about Vantage Instruments's quarterly revenue as of FY2021Q1.",
+      "contradicting_claim_id": null,
+      "timestamp": 1784955073.387167,
+      "claim_id": "CLAIM_00005"
+    },
+    {
+      "checker_agent_id": "ledger_worker_002",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "quantity_reextraction",
+      "outcome": "pass",
+      "detail": "number reappeared in independent re-extraction",
+      "contradicting_claim_id": null,
+      "timestamp": 1784954838.0197477,
+      "claim_id": "CLAIM_00006"
+    },
+    {
+      "checker_agent_id": "ledger_worker_002",
+      "checker_model": "groq:llama-3.1-8b-instant",
+      "check_type": "span_entailment",
+      "outcome": "pass",
+      "detail": "ENTAILED\nThe passage directly states that Vantage Instruments's gross margin pct as of FY2021Q1 was 49.8 percent.",
+      "contradicting_claim_id": null,
+      "timestamp": 1784955024.0395038,
+      "claim_id": "CLAIM_00006"
+    }
+  ],
+  "next_claim_num": 7
+}

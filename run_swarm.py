@@ -545,6 +545,20 @@ async def run_ledger_pipeline(task_type: str, user_prompt: str, output_dir: Path
     draft = compose_draft(ledger)
     polished = None
     polish_cost = {"tokens": 0}
+    # Resolve a DEDICATED polish engine when a router is wired, rather than
+    # reusing the `llm` variable bound to router.engine_for("scout") above.
+    # Bug found during the real-Groq smoke run (2026-07): `role="synth"` on
+    # the generate() call below was a pure logging label — it never
+    # influenced which model executed the call, so the polish pass silently
+    # ran on the SAME model as extraction (whatever "scout" resolved to),
+    # concentrating token load on one model's daily quota instead of
+    # spreading it the way the rest of the router-based pipeline does.
+    polish_llm = llm
+    if router is not None:
+        try:
+            polish_llm = router.engine_for("synthesizer")
+        except Exception:
+            polish_llm = llm
     try:
         polish_prompt = (
             "Polish the following claim-ledger draft for prose flow only. "
@@ -553,8 +567,8 @@ async def run_ledger_pipeline(task_type: str, user_prompt: str, output_dir: Path
             "every claim's substance unchanged.\n\n---DRAFT---\n"
             f"{draft}\n---END DRAFT---\n\nPOLISHED:"
         )
-        polished = await llm.generate(polish_prompt, role="synth", max_tokens=1200,
-                                      temperature=0.3)
+        polished = await polish_llm.generate(polish_prompt, role="synth", max_tokens=1200,
+                                             temperature=0.3)
         polish_cost["tokens"] = len(polish_prompt.split()) + len((polished or "").split())
     except Exception as exc:
         print(f"[ledger] polish call failed ({type(exc).__name__}: {exc}); "

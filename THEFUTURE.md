@@ -122,6 +122,8 @@ The single change that fixes every invalid experiment to date: make the corpus
   that killed the old prompt set.
 - Then rerun the existing harness **unchanged**: A/B/E/F at 1x/4x/16x.
 
+> **PILOT RESULT (2026-07-25, `eval/results/synth_company_1x/`, n=2, 1x scale — directional, not the n≥20 verdict):** A lost every prompt to every control on the mechanical scorer (atomic-fact: A 22% / B 44% / E 50% / F 56%; quantity: A 0% / F 26%), and condition A never produced a real answer — `cap_time` with **zero surviving clusters** both runs. The debate-tuned survival machinery does not function on fact-dense unfamiliar corpora at all. Consistent with the first branch below. Operational findings: one 1x ABEF pilot consumed the full Groq free-tier 500k TPD (the n≥20 fight requires paid Groq or all-local Colab serving per the Stage 3/4 spec); `verify_render`'s verbatim bar rejected 10/10 LLM-rendered docs (8B renderer paraphrases — needs a stronger renderer or normalized matching); B's in-run 44% vs its 3.5% Gate-1 score suggests the task prompts themselves leak registered facts — audit `synthetic_prompts_for_world()` before the fair fight.
+
 **Decision gate (pre-registered):**
 - If **F ≈ A** on synthetic corpora too → the current orchestration adds
   nothing even in its home regime. Do not iterate on the swarm; proceed to
